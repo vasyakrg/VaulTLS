@@ -9,6 +9,7 @@ export default defineConfig({
     globals: true,
     environmentOptions: { jsdom: { url: 'http://localhost' } },
     setupFiles: ['./src/test-setup.ts'],
+    exclude: ['**/node_modules/**', '**/tests/e2e/**'],
   },
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
 })

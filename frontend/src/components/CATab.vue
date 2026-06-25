@@ -87,7 +87,7 @@
             <template v-if="data.ca_type === CAType.TLS">
               <Button
                 :id="'CRLButton-' + data.id"
-                :label="$t('ca.downloadCrl') + ' (DER)'"
+                :label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
                 icon="pi pi-file"
                 severity="secondary"
                 outlined
@@ -95,7 +95,7 @@
                 @click="downloadCRL(data.id, 'der')"
               />
               <Button
-                :label="$t('ca.downloadCrl') + ' (PEM)'"
+                :label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
                 icon="pi pi-file"
                 severity="secondary"
                 outlined
@@ -128,7 +128,7 @@
       </Column>
 
       <template #empty>
-        <div class="vt-empty">No CAs found.</div>
+        <div class="vt-empty">{{ $t('ca.noCasFound') }}</div>
       </template>
     </DataTable>
 
@@ -168,7 +168,7 @@
           <label>{{ $t('common.ouGroup') }}</label>
           <InputText
             v-model="caReq.ca_name.ou"
-            placeholder="Enter organizational unit (optional)"
+            :placeholder="$t('overview.generateModal.enterOU')"
           />
         </div>
 

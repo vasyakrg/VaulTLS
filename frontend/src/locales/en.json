@@ -55,7 +55,10 @@
     "passwordHintOidc": "You can leave this empty if using OAuth (OIDC).",
     "passwordHintRequired": "Required for local login.",
     "completeSetup": "Complete Setup",
-    "setupFailed": "Failed to set up."
+    "setupFailed": "Failed to set up.",
+    "sectionAccount": "Account",
+    "sectionCa": "Certificate Authority",
+    "sectionSecurity": "Security"
   },
   "overview": {
     "title": "Certificates",
@@ -113,6 +116,7 @@
   "ca": {
     "title": "Certificate Authorities",
     "subtitle": "Manage Certificate Authorities",
+    "noCasFound": "No CAs found.",
     "crl": "CRL",
     "krl": "KRL",
     "toggle_dropdown": "Toggle Dropdown",
@@ -275,7 +279,11 @@
     "errorCaCertRequired": "CA certificate file is required"
   },
   "nav": {
-    "certificates": "Certificates"
+    "certificates": "Certificates",
+    "cas": "Certificate Authorities",
+    "acme": "ACME",
+    "users": "Users",
+    "settings": "Settings"
   },
   "acme": {
     "title": "ACME Accounts",

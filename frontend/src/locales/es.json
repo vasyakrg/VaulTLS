@@ -55,7 +55,10 @@
     "passwordHintOidc": "Puede dejarlo vacío si usa OAuth (OIDC).",
     "passwordHintRequired": "Requerida para el inicio de sesión local.",
     "completeSetup": "Completar configuración",
-    "setupFailed": "Error en la configuración."
+    "setupFailed": "Error en la configuración.",
+    "sectionAccount": "Cuenta",
+    "sectionCa": "Autoridad de Certificación",
+    "sectionSecurity": "Seguridad"
   },
   "overview": {
     "title": "Certificados",
@@ -113,6 +116,7 @@
   "ca": {
     "title": "Autoridades de Certificación",
     "subtitle": "Gestionar Autoridades de Certificación",
+    "noCasFound": "No se encontraron CAs.",
     "crl": "CRL",
     "krl": "KRL",
     "toggle_dropdown": "Alternar menú",
@@ -275,7 +279,11 @@
     "errorCaCertRequired": "El archivo de certificado CA es obligatorio"
   },
   "nav": {
-    "certificates": "Certificados"
+    "certificates": "Certificados",
+    "cas": "Autoridades de Certificación",
+    "acme": "ACME",
+    "users": "Usuarios",
+    "settings": "Configuración"
   },
   "acme": {
     "title": "Cuentas ACME",

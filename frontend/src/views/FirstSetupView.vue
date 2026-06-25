@@ -28,7 +28,7 @@
         </Message>
 
         <form @submit.prevent="setupPassword" class="setup-form">
-          <div class="setup-section-label">Account</div>
+          <div class="setup-section-label">{{ $t('setup.sectionAccount') }}</div>
 
           <div class="auth-field">
             <label for="username" class="auth-label">{{ $t('common.username') }}</label>
@@ -40,7 +40,7 @@
             <InputText id="email" v-model="email" type="email" class="w-full" required />
           </div>
 
-          <div class="setup-section-label" style="margin-top: 1.25rem;">Certificate Authority</div>
+          <div class="setup-section-label" style="margin-top: 1.25rem;">{{ $t('setup.sectionCa') }}</div>
 
           <div class="auth-field">
             <label for="ca_name" class="auth-label">{{ $t('setup.caName') }}</label>
@@ -67,7 +67,7 @@
             </div>
           </div>
 
-          <div class="setup-section-label" style="margin-top: 1.25rem;">Security</div>
+          <div class="setup-section-label" style="margin-top: 1.25rem;">{{ $t('setup.sectionSecurity') }}</div>
 
           <div class="auth-field">
             <label for="password" class="auth-label">{{ $t('common.password') }}</label>
