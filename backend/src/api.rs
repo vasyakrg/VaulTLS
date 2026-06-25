@@ -34,7 +34,11 @@ pub(crate) fn version() -> &'static str {
 pub(crate) async fn is_setup(
     state: &State<AppState>
 ) -> Result<Json<IsSetupResponse>, ApiError> {
-    let is_setup = state.db.is_setup().await.is_ok();
+    // Consider the server set up if there is a user OR any CA already exists.
+    // Relying on users alone let a wiped/half-initialized users table re-trigger
+    // first-setup and create duplicate default CAs.
+    let is_setup = state.db.is_setup().await.is_ok()
+        || !state.db.get_all_ca().await.unwrap_or_default().is_empty();
     let has_password = state.settings.get_password_enabled();
     let oidc_url = state.settings.get_oidc().auth_url.clone();
     let default_language = state.settings.get_default_language();
@@ -53,7 +57,9 @@ pub(crate) async fn setup(
     state: &State<AppState>,
     setup_req: Json<SetupRequest>
 ) -> Result<(), ApiError> {
-    if state.db.is_setup().await.is_ok() {
+    if state.db.is_setup().await.is_ok()
+        || !state.db.get_all_ca().await.unwrap_or_default().is_empty()
+    {
         warn!("Server is already setup.");
         return Err(ApiError::Unauthorized(None))
     }
