@@ -446,15 +446,12 @@ pub(crate) async fn import_ca(
 
     let cn = form.name.clone().unwrap_or_else(|| cn_from_cert(&cert));
     let not_after_ms = asn1_to_unix_ms(cert.not_after())?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let not_before_ms = asn1_to_unix_ms(cert.not_before())?;
 
     let mut ca = crate::certs::common::CA {
         id: -1,
         name: crate::data::objects::Name::from(cn),
-        created_on: now_ms,
+        created_on: not_before_ms,
         valid_until: not_after_ms,
         ca_type: crate::data::enums::CAType::TLS,
         cert: cert.to_der().map_err(ApiError::from)?,
@@ -599,10 +596,11 @@ pub(crate) async fn import_certificate(
                 None => {
                     let cn = cn_from_cert(&issuer);
                     let not_after_ms = asn1_to_unix_ms(issuer.not_after())?;
+                    let not_before_ms = asn1_to_unix_ms(issuer.not_before())?;
                     let ca = CA {
                         id: -1,
                         name: crate::data::objects::Name::from(cn),
-                        created_on: 0,
+                        created_on: not_before_ms,
                         valid_until: not_after_ms,
                         ca_type: CAType::TLS,
                         cert: issuer_der,
@@ -632,10 +630,11 @@ pub(crate) async fn import_certificate(
         None => CertificateRenewMethod::None,
     };
     let valid_until = asn1_to_unix_ms(leaf.not_after())?;
+    let created_on = asn1_to_unix_ms(leaf.not_before())?;
     let cert = Certificate {
         id: -1,
         name: crate::data::objects::Name::from(cn_from_cert(&leaf)),
-        created_on: 0,
+        created_on,
         valid_until,
         certificate_type: cert_type,
         user_id: form.user_id,
