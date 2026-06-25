@@ -112,14 +112,23 @@
   },
   "ca": {
     "title": "Autoridades de Certificación",
+    "subtitle": "Gestionar Autoridades de Certificación",
     "crl": "CRL",
     "krl": "KRL",
     "toggle_dropdown": "Alternar menú",
     "der_format": "Formato DER",
     "pem_format": "Formato PEM",
     "createCa": "Crear nueva CA",
+    "importCa": "Importar CA",
     "loadingCas": "Cargando CAs...",
     "enterCaCommonName": "Introduzca el nombre común de la CA",
+    "tagImported": "Importada",
+    "tagInternal": "Interna",
+    "colSource": "Origen",
+    "downloadCrl": "Descargar CRL",
+    "downloadKrl": "Descargar KRL",
+    "downloadCrlDer": "DER",
+    "downloadCrlPem": "PEM",
     "createModal": {
       "title": "Crear nueva autoridad de certificación",
       "caName": "Nombre de CA (CN)",
@@ -127,7 +136,7 @@
       "create": "Crear CA"
     },
     "deleteModal": {
-      "title": "Eliminar certificado",
+      "title": "Eliminar Autoridad de Certificación",
       "confirm": "¿Está seguro de que desea eliminar la CA {name}?"
     }
   },

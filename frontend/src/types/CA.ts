@@ -12,6 +12,7 @@ export interface CA {
     created_on: number;                   // Date when the CA was created (UNIX timestamp in ms)
     valid_until: number;                  // Expiration date of the CA (UNIX timestamp in ms)
     ca_type: CAType;                      // CA type
+    is_imported?: boolean;                // Whether the CA was imported externally
 }
 
 export interface CARequirements {

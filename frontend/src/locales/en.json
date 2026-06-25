@@ -112,14 +112,23 @@
   },
   "ca": {
     "title": "Certificate Authorities",
+    "subtitle": "Manage Certificate Authorities",
     "crl": "CRL",
     "krl": "KRL",
     "toggle_dropdown": "Toggle Dropdown",
     "der_format": "DER Format",
     "pem_format": "PEM Format",
     "createCa": "Create New CA",
+    "importCa": "Import CA",
     "loadingCas": "Loading CAs...",
     "enterCaCommonName": "Enter CA Common Name",
+    "tagImported": "Imported",
+    "tagInternal": "Internal",
+    "colSource": "Source",
+    "downloadCrl": "Download CRL",
+    "downloadKrl": "Download KRL",
+    "downloadCrlDer": "DER",
+    "downloadCrlPem": "PEM",
     "createModal": {
       "title": "Create New Certificate Authority",
       "caName": "CA Name (CN)",
@@ -127,7 +136,7 @@
       "create": "Create CA"
     },
     "deleteModal": {
-      "title": "Delete Certificate",
+      "title": "Delete Certificate Authority",
       "confirm": "Are you sure you want to delete the CA {name}?"
     }
   },
