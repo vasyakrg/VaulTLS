@@ -878,3 +878,66 @@ async fn issuing_from_keyless_ca_is_rejected() {
         "Expected 'private key' error message, got: {body_text}"
     );
 }
+
+#[tokio::test]
+async fn revoke_on_keyless_ca_does_not_mark_revoked() {
+    use rocket::http::{ContentType, Status};
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // 1. Import a CA WITHOUT a private key
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Keyless Revoke CA");
+    let boundary = "KR1";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client
+        .post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let _ca_id: i64 = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+
+    // 2. Import a leaf cert signed by that CA (no key needed for revoke test)
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("revoke-test.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "KR2";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1);
+    let resp = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok, "Leaf import failed");
+    let imported: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let cert_id: i64 = imported["id"].as_i64().expect("imported cert has no id");
+
+    // 3. Attempt to revoke — must fail with 400 because CA has no private key
+    let resp = client
+        .post(format!("/certificates/{}/revoke", cert_id))
+        .dispatch()
+        .await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        Status::BadRequest,
+        "Expected 400 from revoke on keyless CA, got: {status} body={body_text}"
+    );
+    assert!(
+        body_text.contains("private key"),
+        "Expected 'private key' in error, got: {body_text}"
+    );
+
+    // 4. Verify that the cert is NOT marked as revoked in the DB
+    let resp = client.get("/certificates").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let certs: Vec<Value> = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let our_cert = certs.iter().find(|c| c["id"] == cert_id)
+        .expect("Imported cert not found in GET /certificates");
+    assert!(
+        our_cert["revoked_at"].is_null(),
+        "cert.revoked_at must be null after failed revoke, got: {}",
+        our_cert["revoked_at"]
+    );
+}

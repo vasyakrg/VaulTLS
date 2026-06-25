@@ -959,12 +959,13 @@ pub(crate) async fn revoke_certificate(
 ) -> Result<(), ApiError> {
     let cert = state.db.get_user_cert_by_id(id).await?;
     if cert.user_id != authentication._claims.id && authentication._claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
-    state.db.revoke_user_cert(id).await.map_err(|e| ApiError::Other(e.to_string()))?;
 
     let mut ca = state.db.get_ca_by_id(cert.ca_id).await.map_err(|_| ApiError::NotFound(None))?;
     if !ca.has_private_key() {
         return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
     }
+
+    state.db.revoke_user_cert(id).await.map_err(|e| ApiError::Other(e.to_string()))?;
     match ca.ca_type {
         CAType::TLS => {
             let (revoked_params, crl_next_update_hours) = create_crl_params(state, &ca).await?;
