@@ -1,0 +1,32 @@
+# Локальный запуск VaulTLS с персистентным volume.
+#   docker compose up -d --build     — собрать и поднять
+#   docker compose up -d             — поднять (образ уже собран)
+#   docker compose logs -f           — логи
+#   docker compose down              — остановить (данные в volume сохраняются)
+#   docker compose down -v           — остановить И удалить данные
+#
+# Секреты берутся из .env (не в git). Данные (БД, CA, сертификаты) — в named
+# volume vaultls-data, переживают пересоздание контейнера.
+
+services:
+  vaultls:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: vaultls:local
+    container_name: vaultls-local
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    env_file: .env
+    volumes:
+      - vaultls-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/api/server/setup"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  vaultls-data:
