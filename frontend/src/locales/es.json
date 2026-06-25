@@ -270,8 +270,10 @@
   },
   "acme": {
     "title": "Cuentas ACME",
+    "subtitle": "Gestionar cuentas ACME y órdenes de certificados",
     "ordersTitle": "Órdenes ACME",
     "hideDeactivated": "Ocultar cuentas desactivadas",
+    "noAccounts": "No se encontraron cuentas ACME.",
     "colId": "ID",
     "colAllowedDomains": "Dominios permitidos",
     "colStatus": "Estado",

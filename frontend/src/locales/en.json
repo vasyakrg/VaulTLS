@@ -270,8 +270,10 @@
   },
   "acme": {
     "title": "ACME Accounts",
+    "subtitle": "Manage ACME accounts and certificate orders",
     "ordersTitle": "ACME Orders",
     "hideDeactivated": "Hide deactivated accounts",
+    "noAccounts": "No ACME accounts found.",
     "colId": "ID",
     "colAllowedDomains": "Allowed Domains",
     "colStatus": "Status",
