@@ -59,6 +59,11 @@ pub fn find_issuing_ca(leaf: &X509, chain: &[X509]) -> Option<X509> {
     None
 }
 
+/// Subject Key Identifier bytes, if present.
+pub fn ski_of(cert: &X509) -> Option<Vec<u8>> {
+    cert.subject_key_id().map(|s| s.as_slice().to_vec())
+}
+
 /// Split a PEM bundle into individual certificates.
 pub fn parse_pem_bundle(bytes: &[u8]) -> Result<Vec<X509>> {
     let certs = X509::stack_from_pem(bytes)?;
@@ -69,23 +74,23 @@ pub fn parse_pem_bundle(bytes: &[u8]) -> Result<Vec<X509>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod tests_support {
     use openssl::ec::{EcGroup, EcKey};
     use openssl::nid::Nid;
     use openssl::hash::MessageDigest;
-    use openssl::x509::{X509Builder, X509NameBuilder};
-    use openssl::x509::extension::{BasicConstraints, AuthorityKeyIdentifier, SubjectKeyIdentifier};
+    use openssl::pkey::{PKey, Private};
+    use openssl::x509::{X509, X509Builder, X509NameBuilder};
+    use openssl::x509::extension::{BasicConstraints, SubjectKeyIdentifier};
     use openssl::asn1::Asn1Time;
     use openssl::bn::BigNum;
 
-    fn keypair() -> PKey<Private> {
+    pub fn keypair() -> PKey<Private> {
         let g = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         PKey::from_ec_key(EcKey::generate(&g).unwrap()).unwrap()
     }
 
     /// Build a self-signed CA cert with given CN. Returns (cert, key).
-    fn self_signed_ca(cn: &str) -> (X509, PKey<Private>) {
+    pub fn self_signed_ca(cn: &str) -> (X509, PKey<Private>) {
         let key = keypair();
         let mut nb = X509NameBuilder::new().unwrap();
         nb.append_entry_by_text("CN", cn).unwrap();
@@ -106,6 +111,23 @@ mod tests {
         b.sign(&key, MessageDigest::sha256()).unwrap();
         (b.build(), key)
     }
+
+    /// Build a self-signed CA cert and return it as DER bytes.
+    pub fn self_signed_ca_der(cn: &str) -> Vec<u8> {
+        let (cert, _) = self_signed_ca(cn);
+        cert.to_der().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tests_support::{keypair, self_signed_ca};
+    use openssl::x509::extension::{AuthorityKeyIdentifier, SubjectKeyIdentifier};
+    use openssl::hash::MessageDigest;
+    use openssl::x509::{X509Builder, X509NameBuilder};
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::BigNum;
 
     #[test]
     fn parse_cert_accepts_pem_and_der() {

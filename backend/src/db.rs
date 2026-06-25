@@ -950,6 +950,23 @@ impl VaulTLSDB {
             Ok(())
         })
     }
+
+    /// Find an already-imported CA whose stored cert shares the SKI of `cert_der`.
+    pub(crate) async fn find_imported_ca_by_cert(&self, cert_der: &[u8]) -> Result<Option<CA>> {
+        use crate::certs::import::ski_of;
+        use openssl::x509::X509;
+        let target = X509::from_der(cert_der).ok().and_then(|c| ski_of(&c));
+        let Some(target_ski) = target else { return Ok(None) };
+        for ca in self.get_all_ca().await? {
+            if !ca.is_imported { continue }
+            if let Ok(x) = X509::from_der(&ca.cert) {
+                if ski_of(&x).as_deref() == Some(target_ski.as_slice()) {
+                    return Ok(Some(ca));
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 fn acme_account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeAccount> {
@@ -994,6 +1011,23 @@ mod import_tests {
     async fn mem_db() -> VaulTLSDB {
         // test-mode constructor opens an in-memory encrypted DB and runs migrations
         VaulTLSDB::new_in_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn find_imported_ca_dedupes_by_ski() {
+        use crate::certs::import::ski_of;
+        use openssl::x509::X509;
+        let db = mem_db().await;
+        let cert_der = crate::certs::import::tests_support::self_signed_ca_der("Dedup CA");
+        let x = X509::from_der(&cert_der).unwrap();
+        assert!(ski_of(&x).is_some());
+
+        let ca = CA { id: -1, name: Name::from("Dedup CA"), created_on: 0, valid_until: 1,
+            ca_type: CAType::TLS, cert: cert_der.clone(), key: Vec::new(), crl_number: 0, is_imported: true };
+        let saved = db.insert_ca(ca).await.unwrap();
+
+        let found = db.find_imported_ca_by_cert(&cert_der).await.unwrap();
+        assert_eq!(found.map(|c| c.id), Some(saved.id));
     }
 
     #[tokio::test]
