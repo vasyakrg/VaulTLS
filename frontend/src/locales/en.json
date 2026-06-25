@@ -243,6 +243,19 @@
     "errorTitle": "Import Failed",
     "errorGeneric": "An unexpected error occurred"
   },
+  "importCa": {
+    "title": "Import Certificate Authority",
+    "caCertFile": "CA Certificate File (.pem / .crt)",
+    "caKeyFile": "CA Private Key File (.pem / .key)",
+    "name": "Name (CN override)",
+    "namePlaceholder": "Leave empty to use CN from certificate",
+    "optional": "optional",
+    "import": "Import CA",
+    "importing": "Importing...",
+    "errorTitle": "Import Failed",
+    "errorGeneric": "An unexpected error occurred",
+    "errorCaCertRequired": "CA certificate file is required"
+  },
   "nav": {
     "certificates": "Certificates"
   },

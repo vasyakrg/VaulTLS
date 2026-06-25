@@ -20,3 +20,7 @@ export const deleteCA = async (id: number): Promise<void> => {
 export const downloadCRL = async (id: number, format: string = 'der'): Promise<void> => {
     await ApiClient.download(`/certificates/ca/${id}/crl?format=${format}`);
 };
+
+export const importCa = async (form: FormData): Promise<number> => {
+    return await ApiClient.postForm<number>('/certificates/ca/import', form);
+};

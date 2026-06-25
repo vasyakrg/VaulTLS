@@ -243,6 +243,19 @@
     "errorTitle": "Error al importar",
     "errorGeneric": "Se produjo un error inesperado"
   },
+  "importCa": {
+    "title": "Importar autoridad de certificación",
+    "caCertFile": "Archivo de certificado CA (.pem / .crt)",
+    "caKeyFile": "Archivo de clave privada CA (.pem / .key)",
+    "name": "Nombre (reemplaza CN)",
+    "namePlaceholder": "Dejar vacío para usar el CN del certificado",
+    "optional": "opcional",
+    "import": "Importar CA",
+    "importing": "Importando...",
+    "errorTitle": "Error al importar",
+    "errorGeneric": "Se produjo un error inesperado",
+    "errorCaCertRequired": "El archivo de certificado CA es obligatorio"
+  },
   "nav": {
     "certificates": "Certificados"
   },
