@@ -1202,8 +1202,11 @@ pub(crate) async fn update_user(
 pub(crate) async fn delete_user(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged
+    authentication: AuthenticatedPrivileged
 ) -> Result<(), ApiError> {
+    if id == authentication._claims.id {
+        return Err(ApiError::BadRequest("You cannot delete your own account".into()));
+    }
     state.db.delete_user(id).await?;
 
     info!(user=?id, "User deleted.");

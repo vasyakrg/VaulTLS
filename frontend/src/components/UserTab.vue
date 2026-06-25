@@ -72,6 +72,7 @@
               @click="openEditModal(data)"
             />
             <Button
+              v-if="data.id !== authStore.current_user?.id"
               :id="'UserDeletebutton-' + data.id"
               :label="$t('common.delete')"
               icon="pi pi-trash"
@@ -205,6 +206,7 @@ import { computed, onMounted, ref } from 'vue'
 import { type CreateUserRequest, UserRole, type User } from '@/types/User'
 import { useUserStore } from '@/stores/users.ts'
 import { useCertificateStore } from '@/stores/certificates.ts'
+import { useAuthStore } from '@/stores/auth.ts'
 import { useI18n } from 'vue-i18n'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -219,6 +221,7 @@ const { t } = useI18n()
 
 // stores
 const userStore = useUserStore()
+const authStore = useAuthStore()
 
 // filters
 const filters = ref({ global: { value: null, matchMode: FilterMatchMode.CONTAINS } })

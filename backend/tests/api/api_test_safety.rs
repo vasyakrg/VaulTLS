@@ -225,3 +225,14 @@ async fn password_disabled_login() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_cannot_delete_own_account() -> Result<()> {
+    // The first user created during setup is the admin with id 1.
+    let client = VaulTLSClient::new_authenticated().await;
+
+    let response = client.delete("/users/1").dispatch().await;
+    assert_eq!(response.status(), Status::BadRequest);
+
+    Ok(())
+}
