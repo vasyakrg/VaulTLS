@@ -206,14 +206,16 @@
     <ImportCertificateDialog v-model:visible="showImport" @imported="certificateStore.fetchCertificates()" />
 
     <!-- Generate Certificate Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isGenerateModalVisible"
-      :header="$t('overview.generateModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '500px' }"
-      @hide="closeGenerateModal"
+      :title="$t('overview.generateModal.title')"
+      :submitLabel="loading ? $t('common.creating') : $t('overview.generateModal.create')"
+      submitIcon="pi pi-check"
+      :submitDisabled="loading || ((!certReq.system_generated_password && certReq.cert_password.length == 0) && passwordRule == PasswordRule.Required)"
+      :loading="loading"
+      @submit="createCertificate"
+      @cancel="closeGenerateModal"
+      width="500px"
     >
       <div class="vt-form">
         <div class="vt-field">
@@ -361,47 +363,34 @@
         </div>
       </div>
 
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeGenerateModal" />
-        <Button
-          :label="loading ? $t('common.creating') : $t('overview.generateModal.create')"
-          icon="pi pi-check"
-          :disabled="loading || ((!certReq.system_generated_password && certReq.cert_password.length == 0) && passwordRule == PasswordRule.Required)"
-          @click="createCertificate"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Revoke Confirmation Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isRevokeModalVisible"
-      :header="$t('overview.revokeModal.title')"
-      modal
-      :draggable="false"
-      :style="{ width: '400px' }"
+      :title="$t('overview.revokeModal.title')"
+      :submitLabel="$t('overview.revokeModal.revoke')"
+      submitSeverity="warn"
+      @submit="revokeCertificate"
+      @cancel="closeRevokeModal"
+      width="400px"
     >
       <p>{{ $t('overview.revokeModal.confirm', { name: certToRevoke?.name.cn }) }}</p>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeRevokeModal" />
-        <Button :label="$t('overview.revokeModal.revoke')" severity="warn" @click="revokeCertificate" />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Delete Confirmation Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isDeleteModalVisible"
-      :header="$t('overview.deleteModal.title')"
-      modal
-      :draggable="false"
-      :style="{ width: '400px' }"
+      :title="$t('overview.deleteModal.title')"
+      :submitLabel="$t('common.delete')"
+      submitSeverity="danger"
+      @submit="deleteCertificate"
+      @cancel="closeDeleteModal"
+      width="400px"
     >
       <p>{{ $t('overview.deleteModal.confirm', { name: certToDelete?.name.cn }) }}</p>
       <p class="vt-disclaimer">{{ $t('overview.deleteModal.disclaimer') }}</p>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeDeleteModal" />
-        <Button :label="$t('common.delete')" severity="danger" @click="deleteCertificate" />
-      </template>
-    </Dialog>
+    </BaseModal>
   </div>
 </template>
 
@@ -425,10 +414,10 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
-import Dialog from 'primevue/dialog'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode } from '@primevue/core/api'
 import ImportCertificateDialog from '@/components/dialogs/ImportCertificateDialog.vue'
+import BaseModal from '@/components/BaseModal.vue'
 
 const { t } = useI18n()
 

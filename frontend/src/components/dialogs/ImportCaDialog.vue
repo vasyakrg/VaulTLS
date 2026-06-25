@@ -1,11 +1,15 @@
 <template>
-  <Dialog
+  <BaseModal
     :visible="visible"
     @update:visible="$emit('update:visible', $event)"
-    :header="$t('importCa.title')"
-    modal
-    :draggable="false"
-    :style="{ width: '480px' }"
+    :title="$t('importCa.title')"
+    :submitLabel="submitting ? $t('importCa.importing') : $t('importCa.import')"
+    submitIcon="pi pi-upload"
+    :submitDisabled="submitting"
+    :loading="submitting"
+    @submit="submit"
+    @cancel="close"
+    width="480px"
   >
     <div class="vt-form">
       <div class="vt-field">
@@ -34,26 +38,16 @@
       </div>
     </div>
 
-    <template #footer>
-      <Button :label="$t('common.cancel')" severity="secondary" outlined @click="close" />
-      <Button
-        :label="submitting ? $t('importCa.importing') : $t('importCa.import')"
-        icon="pi pi-upload"
-        :disabled="submitting"
-        @click="submit"
-      />
-    </template>
-  </Dialog>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
-import Dialog from 'primevue/dialog'
-import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import { useCAStore } from '@/stores/cas'
+import BaseModal from '@/components/BaseModal.vue'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{

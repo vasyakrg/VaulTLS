@@ -1,11 +1,15 @@
 <template>
-  <Dialog
+  <BaseModal
     :visible="visible"
     @update:visible="$emit('update:visible', $event)"
-    :header="$t('importCert.title')"
-    modal
-    :draggable="false"
-    :style="{ width: '480px' }"
+    :title="$t('importCert.title')"
+    :submitLabel="submitting ? $t('importCert.importing') : $t('importCert.import')"
+    submitIcon="pi pi-upload"
+    :submitDisabled="submitting"
+    :loading="submitting"
+    @submit="submit"
+    @cancel="close"
+    width="480px"
   >
     <div class="vt-form">
       <div class="vt-field">
@@ -111,24 +115,13 @@
       </div>
     </div>
 
-    <template #footer>
-      <Button :label="$t('common.cancel')" severity="secondary" outlined @click="close" />
-      <Button
-        :label="submitting ? $t('importCert.importing') : $t('importCert.import')"
-        icon="pi pi-upload"
-        :disabled="submitting"
-        @click="submit"
-      />
-    </template>
-  </Dialog>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
-import Dialog from 'primevue/dialog'
-import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Password from 'primevue/password'
 import SelectButton from 'primevue/selectbutton'
@@ -136,6 +129,7 @@ import { useCertificateStore } from '@/stores/certificates'
 import { useUserStore } from '@/stores/users'
 import { useCAStore } from '@/stores/cas'
 import { validateImportInput } from '@/components/dialogs/importCert'
+import BaseModal from '@/components/BaseModal.vue'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
