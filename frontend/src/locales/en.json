@@ -157,6 +157,7 @@
   },
   "settings": {
     "title": "Settings",
+    "subtitle": "Application and user preferences",
     "common": {
       "heading": "Common",
       "passwordEnabled": "Password Login enabled",

@@ -157,6 +157,7 @@
   },
   "settings": {
     "title": "Configuración",
+    "subtitle": "Preferencias de la aplicación y del usuario",
     "common": {
       "heading": "General",
       "passwordEnabled": "Inicio de sesión con contraseña habilitado",
