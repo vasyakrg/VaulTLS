@@ -74,6 +74,14 @@ pub struct CA {
     pub key: Vec<u8>,
     #[serde(skip)]
     pub crl_number: i64,
+    pub is_imported: bool,
+}
+
+impl CA {
+    /// True if this CA holds a usable private key (i.e. can issue/revoke).
+    pub fn has_private_key(&self) -> bool {
+        !self.key.is_empty()
+    }
 }
 
 /// Saves the CA certificate to a file for filesystem access.

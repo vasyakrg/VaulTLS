@@ -1,0 +1,1 @@
+ALTER TABLE ca_certificates ADD COLUMN is_imported INTEGER NOT NULL DEFAULT 0;

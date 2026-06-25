@@ -100,6 +100,21 @@ impl VaulTLSDB {
         Ok(Self { pool })
     }
 
+    #[cfg(any(test, feature = "test-mode"))]
+    pub(crate) async fn new_in_memory() -> Result<Self> {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| {
+                connection.pragma_update(None, "foreign_keys", "ON")?;
+                Ok(())
+            });
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(manager)?;
+        let mut connection = pool.get()?;
+        Self::migrate_database(&mut connection)?;
+        Ok(Self { pool })
+    }
+
     pub(crate) fn migrate_to_encrypted(db_secret: &str) -> Result<()> {
         let connection = Connection::open(DB_FILE_PATH)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -168,8 +183,8 @@ impl VaulTLSDB {
     ) -> Result<CA> {
         db_do!(self.pool, |conn: &Connection| {
             conn.execute(
-                "INSERT INTO ca_certificates (name, created_on, valid_until, type, certificate, key, crl_number) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![ca.name, ca.created_on, ca.valid_until, ca.ca_type as u8, ca.cert, ca.key, ca.crl_number],
+                "INSERT INTO ca_certificates (name, created_on, valid_until, type, certificate, key, crl_number, is_imported) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![ca.name, ca.created_on, ca.valid_until, ca.ca_type as u8, ca.cert, ca.key, ca.crl_number, ca.is_imported as i64],
             )?;
             ca.id = conn.last_insert_rowid();
             Ok(ca)
@@ -187,17 +202,17 @@ impl VaulTLSDB {
     }
 
     pub(crate) async fn get_latest_tls_ca(&self) -> Result<CA> {
-        let query = formatcp!("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number FROM ca_certificates WHERE type = {} ORDER BY id DESC LIMIT 1", CAType::TLS as u8);
+        let query = formatcp!("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number, is_imported FROM ca_certificates WHERE type = {} ORDER BY id DESC LIMIT 1", CAType::TLS as u8);
         self.get_ca_by_query(query.to_string(), None).await
     }
 
     pub(crate) async fn get_latest_ssh_ca(&self) -> Result<CA> {
-        let query = formatcp!("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number FROM ca_certificates WHERE type = {} ORDER BY id DESC LIMIT 1", CAType::SSH as u8);
+        let query = formatcp!("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number, is_imported FROM ca_certificates WHERE type = {} ORDER BY id DESC LIMIT 1", CAType::SSH as u8);
         self.get_ca_by_query(query.to_string(), None).await
     }
 
     pub(crate) async fn get_ca_by_id(&self, ca_id: i64) -> Result<CA> {
-        let query = "SELECT id, name, created_on, valid_until, type, certificate, key, crl_number FROM ca_certificates WHERE id = ?1";
+        let query = "SELECT id, name, created_on, valid_until, type, certificate, key, crl_number, is_imported FROM ca_certificates WHERE id = ?1";
         self.get_ca_by_query(query.to_string(), Some(ca_id)).await
     }
 
@@ -217,9 +232,10 @@ impl VaulTLSDB {
                 created_on: row.get(2)?,
                 valid_until: row.get(3)?,
                 ca_type: row.get(4)?,
-                cert: row.get(5)?,
-                key: row.get(6)?,
+                cert: row.get(5).unwrap_or_default(),
+                key: row.get(6).unwrap_or_default(),
                 crl_number: row.get(7)?,
+                is_imported: row.get::<_, i64>(8)? != 0,
             })
         })
     }
@@ -227,7 +243,7 @@ impl VaulTLSDB {
     /// Retrieve all CA certificates from the database
     pub(crate) async fn get_all_ca(&self) -> Result<Vec<CA>> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number FROM ca_certificates ORDER BY id ASC")?;
+            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number, is_imported FROM ca_certificates ORDER BY id ASC")?;
             let query = stmt.query([])?;
             Ok(query.map(|row| {
                 Ok(CA{
@@ -236,9 +252,10 @@ impl VaulTLSDB {
                     created_on: row.get(2)?,
                     valid_until: row.get(3)?,
                     ca_type: row.get(4)?,
-                    cert: row.get(5)?,
-                    key: row.get(6)?,
+                    cert: row.get(5).unwrap_or_default(),
+                    key: row.get(6).unwrap_or_default(),
                     crl_number: row.get(7)?,
+                    is_imported: row.get::<_, i64>(8)? != 0,
                 })
             })
             .collect()?)
@@ -965,4 +982,38 @@ fn order_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeOrderRow>
         client_ip: row.get(8)?,
         error: row.get(9)?,
     })
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use crate::certs::common::CA;
+    use crate::data::enums::CAType;
+    use crate::data::objects::Name;
+
+    async fn mem_db() -> VaulTLSDB {
+        // test-mode constructor opens an in-memory encrypted DB and runs migrations
+        VaulTLSDB::new_in_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn keyless_ca_roundtrips_and_reports_no_private_key() {
+        let db = mem_db().await;
+        let ca = CA {
+            id: -1,
+            name: Name::from("Imported Root"),
+            created_on: 0,
+            valid_until: 1,
+            ca_type: CAType::TLS,
+            cert: vec![1, 2, 3],
+            key: Vec::new(),          // key-less external CA
+            crl_number: 0,
+            is_imported: true,
+        };
+        let saved = db.insert_ca(ca).await.unwrap();
+        let fetched = db.get_ca_by_id(saved.id).await.unwrap();
+        assert!(fetched.is_imported);
+        assert!(!fetched.has_private_key());
+        assert!(fetched.key.is_empty());
+    }
 }
