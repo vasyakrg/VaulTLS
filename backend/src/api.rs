@@ -10,6 +10,7 @@ use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::session_auth::{generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
+use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
@@ -376,6 +377,278 @@ pub(crate) async fn create_ca(
     save_ca(&ca)?;
     Ok(Json(ca.id))
 }
+
+#[derive(rocket::form::FromForm)]
+pub struct ImportCaForm<'r> {
+    pub ca_cert: rocket::fs::TempFile<'r>,
+    pub ca_key: Option<rocket::fs::TempFile<'r>>,
+    pub name: Option<String>,
+}
+
+impl<'r> rocket_okapi::JsonSchema for ImportCaForm<'r> {
+    fn schema_name() -> String {
+        "ImportCaForm".to_string()
+    }
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::SingleOrVec::Single(Box::new(
+                schemars::schema::InstanceType::Object,
+            ))),
+            ..Default::default()
+        })
+    }
+}
+
+async fn read_tempfile(file: &rocket::fs::TempFile<'_>) -> Result<Vec<u8>, ApiError> {
+    use rocket::tokio::io::AsyncReadExt;
+    let mut stream = file.open().await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(buf)
+}
+
+fn cn_from_cert(cert: &openssl::x509::X509) -> String {
+    cert.subject_name()
+        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .and_then(|e| e.data().as_utf8().ok().map(|s| s.to_string()))
+        .unwrap_or_else(|| "Imported CA".to_string())
+}
+
+fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> Result<i64, ApiError> {
+    let epoch = openssl::asn1::Asn1Time::from_unix(0).map_err(ApiError::from)?;
+    let diff = epoch.diff(t).map_err(ApiError::from)?;
+    let secs = (diff.days as i64) * 86_400 + (diff.secs as i64);
+    Ok(secs * 1000)
+}
+
+#[openapi(tag = "Certificates")]
+#[post("/certificates/ca/import", data = "<form>")]
+/// Import an existing CA certificate (optionally with its private key). Requires admin role.
+pub(crate) async fn import_ca(
+    state: &State<AppState>,
+    form: rocket::form::Form<ImportCaForm<'_>>,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<i64>, ApiError> {
+    use crate::certs::import::{parse_cert, parse_private_key};
+
+    let cert_bytes = read_tempfile(&form.ca_cert).await?;
+    let cert = parse_cert(&cert_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let key_der = match &form.ca_key {
+        Some(f) => {
+            let kb = read_tempfile(f).await?;
+            let key = parse_private_key(&kb).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            key.private_key_to_der().map_err(ApiError::from)?
+        }
+        None => Vec::new(),
+    };
+
+    let cn = form.name.clone().unwrap_or_else(|| cn_from_cert(&cert));
+    let not_after_ms = asn1_to_unix_ms(cert.not_after())?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let mut ca = crate::certs::common::CA {
+        id: -1,
+        name: crate::data::objects::Name::from(cn),
+        created_on: now_ms,
+        valid_until: not_after_ms,
+        ca_type: crate::data::enums::CAType::TLS,
+        cert: cert.to_der().map_err(ApiError::from)?,
+        key: key_der,
+        crl_number: 0,
+        is_imported: true,
+    };
+
+    ca = state.db.insert_ca(ca).await?;
+    save_ca(&ca)?;
+    Ok(Json(ca.id))
+}
+
+#[derive(rocket::form::FromForm)]
+pub struct ImportCertForm<'r> {
+    pub p12: Option<rocket::fs::TempFile<'r>>,
+    pub password: Option<String>,
+    pub cert: Option<rocket::fs::TempFile<'r>>,
+    pub key: Option<rocket::fs::TempFile<'r>>,
+    pub chain: Option<rocket::fs::TempFile<'r>>,
+    pub user_id: i64,
+    pub ca_id: Option<i64>,
+    /// CertificateType as u8: 0=TLSClient, 1=TLSServer, 10=SSHClient, 11=SSHServer
+    pub cert_type: Option<u8>,
+    /// CertificateRenewMethod as u8: 0=None, 1=Notify, 2=Renew, 3=RenewAndNotify
+    pub renew_method: Option<u8>,
+}
+
+impl<'r> rocket_okapi::JsonSchema for ImportCertForm<'r> {
+    fn schema_name() -> String {
+        "ImportCertForm".to_string()
+    }
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::SingleOrVec::Single(Box::new(
+                schemars::schema::InstanceType::Object,
+            ))),
+            ..Default::default()
+        })
+    }
+}
+
+#[openapi(tag = "Certificates")]
+#[post("/certificates/import", data = "<form>")]
+/// Import a pre-issued leaf certificate; auto-imports its CA from the chain. Requires admin role.
+pub(crate) async fn import_certificate(
+    state: &State<AppState>,
+    form: rocket::form::Form<ImportCertForm<'_>>,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<Certificate>, ApiError> {
+    use crate::certs::import::{parse_cert, parse_private_key, parse_pkcs12, parse_pem_bundle, find_issuing_ca, verify_signed_by};
+
+    // 1) Obtain leaf, key, chain and the raw bytes to store.
+    let (leaf, chain, stored): (openssl::x509::X509, Vec<openssl::x509::X509>, CertData) =
+        if let Some(p12_file) = &form.p12 {
+            let bytes = read_tempfile(p12_file).await?;
+            let pwd = form.password.clone().unwrap_or_default();
+            let (leaf, _key, chain) = parse_pkcs12(&bytes, &pwd)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            (leaf, chain, CertData::Pkcs12(bytes))
+        } else {
+            let cert_f = form.cert.as_ref()
+                .ok_or_else(|| ApiError::BadRequest("cert or p12 required".into()))?;
+            let key_f = form.key.as_ref()
+                .ok_or_else(|| ApiError::BadRequest("key required with cert".into()))?;
+            let cert_bytes = read_tempfile(cert_f).await?;
+            let key_bytes = read_tempfile(key_f).await?;
+            let leaf = parse_cert(&cert_bytes)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            let key = parse_private_key(&key_bytes)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            let chain = match &form.chain {
+                Some(cf) => parse_pem_bundle(&read_tempfile(cf).await?)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+                None => Vec::new(),
+            };
+            // Repackage as PKCS#12 for uniform storage
+            let pwd = form.password.clone().unwrap_or_default();
+            let mut ca_stack = openssl::stack::Stack::new()?;
+            for c in &chain {
+                ca_stack.push(c.clone())?;
+            }
+            let p12 = openssl::pkcs12::Pkcs12::builder()
+                .name("imported")
+                .ca(ca_stack)
+                .cert(&leaf)
+                .pkey(&key)
+                .build2(&pwd)?;
+            (leaf, chain, CertData::Pkcs12(p12.to_der()?))
+        };
+
+    // 2) Resolve CA: explicit ca_id, else auto from chain.
+    let ca_id = match form.ca_id {
+        Some(id) => {
+            let ca = state.db.get_ca_by_id(id).await
+                .map_err(|_| ApiError::BadRequest(format!("CA id {id} does not exist")))?;
+            if ca.cert.is_empty() {
+                return Err(ApiError::BadRequest(
+                    "target CA has no certificate to verify against".into(),
+                ));
+            }
+            // I2: reject type mismatch when cert_type is explicitly provided
+            if let Some(ct_raw) = form.cert_type {
+                if let Ok(ct) = crate::data::enums::CertificateType::try_from(ct_raw) {
+                    let type_ok = match ct {
+                        crate::data::enums::CertificateType::TLSClient
+                        | crate::data::enums::CertificateType::TLSServer => {
+                            ca.ca_type == crate::data::enums::CAType::TLS
+                        }
+                        crate::data::enums::CertificateType::SSHClient
+                        | crate::data::enums::CertificateType::SSHServer => {
+                            ca.ca_type == crate::data::enums::CAType::SSH
+                        }
+                    };
+                    if !type_ok {
+                        return Err(ApiError::BadRequest(
+                            "certificate type does not match CA type".into(),
+                        ));
+                    }
+                }
+            }
+            let ca_x509 = crate::certs::import::parse_cert(&ca.cert)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            if !crate::certs::import::verify_signed_by(&leaf, &ca_x509) {
+                return Err(ApiError::BadRequest(
+                    "leaf is not signed by the specified CA".into(),
+                ));
+            }
+            id
+        }
+        None => {
+            let issuer = find_issuing_ca(&leaf, &chain)
+                .ok_or_else(|| ApiError::BadRequest("could not find issuing CA in chain".into()))?;
+            if !verify_signed_by(&leaf, &issuer) {
+                return Err(ApiError::BadRequest(
+                    "leaf is not signed by the provided CA chain".into(),
+                ));
+            }
+            let issuer_der = issuer.to_der()?;
+            match state.db.find_imported_ca_by_cert(&issuer_der).await? {
+                Some(existing) => existing.id,
+                None => {
+                    let cn = cn_from_cert(&issuer);
+                    let not_after_ms = asn1_to_unix_ms(issuer.not_after())?;
+                    let ca = CA {
+                        id: -1,
+                        name: crate::data::objects::Name::from(cn),
+                        created_on: 0,
+                        valid_until: not_after_ms,
+                        ca_type: CAType::TLS,
+                        cert: issuer_der,
+                        key: Vec::new(),
+                        crl_number: 0,
+                        is_imported: true,
+                    };
+                    let saved_ca = state.db.insert_ca(ca).await?;
+                    if saved_ca.has_private_key() {
+                        save_ca(&saved_ca)?;
+                    }
+                    saved_ca.id
+                }
+            }
+        }
+    };
+
+    // 3) Persist the leaf certificate.
+    let cert_type = match form.cert_type {
+        Some(v) => CertificateType::try_from(v)
+            .map_err(|_| ApiError::BadRequest(format!("invalid cert_type: {v}")))?,
+        None => CertificateType::TLSServer,
+    };
+    let renew_method = match form.renew_method {
+        Some(v) => CertificateRenewMethod::try_from(v)
+            .map_err(|_| ApiError::BadRequest(format!("invalid renew_method: {v}")))?,
+        None => CertificateRenewMethod::None,
+    };
+    let valid_until = asn1_to_unix_ms(leaf.not_after())?;
+    let cert = Certificate {
+        id: -1,
+        name: crate::data::objects::Name::from(cn_from_cert(&leaf)),
+        created_on: 0,
+        valid_until,
+        certificate_type: cert_type,
+        user_id: form.user_id,
+        renew_method,
+        ca_id,
+        revoked_at: None,
+        data: stored,
+        password: form.password.clone().unwrap_or_default(),
+    };
+    let saved = state.db.insert_user_cert(cert).await?;
+    Ok(Json(saved))
+}
+
 #[openapi(tag = "Certificates")]
 #[post("/certificates", format = "json", data = "<payload>")]
 /// Create a new certificate. Requires admin role.
@@ -442,8 +715,12 @@ async fn get_appropriate_ca(state: &State<AppState>, payload: &CreateUserCertifi
             _ => state.db.get_latest_tls_ca().await
         }
     };
-    
-    ca_result.map_err(|_| ApiError::BadRequest(format!("The CA id {:?} does not exist", payload.ca_id)))
+
+    let ca = ca_result.map_err(|_| ApiError::BadRequest(format!("The CA id {:?} does not exist", payload.ca_id)))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA was imported without a private key and cannot issue certificates".into()));
+    }
+    Ok(ca)
 }
 
 async fn ensure_ca_validity(ca: &mut CA, payload: &CreateUserCertificateRequest) -> Result<CA, ApiError> {
@@ -705,9 +982,13 @@ pub(crate) async fn revoke_certificate(
 ) -> Result<(), ApiError> {
     let cert = state.db.get_user_cert_by_id(id).await?;
     if cert.user_id != authentication._claims.id && authentication._claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
-    state.db.revoke_user_cert(id).await.map_err(|e| ApiError::Other(e.to_string()))?;
 
     let mut ca = state.db.get_ca_by_id(cert.ca_id).await.map_err(|_| ApiError::NotFound(None))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
+    }
+
+    state.db.revoke_user_cert(id).await.map_err(|e| ApiError::Other(e.to_string()))?;
     match ca.ca_type {
         CAType::TLS => {
             let (revoked_params, crl_next_update_hours) = create_crl_params(state, &ca).await?;
@@ -733,6 +1014,9 @@ pub(crate) async fn download_crl(
     format: Option<DataFormat>
 ) -> Result<DownloadResponse, ApiError> {
     let mut ca = state.db.get_ca_by_id(id).await.map_err(|_| ApiError::NotFound(None))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
+    }
     match ca.ca_type {
         CAType::TLS => {
             let crl_der = match retrieve_crl(id) {

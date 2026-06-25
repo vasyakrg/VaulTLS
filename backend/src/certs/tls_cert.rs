@@ -196,6 +196,7 @@ impl TLSCertificateBuilder {
             cert: cert.to_der()?,
             key: private_key.private_key_to_der()?,
             crl_number: 0,
+            is_imported: false,
         })
     }
 

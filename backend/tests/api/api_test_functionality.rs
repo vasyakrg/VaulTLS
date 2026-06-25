@@ -753,3 +753,304 @@ async fn test_ssh_revocation_and_krl() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn import_leaf_auto_imports_ca_case_b() {
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // CA: kept only its cert in the chain — no CA key uploaded
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Public-ish CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "B2";
+    let body = crate::common::helper::multipart_import_leaf(
+        boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1,
+    );
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::Ok);
+
+    // The CA list now contains an imported, key-less CA
+    let cas = client.get_all_ca().await.unwrap();
+    assert!(cas.iter().any(|c| c.is_imported));
+}
+
+#[tokio::test]
+async fn import_external_ca_with_key_succeeds() {
+    use rocket::http::ContentType;
+    let client = VaulTLSClient::new_authenticated().await;
+
+    let (ca_pem, key_pem) = crate::common::helper::self_signed_ca_pem("Imported CA");
+
+    let boundary = "X-BOUNDARY";
+    let body = crate::common::helper::multipart_two_files(
+        boundary,
+        "ca_cert", "ca.pem", &ca_pem,
+        "ca_key", "ca.key", &key_pem,
+    );
+
+    let response = client
+        .post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+
+    assert_eq!(response.status(), rocket::http::Status::Ok);
+}
+
+#[tokio::test]
+async fn import_leaf_with_wrong_explicit_ca_id_rejected() {
+    // Setup: client with the internal CA (id=1) already created by new_authenticated().
+    // We generate a *different* CA and sign a leaf with it, then try to import the leaf
+    // with ca_id pointing to the internal CA — this must be rejected with 400.
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // CA A: the "wrong" CA that actually signs the leaf (not registered in VaulTLS)
+    let (ca_a_pem, ca_a_key_pem) = crate::common::helper::self_signed_ca_pem("Foreign CA");
+
+    // Leaf signed by CA A
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc.wrong.com", &ca_a_pem, &ca_a_key_pem);
+
+    // ca_id=1 is the internal CA created during setup — the leaf is NOT signed by it
+    let boundary = "WRONG-CA";
+    let body = crate::common::helper::multipart_import_leaf_with_ca_id(
+        boundary,
+        &leaf_pem,
+        &leaf_key_pem,
+        &[], // no chain
+        1,   // user_id
+        1,   // ca_id: internal CA — wrong issuer
+    );
+
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+
+    assert_eq!(response.status(), Status::BadRequest);
+}
+
+#[tokio::test]
+async fn issuing_from_keyless_ca_is_rejected() {
+    use rocket::http::{ContentType, Status};
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // Import a CA WITHOUT a key
+    let (ca_pem, _ca_key_pem) = crate::common::helper::self_signed_ca_pem("Keyless CA");
+    let boundary = "B3";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client.post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let ca_id: i64 = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+
+    // Attempt to issue a normal cert against it
+    let req = vaultls::data::api::CreateUserCertificateRequest {
+        cert_name: vaultls::data::objects::Name { cn: "x".into(), ou: None },
+        validity_duration: Some(1),
+        validity_unit: Some(vaultls::data::enums::TimespanUnit::Year),
+        user_id: 1,
+        notify_user: None,
+        system_generated_password: false,
+        cert_password: Some("pw".into()),
+        cert_type: Some(vaultls::data::enums::CertificateType::TLSClient),
+        usage_limit: None,
+        renew_method: None,
+        ca_id: Some(ca_id),
+    };
+    let resp = client.post("/certificates").header(ContentType::JSON)
+        .body(serde_json::to_string(&req).unwrap()).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "Expected 400, got: {status} body={body_text}");
+    assert!(
+        body_text.contains("private key"),
+        "Expected 'private key' error message, got: {body_text}"
+    );
+}
+
+#[tokio::test]
+async fn revoke_on_keyless_ca_does_not_mark_revoked() {
+    use rocket::http::{ContentType, Status};
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // 1. Import a CA WITHOUT a private key
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Keyless Revoke CA");
+    let boundary = "KR1";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client
+        .post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let _ca_id: i64 = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+
+    // 2. Import a leaf cert signed by that CA (no key needed for revoke test)
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("revoke-test.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "KR2";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1);
+    let resp = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok, "Leaf import failed");
+    let imported: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let cert_id: i64 = imported["id"].as_i64().expect("imported cert has no id");
+
+    // 3. Attempt to revoke — must fail with 400 because CA has no private key
+    let resp = client
+        .post(format!("/certificates/{}/revoke", cert_id))
+        .dispatch()
+        .await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        Status::BadRequest,
+        "Expected 400 from revoke on keyless CA, got: {status} body={body_text}"
+    );
+    assert!(
+        body_text.contains("private key"),
+        "Expected 'private key' in error, got: {body_text}"
+    );
+
+    // 4. Verify that the cert is NOT marked as revoked in the DB
+    let resp = client.get("/certificates").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let certs: Vec<Value> = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let our_cert = certs.iter().find(|c| c["id"] == cert_id)
+        .expect("Imported cert not found in GET /certificates");
+    assert!(
+        our_cert["revoked_at"].is_null(),
+        "cert.revoked_at must be null after failed revoke, got: {}",
+        our_cert["revoked_at"]
+    );
+}
+
+// I1 — негативный тест: ca_id указывает на несуществующий CA → 400.
+// Прямо создать CA с пустым cert через HTTP API невозможно (import_ca всегда
+// требует cert-файл), поэтому покрываем смежный fail-open вектор:
+// несуществующий ca_id также не должен привязывать leaf без верификации.
+#[tokio::test]
+async fn import_leaf_with_nonexistent_ca_id_rejected() {
+    use rocket::http::{ContentType, Status};
+    let client = VaulTLSClient::new_authenticated().await;
+
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Nonexistent CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc.nonexistent.com", &ca_pem, &ca_key_pem);
+
+    // ca_id=9999 — заведомо несуществующий ID
+    let boundary = "NOEXIST-CA";
+    let body = crate::common::helper::multipart_import_leaf_with_ca_id(
+        boundary,
+        &leaf_pem,
+        &leaf_key_pem,
+        &[],
+        1,
+        9999,
+    );
+
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+
+    let status = response.status();
+    let body_text = response.into_string().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        Status::BadRequest,
+        "Expected 400 for nonexistent ca_id, got: {status} body={body_text}"
+    );
+}
+
+// I2 — негативный тест: TLS-leaf + явный SSH CA → 400 (тип не совпадает).
+// SSH CA в VaulTLS хранит только ключ (cert=[]), поэтому при ca_id на SSH CA
+// сначала срабатывает I1-проверка (пустой cert) и возвращается 400.
+// Чтобы изолированно покрыть I2, используем внешний TLS CA с cert — но SSH ca_type.
+// Поскольку в тест-харнессе нельзя создать CA с SSH ca_type + непустым cert через API,
+// тест покрывает оба пути (I1 + I2 вместе): SSH CA → cert пустой → 400.
+// Для I2 in-isolation нужен direct DB-insert, которого в харнессе нет.
+#[tokio::test]
+async fn import_leaf_with_ca_type_mismatch_rejected() {
+    use rocket::http::{ContentType, Status};
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // Создаём SSH CA (id=2): cert=[], key=<ssh-privkey>
+    client.create_ssh_ca().await.unwrap();
+
+    // Генерируем TLS-leaf подписанный внешним TLS CA
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Type Mismatch CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc.mismatch.com", &ca_pem, &ca_key_pem);
+
+    // Строим multipart без chain-поля (иначе parse_pem_bundle([]) → ошибка),
+    // cert_type=1 (TLSServer), ca_id=2 (SSH CA)
+    let boundary = "TYPE-MISMATCH";
+    let mut body: Vec<u8> = Vec::new();
+    // cert
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"cert\"; filename=\"leaf.pem\"\r\n\r\n");
+    body.extend_from_slice(&leaf_pem);
+    body.extend_from_slice(b"\r\n");
+    // key
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"key\"; filename=\"leaf.key\"\r\n\r\n");
+    body.extend_from_slice(&leaf_key_pem);
+    body.extend_from_slice(b"\r\n");
+    // user_id
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"user_id\"\r\n\r\n");
+    body.extend_from_slice(b"1");
+    body.extend_from_slice(b"\r\n");
+    // ca_id = 2 (SSH CA)
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"ca_id\"\r\n\r\n");
+    body.extend_from_slice(b"2");
+    body.extend_from_slice(b"\r\n");
+    // cert_type = 1 (TLSServer)
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"cert_type\"\r\n\r\n");
+    body.extend_from_slice(b"1");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+
+    let status = response.status();
+    let body_text = response.into_string().await.unwrap_or_default();
+    // SSH CA всегда имеет пустой cert → срабатывает I1 (пустой cert → 400)
+    // или I2 (type mismatch → 400) — в обоих случаях 400 корректен
+    assert_eq!(
+        status,
+        Status::BadRequest,
+        "Expected 400 for TLS cert + SSH CA, got: {status} body={body_text}"
+    );
+    assert!(
+        body_text.contains("CA") || body_text.contains("type"),
+        "Expected CA/type error, got: {body_text}"
+    );
+}
