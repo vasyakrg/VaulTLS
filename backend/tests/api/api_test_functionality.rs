@@ -755,6 +755,32 @@ async fn test_ssh_revocation_and_krl() -> Result<()> {
 }
 
 #[tokio::test]
+async fn import_leaf_auto_imports_ca_case_b() {
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // CA: kept only its cert in the chain — no CA key uploaded
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Public-ish CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "B2";
+    let body = crate::common::helper::multipart_import_leaf(
+        boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1,
+    );
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::Ok);
+
+    // The CA list now contains an imported, key-less CA
+    let cas = client.get_all_ca().await.unwrap();
+    assert!(cas.iter().any(|c| c.is_imported));
+}
+
+#[tokio::test]
 async fn import_external_ca_with_key_succeeds() {
     use rocket::http::ContentType;
     let client = VaulTLSClient::new_authenticated().await;
