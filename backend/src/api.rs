@@ -414,10 +414,11 @@ fn cn_from_cert(cert: &openssl::x509::X509) -> String {
         .unwrap_or_else(|| "Imported CA".to_string())
 }
 
-fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> i64 {
-    let epoch = openssl::asn1::Asn1Time::from_unix(0).unwrap();
-    let diff = epoch.diff(t).unwrap();
-    ((diff.days as i64) * 86_400 + diff.secs as i64) * 1000
+fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> Result<i64, ApiError> {
+    let epoch = openssl::asn1::Asn1Time::from_unix(0).map_err(ApiError::from)?;
+    let diff = epoch.diff(t).map_err(ApiError::from)?;
+    let secs = (diff.days as i64) * 86_400 + (diff.secs as i64);
+    Ok(secs * 1000)
 }
 
 #[openapi(tag = "Certificates")]
@@ -443,7 +444,7 @@ pub(crate) async fn import_ca(
     };
 
     let cn = form.name.clone().unwrap_or_else(|| cn_from_cert(&cert));
-    let not_after_ms = asn1_to_unix_ms(cert.not_after());
+    let not_after_ms = asn1_to_unix_ms(cert.not_after())?;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
