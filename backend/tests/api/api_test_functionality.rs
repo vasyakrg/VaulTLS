@@ -753,3 +753,27 @@ async fn test_ssh_revocation_and_krl() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn import_external_ca_with_key_succeeds() {
+    use rocket::http::ContentType;
+    let client = VaulTLSClient::new_authenticated().await;
+
+    let (ca_pem, key_pem) = crate::common::helper::self_signed_ca_pem("Imported CA");
+
+    let boundary = "X-BOUNDARY";
+    let body = crate::common::helper::multipart_two_files(
+        boundary,
+        "ca_cert", "ca.pem", &ca_pem,
+        "ca_key", "ca.key", &key_pem,
+    );
+
+    let response = client
+        .post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+
+    assert_eq!(response.status(), rocket::http::Status::Ok);
+}

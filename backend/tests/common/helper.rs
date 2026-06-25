@@ -3,6 +3,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use ssh_key::{Certificate, PrivateKey};
 use zip::ZipArchive;
+use openssl::asn1::Asn1Time;
+use openssl::bn::BigNum;
+use openssl::ec::{EcGroup, EcKey};
+use openssl::hash::MessageDigest;
+use openssl::nid::Nid;
+use openssl::pkey::PKey;
+use openssl::x509::{X509Builder, X509NameBuilder};
+use openssl::x509::extension::BasicConstraints;
 
 pub(crate) fn get_timestamp_ms(from_now_in_years: u64) -> i64 {
     let time = SystemTime::now() + Duration::from_secs(60 * 60 * 24 * 365 * from_now_in_years);
@@ -39,4 +47,60 @@ pub fn extract_ssh_cert_key_bundle(zip_data: &[u8]) -> Result<(Certificate, Priv
     let key = ssh_key::PrivateKey::from_openssh(&key_str)?;
 
     Ok((cert, key))
+}
+
+/// Generate a self-signed CA cert+key PEM pair with given CN.
+pub(crate) fn self_signed_ca_pem(cn: &str) -> (Vec<u8>, Vec<u8>) {
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let ec_key = EcKey::generate(&group).unwrap();
+    let key = PKey::from_ec_key(ec_key).unwrap();
+
+    let mut name_builder = X509NameBuilder::new().unwrap();
+    name_builder.append_entry_by_text("CN", cn).unwrap();
+    let name = name_builder.build();
+
+    let mut builder = X509Builder::new().unwrap();
+    builder.set_version(2).unwrap();
+    let serial = BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap();
+    builder.set_serial_number(&serial).unwrap();
+    builder.set_subject_name(&name).unwrap();
+    builder.set_issuer_name(&name).unwrap();
+    builder.set_pubkey(&key).unwrap();
+    builder.set_not_before(&Asn1Time::days_from_now(0).unwrap()).unwrap();
+    builder.set_not_after(&Asn1Time::days_from_now(365).unwrap()).unwrap();
+    builder.append_extension(BasicConstraints::new().critical().ca().build().unwrap()).unwrap();
+    builder.sign(&key, MessageDigest::sha256()).unwrap();
+    let cert = builder.build();
+
+    let cert_pem = cert.to_pem().unwrap();
+    let key_pem = key.private_key_to_pem_pkcs8().unwrap();
+    (cert_pem, key_pem)
+}
+
+/// Build a valid multipart/form-data body with two file fields.
+pub(crate) fn multipart_two_files(
+    boundary: &str,
+    name1: &str, filename1: &str, data1: &[u8],
+    name2: &str, filename2: &str, data2: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    // Part 1
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n", name1, filename1).as_bytes()
+    );
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(data1);
+    body.extend_from_slice(b"\r\n");
+    // Part 2
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n", name2, filename2).as_bytes()
+    );
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(data2);
+    body.extend_from_slice(b"\r\n");
+    // Closing boundary
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    body
 }

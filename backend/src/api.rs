@@ -376,6 +376,96 @@ pub(crate) async fn create_ca(
     save_ca(&ca)?;
     Ok(Json(ca.id))
 }
+
+#[derive(rocket::form::FromForm)]
+pub struct ImportCaForm<'r> {
+    pub ca_cert: rocket::fs::TempFile<'r>,
+    pub ca_key: Option<rocket::fs::TempFile<'r>>,
+    pub name: Option<String>,
+}
+
+impl<'r> rocket_okapi::JsonSchema for ImportCaForm<'r> {
+    fn schema_name() -> String {
+        "ImportCaForm".to_string()
+    }
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::SingleOrVec::Single(Box::new(
+                schemars::schema::InstanceType::Object,
+            ))),
+            ..Default::default()
+        })
+    }
+}
+
+async fn read_tempfile(file: &rocket::fs::TempFile<'_>) -> Result<Vec<u8>, ApiError> {
+    use rocket::tokio::io::AsyncReadExt;
+    let mut stream = file.open().await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(buf)
+}
+
+fn cn_from_cert(cert: &openssl::x509::X509) -> String {
+    cert.subject_name()
+        .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .and_then(|e| e.data().as_utf8().ok().map(|s| s.to_string()))
+        .unwrap_or_else(|| "Imported CA".to_string())
+}
+
+fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> i64 {
+    let epoch = openssl::asn1::Asn1Time::from_unix(0).unwrap();
+    let diff = epoch.diff(t).unwrap();
+    ((diff.days as i64) * 86_400 + diff.secs as i64) * 1000
+}
+
+#[openapi(tag = "Certificates")]
+#[post("/certificates/ca/import", data = "<form>")]
+/// Import an existing CA certificate (optionally with its private key). Requires admin role.
+pub(crate) async fn import_ca(
+    state: &State<AppState>,
+    form: rocket::form::Form<ImportCaForm<'_>>,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<i64>, ApiError> {
+    use crate::certs::import::{parse_cert, parse_private_key};
+
+    let cert_bytes = read_tempfile(&form.ca_cert).await?;
+    let cert = parse_cert(&cert_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let key_der = match &form.ca_key {
+        Some(f) => {
+            let kb = read_tempfile(f).await?;
+            let key = parse_private_key(&kb).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            key.private_key_to_der().map_err(ApiError::from)?
+        }
+        None => Vec::new(),
+    };
+
+    let cn = form.name.clone().unwrap_or_else(|| cn_from_cert(&cert));
+    let not_after_ms = asn1_to_unix_ms(cert.not_after());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let mut ca = crate::certs::common::CA {
+        id: -1,
+        name: crate::data::objects::Name::from(cn),
+        created_on: now_ms,
+        valid_until: not_after_ms,
+        ca_type: crate::data::enums::CAType::TLS,
+        cert: cert.to_der().map_err(ApiError::from)?,
+        key: key_der,
+        crl_number: 0,
+        is_imported: true,
+    };
+
+    ca = state.db.insert_ca(ca).await?;
+    save_ca(&ca)?;
+    Ok(Json(ca.id))
+}
+
 #[openapi(tag = "Certificates")]
 #[post("/certificates", format = "json", data = "<payload>")]
 /// Create a new certificate. Requires admin role.
