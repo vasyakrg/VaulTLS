@@ -406,6 +406,7 @@
       :title="$t('acme.deactivateModal.title')"
       :submitLabel="$t('acme.deactivateModal.deactivate')"
       submitSeverity="danger"
+      submit-id="ConfirmDeleteButton"
       @submit="deleteAccount"
       @cancel="closeDeleteModal"
       width="400px"

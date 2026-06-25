@@ -10,6 +10,7 @@
     :closeOnEscape="true"
     :style="{ width: width }"
     @show="onShow"
+    @hide="onHide"
     @keydown="onKeydown"
   >
     <slot />
@@ -23,6 +24,7 @@
           @click="handleCancel"
         />
         <Button
+          :id="submitId"
           :label="resolvedSubmitLabel"
           :icon="submitIcon"
           :disabled="submitDisabled || loading"
@@ -36,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, useSlots } from 'vue'
+import { computed, ref, useSlots } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
@@ -52,6 +54,7 @@ const props = withDefaults(
     submitSeverity?: string
     hideFooter?: boolean
     width?: string
+    submitId?: string
   }>(),
   {
     submitIcon: undefined,
@@ -60,6 +63,7 @@ const props = withDefaults(
     submitSeverity: undefined,
     hideFooter: false,
     width: '480px',
+    submitId: undefined,
   },
 )
 
@@ -72,21 +76,29 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const slots = useSlots()
 
+const isSubmitting = ref(false)
+
 const resolvedSubmitLabel = computed(() => props.submitLabel ?? t('common.save'))
 
 const onVisibilityChange = (v: boolean) => {
-  if (!v) {
-    emit('cancel')
-  }
   emit('update:visible', v)
 }
 
+// Single cancel path: fired by PrimeVue's @hide (covers X, Esc, mask, Cancel button)
+// Submit path resets the flag so cancel is not emitted after submit.
+const onHide = () => {
+  if (!isSubmitting.value) {
+    emit('cancel')
+  }
+  isSubmitting.value = false
+}
+
 const handleCancel = () => {
-  emit('cancel')
   emit('update:visible', false)
 }
 
 const handleSubmit = () => {
+  isSubmitting.value = true
   emit('submit')
 }
 
