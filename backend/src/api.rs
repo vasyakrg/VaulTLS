@@ -692,8 +692,12 @@ async fn get_appropriate_ca(state: &State<AppState>, payload: &CreateUserCertifi
             _ => state.db.get_latest_tls_ca().await
         }
     };
-    
-    ca_result.map_err(|_| ApiError::BadRequest(format!("The CA id {:?} does not exist", payload.ca_id)))
+
+    let ca = ca_result.map_err(|_| ApiError::BadRequest(format!("The CA id {:?} does not exist", payload.ca_id)))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA was imported without a private key and cannot issue certificates".into()));
+    }
+    Ok(ca)
 }
 
 async fn ensure_ca_validity(ca: &mut CA, payload: &CreateUserCertificateRequest) -> Result<CA, ApiError> {
@@ -958,6 +962,9 @@ pub(crate) async fn revoke_certificate(
     state.db.revoke_user_cert(id).await.map_err(|e| ApiError::Other(e.to_string()))?;
 
     let mut ca = state.db.get_ca_by_id(cert.ca_id).await.map_err(|_| ApiError::NotFound(None))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
+    }
     match ca.ca_type {
         CAType::TLS => {
             let (revoked_params, crl_next_update_hours) = create_crl_params(state, &ca).await?;
@@ -983,6 +990,9 @@ pub(crate) async fn download_crl(
     format: Option<DataFormat>
 ) -> Result<DownloadResponse, ApiError> {
     let mut ca = state.db.get_ca_by_id(id).await.map_err(|_| ApiError::NotFound(None))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
+    }
     match ca.ca_type {
         CAType::TLS => {
             let crl_der = match retrieve_crl(id) {

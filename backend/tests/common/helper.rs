@@ -215,6 +215,23 @@ pub(crate) fn multipart_import_leaf_with_ca_id(
     body
 }
 
+/// Build a multipart/form-data body with a single file field.
+pub(crate) fn multipart_one_file(
+    boundary: &str,
+    name: &str, filename: &str, data: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n", name, filename).as_bytes()
+    );
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(data);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    body
+}
+
 /// Build a valid multipart/form-data body with two file fields.
 pub(crate) fn multipart_two_files(
     boundary: &str,

@@ -838,3 +838,43 @@ async fn import_leaf_with_wrong_explicit_ca_id_rejected() {
 
     assert_eq!(response.status(), Status::BadRequest);
 }
+
+#[tokio::test]
+async fn issuing_from_keyless_ca_is_rejected() {
+    use rocket::http::{ContentType, Status};
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // Import a CA WITHOUT a key
+    let (ca_pem, _ca_key_pem) = crate::common::helper::self_signed_ca_pem("Keyless CA");
+    let boundary = "B3";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client.post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let ca_id: i64 = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+
+    // Attempt to issue a normal cert against it
+    let req = vaultls::data::api::CreateUserCertificateRequest {
+        cert_name: vaultls::data::objects::Name { cn: "x".into(), ou: None },
+        validity_duration: Some(1),
+        validity_unit: Some(vaultls::data::enums::TimespanUnit::Year),
+        user_id: 1,
+        notify_user: None,
+        system_generated_password: false,
+        cert_password: Some("pw".into()),
+        cert_type: Some(vaultls::data::enums::CertificateType::TLSClient),
+        usage_limit: None,
+        renew_method: None,
+        ca_id: Some(ca_id),
+    };
+    let resp = client.post("/certificates").header(ContentType::JSON)
+        .body(serde_json::to_string(&req).unwrap()).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "Expected 400, got: {status} body={body_text}");
+    assert!(
+        body_text.contains("private key"),
+        "Expected 'private key' error message, got: {body_text}"
+    );
+}
