@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Result};
 use openssl::pkcs12::Pkcs12;
 use openssl::pkey::{PKey, Private};
-use openssl::stack::Stack;
-use openssl::x509::store::X509StoreBuilder;
-use openssl::x509::{X509, X509StoreContext};
+use openssl::x509::X509;
 
 /// Parse an X.509 certificate, trying PEM first then DER.
 pub fn parse_cert(bytes: &[u8]) -> Result<X509> {
@@ -29,14 +27,18 @@ pub fn parse_pkcs12(bytes: &[u8], password: &str) -> Result<(X509, Option<PKey<P
     Ok((leaf, parsed.pkey, chain))
 }
 
-/// Verify `leaf` is directly signed by `issuer` using a one-entry trust store.
+/// Verify that `leaf` was directly signed by `issuer`'s key.
+///
+/// This checks ONLY the cryptographic signature on `leaf` against the issuer's
+/// public key — not a full X.509 path validation. Full path validation
+/// (`X509StoreContext::verify_cert`) additionally requires building a chain up
+/// to a trusted self-signed root and checks validity periods/purpose, which
+/// fails for intermediate or imported (non-self-signed) issuers even when the
+/// signature is correct. For "is this leaf signed by this CA?" the direct
+/// signature check is what we want. Fail-closed: any error returns false.
 pub fn verify_signed_by(leaf: &X509, issuer: &X509) -> bool {
-    let Ok(mut builder) = X509StoreBuilder::new() else { return false };
-    if builder.add_cert(issuer.clone()).is_err() { return false }
-    let store = builder.build();
-    let Ok(empty) = Stack::new() else { return false };
-    let Ok(mut ctx) = X509StoreContext::new() else { return false };
-    ctx.init(&store, leaf, &empty, |c| c.verify_cert()).unwrap_or(false)
+    let Ok(pubkey) = issuer.public_key() else { return false };
+    leaf.verify(&pubkey).unwrap_or(false)
 }
 
 /// Find the cert in `chain` that issued `leaf`: match AKI->SKI, fallback to DN.
@@ -187,6 +189,18 @@ mod tests {
         let (leaf, _) = leaf_signed_by("leaf.example.com", &ca, &ca_key);
         assert!(verify_signed_by(&leaf, &ca));
         assert!(!verify_signed_by(&leaf, &other));
+    }
+
+    #[test]
+    fn verify_signed_by_accepts_intermediate_non_self_signed_issuer() {
+        // Regression: a leaf signed by a NON-self-signed intermediate must be
+        // accepted by signature check alone, without a trusted root in scope.
+        // Full path validation used to reject this case.
+        let (root, root_key) = self_signed_ca("Root CA");
+        let (intermediate, intermediate_key) = leaf_signed_by("Intermediate CA", &root, &root_key);
+        let (leaf, _) = leaf_signed_by("leaf.example.com", &intermediate, &intermediate_key);
+        assert!(verify_signed_by(&leaf, &intermediate));
+        assert!(!verify_signed_by(&leaf, &root));
     }
 
     #[test]
