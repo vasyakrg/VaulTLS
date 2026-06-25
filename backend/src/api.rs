@@ -548,7 +548,20 @@ pub(crate) async fn import_certificate(
 
     // 2) Resolve CA: explicit ca_id, else auto from chain.
     let ca_id = match form.ca_id {
-        Some(id) => id,
+        Some(id) => {
+            let ca = state.db.get_ca_by_id(id).await
+                .map_err(|_| ApiError::BadRequest(format!("CA id {id} does not exist")))?;
+            if !ca.cert.is_empty() {
+                let ca_x509 = crate::certs::import::parse_cert(&ca.cert)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+                if !crate::certs::import::verify_signed_by(&leaf, &ca_x509) {
+                    return Err(ApiError::BadRequest(
+                        "leaf is not signed by the specified CA".into(),
+                    ));
+                }
+            }
+            id
+        }
         None => {
             let issuer = find_issuing_ca(&leaf, &chain)
                 .ok_or_else(|| ApiError::BadRequest("could not find issuing CA in chain".into()))?;
@@ -575,7 +588,9 @@ pub(crate) async fn import_certificate(
                         is_imported: true,
                     };
                     let saved_ca = state.db.insert_ca(ca).await?;
-                    save_ca(&saved_ca)?;
+                    if saved_ca.has_private_key() {
+                        save_ca(&saved_ca)?;
+                    }
                     saved_ca.id
                 }
             }

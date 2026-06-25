@@ -163,6 +163,58 @@ pub(crate) fn multipart_import_leaf(
     body
 }
 
+/// Build a multipart body for POST /certificates/import with explicit ca_id field.
+/// Fields: cert (file), key (file), chain (file), user_id (text), ca_id (text)
+pub(crate) fn multipart_import_leaf_with_ca_id(
+    boundary: &str,
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    chain_pem: &[u8],
+    user_id: i64,
+    ca_id: i64,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+
+    // cert
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"cert\"; filename=\"leaf.pem\"\r\n");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(cert_pem);
+    body.extend_from_slice(b"\r\n");
+
+    // key
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"key\"; filename=\"leaf.key\"\r\n");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(key_pem);
+    body.extend_from_slice(b"\r\n");
+
+    // chain
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"chain\"; filename=\"chain.pem\"\r\n");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(chain_pem);
+    body.extend_from_slice(b"\r\n");
+
+    // user_id (text field)
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"user_id\"\r\n");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(user_id.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    // ca_id (text field)
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"ca_id\"\r\n");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(ca_id.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+
+    // closing
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    body
+}
+
 /// Build a valid multipart/form-data body with two file fields.
 pub(crate) fn multipart_two_files(
     boundary: &str,

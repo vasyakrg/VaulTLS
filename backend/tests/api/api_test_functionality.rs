@@ -803,3 +803,38 @@ async fn import_external_ca_with_key_succeeds() {
 
     assert_eq!(response.status(), rocket::http::Status::Ok);
 }
+
+#[tokio::test]
+async fn import_leaf_with_wrong_explicit_ca_id_rejected() {
+    // Setup: client with the internal CA (id=1) already created by new_authenticated().
+    // We generate a *different* CA and sign a leaf with it, then try to import the leaf
+    // with ca_id pointing to the internal CA — this must be rejected with 400.
+    let client = VaulTLSClient::new_authenticated().await;
+
+    // CA A: the "wrong" CA that actually signs the leaf (not registered in VaulTLS)
+    let (ca_a_pem, ca_a_key_pem) = crate::common::helper::self_signed_ca_pem("Foreign CA");
+
+    // Leaf signed by CA A
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc.wrong.com", &ca_a_pem, &ca_a_key_pem);
+
+    // ca_id=1 is the internal CA created during setup — the leaf is NOT signed by it
+    let boundary = "WRONG-CA";
+    let body = crate::common::helper::multipart_import_leaf_with_ca_id(
+        boundary,
+        &leaf_pem,
+        &leaf_key_pem,
+        &[], // no chain
+        1,   // user_id
+        1,   // ca_id: internal CA — wrong issuer
+    );
+
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+
+    assert_eq!(response.status(), Status::BadRequest);
+}
