@@ -448,8 +448,8 @@ pub(crate) async fn import_ca(
     let not_after_ms = asn1_to_unix_ms(cert.not_after())?;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
 
     let mut ca = crate::certs::common::CA {
         id: -1,
@@ -551,14 +551,37 @@ pub(crate) async fn import_certificate(
         Some(id) => {
             let ca = state.db.get_ca_by_id(id).await
                 .map_err(|_| ApiError::BadRequest(format!("CA id {id} does not exist")))?;
-            if !ca.cert.is_empty() {
-                let ca_x509 = crate::certs::import::parse_cert(&ca.cert)
-                    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-                if !crate::certs::import::verify_signed_by(&leaf, &ca_x509) {
-                    return Err(ApiError::BadRequest(
-                        "leaf is not signed by the specified CA".into(),
-                    ));
+            if ca.cert.is_empty() {
+                return Err(ApiError::BadRequest(
+                    "target CA has no certificate to verify against".into(),
+                ));
+            }
+            // I2: reject type mismatch when cert_type is explicitly provided
+            if let Some(ct_raw) = form.cert_type {
+                if let Ok(ct) = crate::data::enums::CertificateType::try_from(ct_raw) {
+                    let type_ok = match ct {
+                        crate::data::enums::CertificateType::TLSClient
+                        | crate::data::enums::CertificateType::TLSServer => {
+                            ca.ca_type == crate::data::enums::CAType::TLS
+                        }
+                        crate::data::enums::CertificateType::SSHClient
+                        | crate::data::enums::CertificateType::SSHServer => {
+                            ca.ca_type == crate::data::enums::CAType::SSH
+                        }
+                    };
+                    if !type_ok {
+                        return Err(ApiError::BadRequest(
+                            "certificate type does not match CA type".into(),
+                        ));
+                    }
                 }
+            }
+            let ca_x509 = crate::certs::import::parse_cert(&ca.cert)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            if !crate::certs::import::verify_signed_by(&leaf, &ca_x509) {
+                return Err(ApiError::BadRequest(
+                    "leaf is not signed by the specified CA".into(),
+                ));
             }
             id
         }
