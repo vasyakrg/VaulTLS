@@ -1,11 +1,13 @@
 <!-- src/App.vue -->
 <template>
+  <Toast />
   <router-view />
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import { useThemeStore } from '@/stores/theme';
+import Toast from 'primevue/toast';
 
 const themeStore = useThemeStore();
 

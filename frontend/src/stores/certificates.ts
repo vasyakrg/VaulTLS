@@ -7,6 +7,7 @@ import {
     createCertificate,
     deleteCertificate,
     revokeCertificate,
+    importCertificate,
 } from '../api/certificates';
 import type {CertificateRequirements} from "@/types/CertificateRequirements.ts";
 import axios from 'axios';
@@ -115,6 +116,26 @@ export const useCertificateStore = defineStore('certificate', {
                     this.error = 'Failed to delete the certificate';
                 }
                 console.error(err);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        // Import a certificate via multipart form and refresh the list
+        async importCertificate(form: FormData): Promise<void> {
+            this.loading = true;
+            this.error = null;
+            try {
+                await importCertificate(form);
+                await this.fetchCertificates();
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to import the certificate: ' + err.response?.data?.error;
+                } else {
+                    this.error = 'Failed to import the certificate';
+                }
+                console.error(err);
+                throw err;
             } finally {
                 this.loading = false;
             }

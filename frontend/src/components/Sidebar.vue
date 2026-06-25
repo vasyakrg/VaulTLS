@@ -1,281 +1,288 @@
 <template>
-  <div>
-    <!-- Always visible toggle button when sidebar is hidden -->
-    <button
-        v-if="!visible"
-        class="sidebar-toggle btn btn-primary d-lg-none"
-        @click="toggleSidebar"
-        :style="{ left: '10px' }"
-    >
-      <i class="bi bi-list"></i>
-    </button>
-
-    <!-- Sidebar Backdrop (Mobile Only) -->
-    <div
-        class="sidebar-backdrop"
-        :class="{ 'd-block': visible && isMobile }"
-        @click="toggleSidebar"
-    ></div>
-
-    <!-- Sidebar Content -->
-    <div
-        class="sidebar shadow-lg rounded-end d-flex flex-column"
-        :class="{ 'sidebar-visible': visible, 'sidebar-hidden': !visible }"
-    >
-      <ProfileCard />
-
-      <div class="flex-grow-1 overflow-auto mt-4">
-        <ul class="nav flex-column flex-grow-1">
-          <li class="nav-item mb-2">
-            <a
-                href="#"
-                class="nav-link d-flex align-items-center gap-2"
-                :class="{ active: activeRouteName === 'Overview' }"
-                @click.prevent="goToRoute('Overview')"
-            >
-              {{ $t('sidebar.overview') }}
-            </a>
-          </li>
-          <li class="nav-item mb-2">
-            <a
-                href="#"
-                class="nav-link d-flex align-items-center gap-2"
-                :class="{ active: activeRouteName === 'CA' }"
-                @click.prevent="goToRoute('CA')"
-            >
-              {{ $t('sidebar.ca') }}
-            </a>
-          </li>
-          <li v-if="isAdmin" class="nav-item mb-2">
-            <a
-                href="#"
-                class="nav-link d-flex align-items-center gap-2"
-                :class="{ active: activeRouteName === 'Users' }"
-                @click.prevent="goToRoute('Users')"
-            >
-              {{ $t('sidebar.users') }}
-            </a>
-          </li>
-          <li v-if="isAdmin && settingsStore.settings?.acme.enabled" class="nav-item mb-2">
-            <a
-                href="#"
-                class="nav-link d-flex align-items-center gap-2"
-                :class="{ active: activeRouteName === 'ACME' }"
-                @click.prevent="goToRoute('ACME')"
-            >
-              {{ $t('sidebar.acme') }}
-            </a>
-          </li>
-          <li class="nav-item">
-            <a
-                href="#"
-                class="nav-link d-flex align-items-center gap-2"
-                :class="{ active: activeRouteName === 'Settings' }"
-                @click.prevent="goToRoute('Settings')"
-            >
-              {{ $t('sidebar.settings') }}
-            </a>
-          </li>
-        </ul>
-      </div>
-      <div class="p-3">
-        <div class="p-3 border-top border-secondary-subtle mt-auto">
-          <!-- 1. Logout: Centered with an icon -->
-          <div class="d-flex justify-content-center mb-3">
-            <a
-                href="#"
-                class="nav-link d-flex align-items-center gap-2 fw-semibold"
-                @click="handleLogout"
-            >
-              <i class="bi bi-box-arrow-right"></i>
-              {{ $t('sidebar.logout') }}
-            </a>
-          </div>
-
-          <!-- 2. Controls Row: Theme & Language Side-by-Side to save vertical space -->
-          <div class="d-flex align-items-center justify-content-between gap-2 pt-2">
-            <!-- Theme Toggle Group -->
-            <div class="d-flex justify-content-center gap-2 mt-2">
-              <button
-                  class="btn btn-sm"
-                  :class="themeStore.theme === 'light' ? 'btn-primary' : 'btn-outline-secondary'"
-                  @click="themeStore.setTheme('light')"
-                  :title="$t('sidebar.lightMode')"
-              >
-                <i class="bi bi-sun-fill"></i>
-              </button>
-              <button
-                  class="btn btn-sm"
-                  :class="themeStore.theme === 'dark' ? 'btn-primary' : 'btn-outline-secondary'"
-                  @click="themeStore.setTheme('dark')"
-                  :title="$t('sidebar.darkMode')"
-              >
-                <i class="bi bi-moon-fill"></i>
-              </button>
-              <button
-                  class="btn btn-sm"
-                  :class="themeStore.theme === 'auto' ? 'btn-primary' : 'btn-outline-secondary'"
-                  @click="themeStore.setTheme('auto')"
-                  :title="$t('sidebar.autoMode')"
-              >
-                <i class="bi bi-circle-half"></i>
-              </button>
-            </div>
-
-            <!-- Language Selector -->
-            <div :data-bs-theme="themeStore.theme">
-              <select
-                  class="form-select form-select-sm text-reset"
-                  style="max-width: 100px; background-color: rgba(170, 170, 170, 0.15); border: 1px solid rgba(170, 170, 170, 0.25);"
-                  :value="locale"
-                  @change="changeLocale(($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="(label, code) in SUPPORTED_LOCALES" :key="code" :value="code">
-                  {{ label }}
-                </option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div class="text-center text-muted small pb-3">
-          {{ $t('sidebar.version', { version: setupStore.version }) }}
-        </div>
-      </div>
+  <aside :class="['vt-sidebar', { collapsed }]">
+    <div class="vt-brand">
+      <span class="vt-logo">🔐</span>
+      <span v-if="!collapsed">VaulTLS</span>
     </div>
-  </div>
+
+    <nav class="vt-nav">
+      <RouterLink
+        v-for="item in items"
+        :key="item.name"
+        :to="item.to"
+        class="vt-nav-item"
+        v-tooltip.right="collapsed ? $t(item.label) : ''"
+      >
+        <i :class="item.icon" />
+        <span v-if="!collapsed">{{ $t(item.label) }}</span>
+      </RouterLink>
+    </nav>
+
+    <div class="vt-foot">
+      <!-- Theme toggle -->
+      <div class="vt-theme-row" :class="{ 'vt-theme-row--collapsed': collapsed }">
+        <button
+          class="vt-theme-btn"
+          :class="{ active: themeStore.theme === 'light' }"
+          @click="themeStore.setTheme('light')"
+          v-tooltip.right="collapsed ? $t('sidebar.lightMode') : ''"
+          :title="!collapsed ? $t('sidebar.lightMode') : ''"
+        >
+          <i class="pi pi-sun" />
+        </button>
+        <button
+          class="vt-theme-btn"
+          :class="{ active: themeStore.theme === 'dark' }"
+          @click="themeStore.setTheme('dark')"
+          v-tooltip.right="collapsed ? $t('sidebar.darkMode') : ''"
+          :title="!collapsed ? $t('sidebar.darkMode') : ''"
+        >
+          <i class="pi pi-moon" />
+        </button>
+        <button
+          v-if="!collapsed"
+          class="vt-theme-btn"
+          :class="{ active: themeStore.theme === 'auto' }"
+          @click="themeStore.setTheme('auto')"
+          :title="$t('sidebar.autoMode')"
+        >
+          <i class="pi pi-desktop" />
+        </button>
+      </div>
+
+      <!-- Language selector -->
+      <div v-if="!collapsed" class="vt-lang-row">
+        <select
+          class="vt-lang-select"
+          :value="locale"
+          @change="changeLocale(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="(label, code) in SUPPORTED_LOCALES" :key="code" :value="code">
+            {{ label }}
+          </option>
+        </select>
+      </div>
+
+      <!-- Logout -->
+      <button class="vt-logout" @click="handleLogout" v-tooltip.right="collapsed ? $t('sidebar.logout') : ''">
+        <i class="pi pi-sign-out" />
+        <span v-if="!collapsed">{{ $t('sidebar.logout') }}</span>
+      </button>
+
+      <!-- Version -->
+      <div v-if="!collapsed" class="vt-version">
+        {{ $t('sidebar.version', { version: setupStore.version }) }}
+      </div>
+
+      <!-- Profile card -->
+      <ProfileCard v-if="!collapsed" />
+
+      <!-- Collapse toggle -->
+      <button class="vt-collapse" @click="toggle">
+        <i :class="collapsed ? 'pi pi-angle-right' : 'pi pi-angle-left'" />
+      </button>
+    </div>
+  </aside>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { useI18n } from 'vue-i18n';
-import ProfileCard from './ProfileCard.vue';
-import { UserRole } from "@/types/User.ts";
-import { useAuthStore } from "@/stores/auth.ts";
-import {useSettingsStore} from "@/stores/settings.ts";
-import {useSetupStore} from "@/stores/setup.ts";
-import {useThemeStore} from "@/stores/theme.ts";
-import { SUPPORTED_LOCALES } from '@/plugins/i18n';
+import { computed } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import Tooltip from 'primevue/tooltip'
+import ProfileCard from '@/components/ProfileCard.vue'
+import { useSidebar } from '@/composables/useSidebar'
+import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
+import { useSetupStore } from '@/stores/setup'
+import { useThemeStore } from '@/stores/theme'
+import { SUPPORTED_LOCALES } from '@/plugins/i18n'
 
-defineProps({
-  currentTab: String,
-  visible: Boolean
-});
-const emit = defineEmits(['change-tab', 'toggle-sidebar']);
+const vTooltip = Tooltip
 
-const route = useRoute();
-const router = useRouter();
-const authStore = useAuthStore();
-const settingsStore = useSettingsStore();
-const setupStore = useSetupStore();
-const themeStore = useThemeStore();
-const isMobile = ref(false);
-const { locale } = useI18n();
-
-const activeRouteName = computed(() => route.name);
-const isAdmin = computed(() => authStore.current_user?.role === UserRole.Admin);
+const { collapsed, toggle } = useSidebar()
+const auth = useAuthStore()
+const settingsStore = useSettingsStore()
+const setupStore = useSetupStore()
+const themeStore = useThemeStore()
+const router = useRouter()
+const { locale } = useI18n()
 
 const changeLocale = (lang: string) => {
-  locale.value = lang;
-  localStorage.setItem('locale', lang);
-};
-
-const goToRoute = (name: string) => {
-  emit('change-tab', name);
-  router.push({ name });
-};
+  locale.value = lang
+  localStorage.setItem('locale', lang)
+}
 
 const handleLogout = async () => {
-  await authStore.logout();
-  goToRoute('Login');
-};
+  await auth.logout()
+  router.push({ name: 'Login' })
+}
 
-const toggleSidebar = () => {
-  emit('toggle-sidebar');
-};
-
-const checkIfMobile = () => {
-  isMobile.value = window.innerWidth < 992;
-};
-
-onMounted(async () => {
-  checkIfMobile();
-  window.addEventListener('resize', checkIfMobile);
-});
+const items = computed(() => [
+  { name: 'overview', to: '/overview', icon: 'pi pi-shield', label: 'sidebar.overview' },
+  { name: 'ca', to: '/ca', icon: 'pi pi-building-columns', label: 'sidebar.ca' },
+  ...(auth.isAdmin ? [
+    { name: 'users', to: '/users', icon: 'pi pi-users', label: 'sidebar.users' },
+  ] : []),
+  ...(auth.isAdmin && settingsStore.settings?.acme.enabled ? [
+    { name: 'acme', to: '/acme', icon: 'pi pi-bolt', label: 'sidebar.acme' },
+  ] : []),
+  { name: 'settings', to: '/settings', icon: 'pi pi-cog', label: 'sidebar.settings' },
+])
 </script>
 
 <style scoped>
-.sidebar {
+.vt-sidebar {
+  width: 240px;
+  background: var(--vt-surface);
+  border-right: 1px solid var(--vt-border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   position: fixed;
   top: 0;
   left: 0;
-  bottom: 0;
-  width: 250px;
-  height: 100vh;
-  overflow-y: auto;
-  z-index: 1000;
-  background-color: var(--color-background);
-  transition: transform 0.3s ease;
+  transition: width 0.2s;
+  padding: 14px 10px;
+  z-index: 100;
+  overflow: hidden;
 }
 
-.sidebar-toggle {
-  position: fixed;
-  bottom: 10px;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+.vt-sidebar.collapsed {
+  width: 64px;
+}
+
+.vt-brand {
   display: flex;
   align-items: center;
-  justify-content: center;
-  z-index: 1001;
+  gap: 10px;
+  font-weight: 700;
+  padding: 8px 8px 18px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.sidebar-visible {
-  transform: translateX(0);
+.vt-logo {
+  font-size: 20px;
+  flex-shrink: 0;
 }
 
-.sidebar-hidden {
-  transform: translateX(-100%);
+.vt-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.sidebar-backdrop {
-  display: none;
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0, 0, 0, 0.5);
-  z-index: 999;
-}
-
-@media (min-width: 992px) {
-  .sidebar {
-    transform: translateX(0) !important;
-  }
-  .sidebar-toggle {
-    display: none !important;
-  }
-}
-
-.nav-link {
-  color: var(--color-text-primary);
+.vt-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  color: var(--vt-muted);
   text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.nav-link:hover {
-  background-color: var(--color-hover);
+.vt-nav-item:hover {
+  background: rgba(127, 127, 127, 0.08);
+  color: var(--vt-text);
 }
 
-.nav-link.active {
-  font-weight: bold;
-  background-color: var(--color-active);
-  border-radius: 4px;
+.vt-nav-item.router-link-active {
+  background: color-mix(in srgb, var(--vt-primary) 16%, transparent);
+  color: var(--vt-primary);
 }
 
-button.nav-link {
-  background: none;
+.vt-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vt-theme-row {
+  display: flex;
+  gap: 4px;
+}
+
+.vt-theme-btn {
+  background: transparent;
+  border: 1px solid var(--vt-border);
+  border-radius: 6px;
+  color: var(--vt-muted);
+  padding: 5px 8px;
   cursor: pointer;
+  flex: 1;
+  font-size: 13px;
+}
+
+.vt-theme-btn.active {
+  background: color-mix(in srgb, var(--vt-primary) 16%, transparent);
+  color: var(--vt-primary);
+  border-color: var(--vt-primary);
+}
+
+.vt-lang-row {
+  display: flex;
+}
+
+.vt-lang-select {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--vt-border);
+  border-radius: 6px;
+  color: var(--vt-text);
+  padding: 5px 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.vt-logout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--vt-muted);
+  padding: 7px 11px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.vt-logout:hover {
+  background: rgba(127, 127, 127, 0.08);
+  color: var(--vt-text);
+}
+
+.vt-version {
+  font-size: 11px;
+  color: var(--vt-muted);
+  text-align: center;
+  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.vt-collapse {
+  background: transparent;
+  border: 1px solid var(--vt-border);
+  border-radius: 8px;
+  color: var(--vt-muted);
+  padding: 6px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.vt-collapse:hover {
+  color: var(--vt-text);
 }
 </style>

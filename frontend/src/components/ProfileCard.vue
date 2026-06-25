@@ -1,16 +1,14 @@
 <template>
-  <div class="card text-center shadow-sm">
-    <div class="card-body">
-      <Avatar
-          :size="100"
-          :name="authStore.current_user?.name || 'User'"
-          variant="bauhaus"
-          :colors=avatarColors
-          class="rounded-circle img-thumbnail mb-3"
-      />
-      <h5 class="card-title">{{ authStore.current_user?.name }}</h5>
-      <p class="card-text text-muted email">{{ formatEmail(authStore.current_user?.email) }}</p>
-    </div>
+  <div class="card">
+    <Avatar
+        :size="100"
+        :name="authStore.current_user?.name || 'User'"
+        variant="bauhaus"
+        :colors="avatarColors"
+        class="avatar"
+    />
+    <h5 class="card-title">{{ authStore.current_user?.name }}</h5>
+    <p class="email">{{ formatEmail(authStore.current_user?.email) }}</p>
   </div>
 </template>
 
@@ -36,11 +34,25 @@ const authStore = useAuthStore();
 <style scoped>
 .card {
   max-width: 300px;
-  margin: 3%;
-  background-color: var(--color-card);
-  border: none;
+  margin: 12px 0;
+  background: var(--vt-card);
+  border: 1px solid var(--vt-border);
   border-radius: 12px;
   padding: 1.5rem;
-  box-shadow: 0 2px 8px var(--shadow-color);
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+}
+.avatar {
+  border-radius: 50%;
+}
+.card-title {
+  color: var(--vt-text);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
+.email {
+  color: var(--vt-muted);
+  font-size: 13px;
 }
 </style>

@@ -26,7 +26,8 @@
     "colCaId": "CA ID",
     "enterValidityPeriod": "Enter validity period",
     "or": "or",
-    "hostname": "hostname"
+    "hostname": "hostname",
+    "search": "Search..."
   },
   "sidebar": {
     "overview": "Overview",
@@ -54,7 +55,10 @@
     "passwordHintOidc": "You can leave this empty if using OAuth (OIDC).",
     "passwordHintRequired": "Required for local login.",
     "completeSetup": "Complete Setup",
-    "setupFailed": "Failed to set up."
+    "setupFailed": "Failed to set up.",
+    "sectionAccount": "Account",
+    "sectionCa": "Certificate Authority",
+    "sectionSecurity": "Security"
   },
   "overview": {
     "title": "Certificates",
@@ -111,14 +115,24 @@
   },
   "ca": {
     "title": "Certificate Authorities",
+    "subtitle": "Manage Certificate Authorities",
+    "noCasFound": "No CAs found.",
     "crl": "CRL",
     "krl": "KRL",
     "toggle_dropdown": "Toggle Dropdown",
     "der_format": "DER Format",
     "pem_format": "PEM Format",
     "createCa": "Create New CA",
+    "importCa": "Import CA",
     "loadingCas": "Loading CAs...",
     "enterCaCommonName": "Enter CA Common Name",
+    "tagImported": "Imported",
+    "tagInternal": "Internal",
+    "colSource": "Source",
+    "downloadCrl": "Download CRL",
+    "downloadKrl": "Download KRL",
+    "downloadCrlDer": "DER",
+    "downloadCrlPem": "PEM",
     "createModal": {
       "title": "Create New Certificate Authority",
       "caName": "CA Name (CN)",
@@ -126,18 +140,26 @@
       "create": "Create CA"
     },
     "deleteModal": {
-      "title": "Delete Certificate",
+      "title": "Delete Certificate Authority",
       "confirm": "Are you sure you want to delete the CA {name}?"
     }
   },
   "users": {
     "title": "Users",
+    "subtitle": "Manage application users",
     "colRole": "Role",
+    "roleUser": "User",
+    "roleAdmin": "Admin",
+    "noUsers": "No users found.",
     "createUser": "Create New User",
     "createModal": {
       "title": "Create New User",
       "role": "Role",
       "create": "Create User"
+    },
+    "editModal": {
+      "title": "Edit User",
+      "saving": "Saving..."
     },
     "deleteModal": {
       "title": "Delete User",
@@ -147,6 +169,7 @@
   },
   "settings": {
     "title": "Settings",
+    "subtitle": "Application and user preferences",
     "common": {
       "heading": "Common",
       "passwordEnabled": "Password Login enabled",
@@ -203,10 +226,79 @@
     },
     "savedSuccessfully": "Settings saved successfully"
   },
+  "certs": {
+    "subtitle": "Manage TLS and SSH certificates",
+    "import": "Import",
+    "create": "Create Certificate",
+    "cn": "Common Name",
+    "type": "Type",
+    "ca": "CA",
+    "validUntil": "Valid Until",
+    "status": "Status",
+    "statusValid": "Valid",
+    "statusExpiringSoon": "Expiring Soon",
+    "statusExpired": "Expired",
+    "statusRevoked": "Revoked",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "copyPassword": "Copy password"
+  },
+  "importCert": {
+    "title": "Import Certificate",
+    "mode": "Import Mode",
+    "p12File": "PKCS#12 File (.p12 / .pfx)",
+    "certFile": "Certificate File (.pem / .crt)",
+    "keyFile": "Private Key File (.pem / .key)",
+    "chainFile": "Certificate Chain File",
+    "password": "Password",
+    "user": "User",
+    "selectUser": "Select a user",
+    "ca": "Certificate Authority",
+    "selectCa": "Select a CA",
+    "certType": "Certificate Type",
+    "selectCertType": "Select type",
+    "renewMethod": "Renew Method",
+    "selectRenewMethod": "Select method",
+    "optional": "optional",
+    "import": "Import",
+    "importing": "Importing...",
+    "errorTitle": "Import Failed",
+    "errorGeneric": "An unexpected error occurred"
+  },
+  "import": {
+    "validation": {
+      "userIdRequired": "User is required",
+      "p12Required": "PKCS#12 file is required",
+      "certRequired": "Certificate file is required",
+      "keyRequired": "Private key file is required"
+    }
+  },
+  "importCa": {
+    "title": "Import Certificate Authority",
+    "caCertFile": "CA Certificate File (.pem / .crt)",
+    "caKeyFile": "CA Private Key File (.pem / .key)",
+    "name": "Name (CN override)",
+    "namePlaceholder": "Leave empty to use CN from certificate",
+    "optional": "optional",
+    "import": "Import CA",
+    "importing": "Importing...",
+    "errorTitle": "Import Failed",
+    "errorGeneric": "An unexpected error occurred",
+    "errorCaCertRequired": "CA certificate file is required"
+  },
+  "nav": {
+    "certificates": "Certificates",
+    "cas": "Certificate Authorities",
+    "acme": "ACME",
+    "users": "Users",
+    "settings": "Settings"
+  },
   "acme": {
     "title": "ACME Accounts",
+    "subtitle": "Manage ACME accounts and certificate orders",
     "ordersTitle": "ACME Orders",
     "hideDeactivated": "Hide deactivated accounts",
+    "noAccounts": "No ACME accounts found.",
     "colId": "ID",
     "colAllowedDomains": "Allowed Domains",
     "colStatus": "Status",

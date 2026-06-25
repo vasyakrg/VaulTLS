@@ -1,324 +1,464 @@
 <template>
   <div>
-    <h1>{{ $t('ca.title') }}</h1>
-    <hr />
-    <div class="table-responsive">
-      <table class="table table-striped">
-        <thead>
-        <tr>
-          <th>{{ $t('common.colCaId') }}</th>
-          <th>{{ $t('common.colName') }}</th>
-          <th v-if="hasAnyOU">{{ $t('common.colGroup') }}</th>
-          <th>{{ $t('common.colType') }}</th>
-          <th class="d-none d-lg-table-cell">{{ $t('common.colCreatedOn') }}</th>
-          <th>{{ $t('common.colValidUntil') }}</th>
-          <th>{{ $t('common.actions') }}</th>
-        </tr>
-        </thead>
-        <tbody>
-        <tr v-for="ca in cas.values()" :key="ca.id">
-          <td :id="'CaId-' + ca.id">{{ ca.id }}</td>
-          <td :id="'CAName-' + ca.id">{{ ca.name.cn }}</td>
-          <td :id="'CAGroup-' + ca.id" v-if="hasAnyOU">{{ ca.name.ou ?? '' }}</td>
-          <td :id="'CAType-' + ca.id">{{ CAType[ca.ca_type] }}</td>
-          <td :id="'CreatedOn-' + ca.id" class="d-none d-lg-table-cell">{{ new Date(ca.created_on).toLocaleDateString() }}</td>
-          <td :id="'ValidUntil-' + ca.id">
-            <span v-if="ca.valid_until != -1">
-              {{ new Date(ca.valid_until).toLocaleDateString() }}
-            </span>
-          </td>
-          <td>
-            <div class="d-flex flex-sm-row flex-column gap-1">
-              <button
-                  :id="'DownloadButton-' + ca.id"
-                  class="btn btn-primary btn-sm flex-grow-1"
-                  @click="downloadCA(ca.id)"
-              >
-                {{ $t('common.download') }}
-              </button>
-              <div v-if="ca.ca_type === CAType.TLS" class="btn-group flex-grow-1">
-                <button
-                    type="button"
-                    class="btn btn-outline-primary btn-sm"
-                    @click="downloadCRL(ca.id, 'der')"
-                    :id="'CRLButton-' + ca.id"
-                >
-                  {{ $t('ca.crl') }}
-                </button>
-                <button
-                    type="button"
-                    class="btn btn-outline-primary btn-sm dropdown-toggle dropdown-toggle-split"
-                    data-bs-toggle="dropdown"
-                    data-bs-popper-config='{"strategy":"fixed"}'
-                    aria-expanded="false"
-                    :id="'CRLDropdown-' + ca.id"
-                >
-                  <span class="visually-hidden">{{ $t('ca.toggle_dropdown') }}</span>
-                </button>
-                <ul class="dropdown-menu" :aria-labelledby="'CRLDropdown-' + ca.id">
-                  <li><a class="dropdown-item" href="#" @click.prevent="downloadCRL(ca.id, 'der')">{{ $t('ca.der_format') }}</a></li>
-                  <li><a class="dropdown-item" href="#" @click.prevent="downloadCRL(ca.id, 'pem')">{{ $t('ca.pem_format') }}</a></li>
-                </ul>
-              </div>
-              <button
-                  v-if="ca.ca_type === CAType.SSH"
-                  :id="'KRLButton-' + ca.id"
-                  class="btn btn-outline-primary btn-sm flex-grow-1"
-                  @click="downloadCRL(ca.id)"
-              >
-                {{ $t('ca.krl') }}
-              </button>
-              <button
-                  :id="'DeleteButton-' + ca.id"
-                  v-if="authStore.isAdmin"
-                  class="btn btn-danger btn-sm flex-grow-1"
-                  @click="confirmDeletion(ca)"
-              >
-                {{ $t('common.delete') }}
-              </button>
-            </div>
-          </td>
-        </tr>
-        </tbody>
-      </table>
-    </div>
+    <header class="vt-head">
+      <div>
+        <h1>{{ $t('ca.title') }}</h1>
+        <p class="vt-sub">{{ $t('ca.subtitle') }}</p>
+      </div>
+      <div class="vt-actions" v-if="authStore.isAdmin">
+        <Button
+          :label="$t('ca.importCa')"
+          icon="pi pi-upload"
+          severity="secondary"
+          outlined
+          @click="showImportCa = true"
+        />
+        <Button
+          id="CreateCAButton"
+          :label="$t('ca.createCa')"
+          icon="pi pi-plus"
+          @click="showCreateModal"
+        />
+      </div>
+    </header>
 
-    <button
-        id="CreateCAButton"
-        v-if="authStore.isAdmin"
-        class="btn btn-primary mx-1"
-        @click="showCreateModal"
+    <div v-if="loading" class="vt-status">{{ $t('ca.loadingCas') }}</div>
+    <div v-if="error" class="vt-error">{{ error }}</div>
+
+    <DataTable
+      :value="casArray"
+      dataKey="id"
+      :globalFilterFields="['name.cn', 'name.ou']"
+      v-model:filters="filters"
+      filterDisplay="menu"
+      removableSort
+      class="vt-table"
     >
-      {{ $t('ca.createCa') }}
-    </button>
-
-    <div v-if="loading" class="text-center mt-3">{{ $t('ca.loadingCas') }}</div>
-    <div v-if="error" class="alert alert-danger mt-3">{{ error }}</div>
-
-    <!-- Create CA Modal -->
-    <div
-        v-if="isCreateModalVisible"
-        class="modal show d-block"
-        tabindex="-1"
-        style="background: rgba(0, 0, 0, 0.5)"
-    >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">{{ $t('ca.createModal.title') }}</h5>
-            <button type="button" class="btn-close" @click="closeCreateModal"></button>
+      <template #header>
+        <div class="vt-table-header">
+          <div class="p-input-icon-left vt-search-wrap">
+            <i class="pi pi-search" />
+            <InputText
+              v-model="filters['global'].value"
+              :placeholder="$t('common.search')"
+              class="vt-search"
+            />
           </div>
-          <div class="modal-body">
-            <div class="mb-3">
-              <label for="caName" class="form-label">{{ $t('ca.createModal.caName') }}</label>
-              <div class="input-group">
-                <input
-                    id="caName"
-                    v-model="caReq.ca_name.cn"
-                    type="text"
-                    class="form-control"
-                    :placeholder="$t('ca.enterCaCommonName')"
-                    required
-                />
-                <button
-                    class="btn btn-outline-secondary"
-                    type="button"
-                    @click="showOUField = !showOUField"
-                    :title="showOUField ? $t('common.hideOu') : $t('common.addOu')"
-                >
-                  {{ showOUField ? '−' : '+' }}
-                </button>
-              </div>
-            </div>
-            <div class="mb-3" v-if="showOUField && caReq.ca_type === CAType.TLS">
-              <label for="caOU" class="form-label">{{ $t('common.ouGroup') }}</label>
-              <input
-                  id="caOU"
-                  v-model="caReq.ca_name.ou"
-                  type="text"
-                  class="form-control"
-                  placeholder="Enter organizational unit (optional)"
+        </div>
+      </template>
+
+      <Column field="name.cn" :header="$t('common.colName')" sortable>
+        <template #body="{ data }">{{ data.name.cn }}</template>
+      </Column>
+      <Column v-if="hasAnyOU" field="name.ou" :header="$t('common.colGroup')">
+        <template #body="{ data }">{{ data.name.ou ?? '' }}</template>
+      </Column>
+      <Column field="ca_type" :header="$t('common.colType')" sortable>
+        <template #body="{ data }">{{ CAType[data.ca_type] }}</template>
+      </Column>
+      <Column field="created_on" :header="$t('common.colCreatedOn')" sortable>
+        <template #body="{ data }">{{ new Date(data.created_on).toLocaleDateString() }}</template>
+      </Column>
+      <Column field="valid_until" :header="$t('common.colValidUntil')" sortable>
+        <template #body="{ data }">
+          <span v-if="data.valid_until !== -1">{{ new Date(data.valid_until).toLocaleDateString() }}</span>
+        </template>
+      </Column>
+      <Column :header="$t('ca.colSource')">
+        <template #body="{ data }">
+          <Tag
+            :severity="data.is_imported ? 'secondary' : 'success'"
+            :value="data.is_imported ? $t('ca.tagImported') : $t('ca.tagInternal')"
+          />
+        </template>
+      </Column>
+      <Column :header="$t('common.actions')">
+        <template #body="{ data }">
+          <div class="vt-row-actions">
+            <Button
+              :id="'DownloadButton-' + data.id"
+              :label="$t('common.download')"
+              icon="pi pi-download"
+              severity="secondary"
+              outlined
+              size="small"
+              @click="downloadCA(data.id)"
+            />
+            <template v-if="data.ca_type === CAType.TLS">
+              <Button
+                :id="'CRLButton-' + data.id"
+                :label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
+                icon="pi pi-file"
+                severity="secondary"
+                outlined
+                size="small"
+                @click="downloadCRL(data.id, 'der')"
               />
-            </div>
-            <div class="mb-3">
-              <label for="caType" class="form-label">{{ $t('ca.createModal.caType') }}</label>
-              <select
-                  class="form-select"
-                  id="caType"
-                  v-model="caReq.ca_type"
-                  required
-              >
-                <option :value="CAType.TLS">TLS</option>
-                <option :value="CAType.SSH">SSH</option>
-              </select>
-            </div>
-            <div class="mb-3" v-if="caReq.ca_type === CAType.TLS">
-              <label for="validity" class="form-label">{{ $t('common.validity') }}</label>
-              <div class="input-group">
-                <input
-                    id="validity"
-                    v-model.number="caReq.validity_duration"
-                    type="number"
-                    class="form-control"
-                    min="1"
-                    :placeholder="$t('common.enterValidityPeriod')"
-                />
-                <select
-                    id="validity_unit"
-                    v-model="caReq.validity_unit"
-                    class="form-select"
-                    style="max-width: 120px"
-                >
-                  <option :value="ValidityUnit.Hour">{{ $t('common.hours') }}</option>
-                  <option :value="ValidityUnit.Day">{{ $t('common.days') }}</option>
-                  <option :value="ValidityUnit.Month">{{ $t('common.months') }}</option>
-                  <option :value="ValidityUnit.Year">{{ $t('common.years') }}</option>
-                </select>
-              </div>
-            </div>
+              <Button
+                :label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
+                icon="pi pi-file"
+                severity="secondary"
+                outlined
+                size="small"
+                @click="downloadCRL(data.id, 'pem')"
+              />
+            </template>
+            <Button
+              v-if="data.ca_type === CAType.SSH"
+              :id="'KRLButton-' + data.id"
+              :label="$t('ca.downloadKrl')"
+              icon="pi pi-file"
+              severity="secondary"
+              outlined
+              size="small"
+              @click="downloadCRL(data.id)"
+            />
+            <Button
+              v-if="authStore.isAdmin"
+              :id="'DeleteButton-' + data.id"
+              :label="$t('common.delete')"
+              icon="pi pi-trash"
+              severity="danger"
+              outlined
+              size="small"
+              @click="confirmDeletion(data)"
+            />
           </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" @click="closeCreateModal">
-              {{ $t('common.cancel') }}
-            </button>
-            <button
-                type="button"
-                class="btn btn-primary"
-                :disabled="loading || !caReq.ca_name.cn || (!caReq.validity_duration && caReq.ca_type == CAType.TLS)"
-                @click="createCA"
-            >
-              <span v-if="loading">{{ $t('common.creating') }}</span>
-              <span v-else>{{ $t('ca.createModal.create') }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+        </template>
+      </Column>
 
-    <!-- Delete Confirmation Modal -->
-    <div
-        v-if="isDeleteModalVisible"
-        class="modal show d-block"
-        tabindex="-1"
-        style="background: rgba(0, 0, 0, 0.5)"
+      <template #empty>
+        <div class="vt-empty">{{ $t('ca.noCasFound') }}</div>
+      </template>
+    </DataTable>
+
+    <!-- ImportCaDialog -->
+    <ImportCaDialog v-model:visible="showImportCa" @imported="caStore.fetchCAs()" />
+
+    <!-- Create CA Dialog -->
+    <Dialog
+      v-model:visible="isCreateModalVisible"
+      :header="$t('ca.createModal.title')"
+      modal
+      :closable="true"
+      :draggable="false"
+      :style="{ width: '500px' }"
+      @hide="closeCreateModal"
     >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">{{ $t('ca.deleteModal.title') }}</h5>
-            <button type="button" class="btn-close" @click="closeDeleteModal"></button>
+      <div class="vt-form">
+        <div class="vt-field">
+          <label>{{ $t('ca.createModal.caName') }}</label>
+          <div class="vt-input-group">
+            <InputText
+              v-model="caReq.ca_name.cn"
+              :placeholder="$t('ca.enterCaCommonName')"
+              class="vt-input-grow"
+            />
+            <Button
+              :label="showOUField ? '−' : '+'"
+              severity="secondary"
+              outlined
+              :title="showOUField ? $t('common.hideOu') : $t('common.addOu')"
+              @click="showOUField = !showOUField"
+            />
           </div>
-          <div class="modal-body">
-            <p>
-              {{ $t('ca.deleteModal.confirm', { name: caToDelete?.name.cn }) }}
-            </p>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" @click="closeDeleteModal">
-              {{ $t('common.cancel') }}
-            </button>
-            <button type="button" class="btn btn-danger" @click="deleteCA">
-              {{ $t('common.delete') }}
-            </button>
+        </div>
+
+        <div v-if="showOUField && caReq.ca_type === CAType.TLS" class="vt-field">
+          <label>{{ $t('common.ouGroup') }}</label>
+          <InputText
+            v-model="caReq.ca_name.ou"
+            :placeholder="$t('overview.generateModal.enterOU')"
+          />
+        </div>
+
+        <div class="vt-field">
+          <label>{{ $t('ca.createModal.caType') }}</label>
+          <Select
+            v-model="caReq.ca_type"
+            :options="caTypeOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="vt-select"
+          />
+        </div>
+
+        <div v-if="caReq.ca_type === CAType.TLS" class="vt-field">
+          <label>{{ $t('common.validity') }}</label>
+          <div class="vt-input-group">
+            <InputNumber
+              v-model="caReq.validity_duration"
+              :min="1"
+              :placeholder="$t('common.enterValidityPeriod')"
+              class="vt-input-grow"
+            />
+            <Select
+              v-model="caReq.validity_unit"
+              :options="validityUnitOptions"
+              optionLabel="label"
+              optionValue="value"
+              class="vt-validity-unit"
+            />
           </div>
         </div>
       </div>
-    </div>
+
+      <template #footer>
+        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeCreateModal" />
+        <Button
+          :label="loading ? $t('common.creating') : $t('ca.createModal.create')"
+          icon="pi pi-check"
+          :disabled="loading || !caReq.ca_name.cn || (!caReq.validity_duration && caReq.ca_type === CAType.TLS)"
+          @click="createCA"
+        />
+      </template>
+    </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <Dialog
+      v-model:visible="isDeleteModalVisible"
+      :header="$t('ca.deleteModal.title')"
+      modal
+      :draggable="false"
+      :style="{ width: '400px' }"
+    >
+      <p>{{ $t('ca.deleteModal.confirm', { name: caToDelete?.name.cn }) }}</p>
+      <template #footer>
+        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeDeleteModal" />
+        <Button :label="$t('common.delete')" severity="danger" @click="deleteCA" />
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import {computed, onMounted, reactive, ref} from 'vue';
-import {useCAStore} from '@/stores/cas';
-import {type CA, type CARequirements, CAType} from '@/types/CA';
-import {useAuthStore} from '@/stores/auth';
-import {ValidityUnit} from "@/types/ValidityUnit.ts";
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useCAStore } from '@/stores/cas'
+import { type CA, type CARequirements, CAType } from '@/types/CA'
+import { useAuthStore } from '@/stores/auth'
+import { ValidityUnit } from '@/types/ValidityUnit.ts'
+import { useI18n } from 'vue-i18n'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import Tag from 'primevue/tag'
+import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
+import InputNumber from 'primevue/inputnumber'
+import Select from 'primevue/select'
+import Dialog from 'primevue/dialog'
+import { FilterMatchMode } from '@primevue/core/api'
+import ImportCaDialog from '@/components/dialogs/ImportCaDialog.vue'
+
+const { t } = useI18n()
 
 // stores
-const caStore = useCAStore();
-const authStore = useAuthStore();
+const caStore = useCAStore()
+const authStore = useAuthStore()
 
 // local state
-const cas = computed(() => caStore.cas);
-const loading = computed(() => caStore.loading);
-const error = computed(() => caStore.error);
-const hasAnyOU = computed(() => Array.from(cas.value.values()).some(ca => ca.name.ou));
+const showImportCa = ref(false)
+const filters = ref({ global: { value: null, matchMode: FilterMatchMode.CONTAINS } })
 
-const isDeleteModalVisible = ref(false);
-const isCreateModalVisible = ref(false);
-const caToDelete = ref<CA | null>(null);
+// computed
+const cas = computed(() => caStore.cas)
+const casArray = computed(() => Array.from(cas.value.values()))
+const loading = computed(() => caStore.loading)
+const error = computed(() => caStore.error)
+const hasAnyOU = computed(() => casArray.value.some((ca) => ca.name.ou))
+
+// modals state
+const isDeleteModalVisible = ref(false)
+const isCreateModalVisible = ref(false)
+const caToDelete = ref<CA | null>(null)
+const showOUField = ref(false)
 
 const caReq = reactive<CARequirements>({
   ca_name: { cn: '', ou: undefined },
   ca_type: CAType.TLS,
   validity_duration: undefined,
-  validity_unit: ValidityUnit.Year
-});
+  validity_unit: ValidityUnit.Year,
+})
 
-const showOUField = ref(false);
+// select options
+const caTypeOptions = computed(() => [
+  { label: 'TLS', value: CAType.TLS },
+  { label: 'SSH', value: CAType.SSH },
+])
 
+const validityUnitOptions = computed(() => [
+  { label: t('common.hours'), value: ValidityUnit.Hour },
+  { label: t('common.days'), value: ValidityUnit.Day },
+  { label: t('common.months'), value: ValidityUnit.Month },
+  { label: t('common.years'), value: ValidityUnit.Year },
+])
+
+// lifecycle
 onMounted(async () => {
-  await caStore.fetchCAs();
-});
+  await caStore.fetchCAs()
+})
 
+// handlers
 const showCreateModal = () => {
-  isCreateModalVisible.value = true;
-};
+  isCreateModalVisible.value = true
+}
 
 const closeCreateModal = () => {
-  isCreateModalVisible.value = false;
-  caReq.ca_name = { cn: '', ou: undefined };
-  caReq.validity_duration = 10;
-  caReq.validity_unit = ValidityUnit.Year;
-  showOUField.value = false;
-};
+  isCreateModalVisible.value = false
+  caReq.ca_name = { cn: '', ou: undefined }
+  caReq.validity_duration = undefined
+  caReq.validity_unit = ValidityUnit.Year
+  caReq.ca_type = CAType.TLS
+  showOUField.value = false
+}
 
 const createCA = async () => {
-  await caStore.createCA(caReq);
-  closeCreateModal();
-};
+  await caStore.createCA(caReq)
+  closeCreateModal()
+}
 
 const confirmDeletion = (ca: CA) => {
-  caToDelete.value = ca;
-  isDeleteModalVisible.value = true;
-};
+  caToDelete.value = ca
+  isDeleteModalVisible.value = true
+}
 
 const closeDeleteModal = () => {
-  caToDelete.value = null;
-  isDeleteModalVisible.value = false;
-};
+  caToDelete.value = null
+  isDeleteModalVisible.value = false
+}
 
 const deleteCA = async () => {
   if (caToDelete.value) {
-    await caStore.deleteCA(caToDelete.value.id);
-    closeDeleteModal();
+    await caStore.deleteCA(caToDelete.value.id)
+    closeDeleteModal()
   }
-};
+}
 
 const downloadCA = async (caId: number) => {
-  await caStore.downloadCA(caId);
-};
+  await caStore.downloadCA(caId)
+}
 
 const downloadCRL = async (caId: number, format: string = 'der') => {
-  await caStore.downloadCRL(caId, format);
-};
+  await caStore.downloadCRL(caId, format)
+}
 </script>
 
 <style scoped>
-.modal {
-  z-index: 1050;
+.vt-head {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 22px;
+}
+
+.vt-head h1 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.vt-sub {
+  font-size: 13px;
+  color: var(--vt-muted);
+  margin-top: 3px;
+}
+
+.vt-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+}
+
+.vt-status {
+  color: var(--vt-muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.vt-error {
+  background: var(--vt-err);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.vt-table {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--vt-border);
+}
+
+.vt-table-header {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 16px;
+  padding: 4px 0;
 }
 
-/* When multiple modals are present, we want to stack them properly */
-.modal + .modal {
-  z-index: 1051;
+.vt-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
 }
 
-.dropdown-toggle-split {
-  max-width: 40px;
-  min-width: 20px;
+.vt-search-wrap i {
+  position: absolute;
+  left: 10px;
+  color: var(--vt-muted);
+  z-index: 1;
+}
+
+.vt-search {
+  padding-left: 32px;
+}
+
+.vt-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.vt-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--vt-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.vt-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.vt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vt-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vt-muted);
+}
+
+.vt-input-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.vt-input-grow {
+  flex: 1;
+}
+
+.vt-select {
+  width: 100%;
+}
+
+.vt-validity-unit {
+  width: 130px;
 }
 </style>

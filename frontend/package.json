@@ -8,14 +8,18 @@
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "build-only": "vite build",
-    "type-check": "vue-tsc --build"
+    "type-check": "vue-tsc --build",
+    "test:unit": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@playwright/test": "^1.60.0",
+    "@primeuix/themes": "^2.0.3",
     "axios": "^1.16.1",
-    "bootstrap": "^5.3.8",
     "hash-wasm": "^4.12.0",
     "pinia": "^3.0.4",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.5",
     "vue": "^3.5.35",
     "vue-boring-avatars": "^1.4.0",
     "vue-i18n": "^11.4.4",
@@ -26,11 +30,18 @@
     "@types/node": "^25.9.1",
     "@vitejs/plugin-vue": "^6.0.7",
     "@vitejs/plugin-vue-jsx": "^5.1.5",
+    "@vue/test-utils": "^2.4.11",
     "@vue/tsconfig": "^0.9.1",
+    "autoprefixer": "^10.5.2",
+    "jsdom": "^29.1.1",
     "npm-run-all2": "^9.0.1",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^3.4.19",
+    "tailwindcss-primeui": "^0.6.1",
     "typescript": "~6.0.3",
     "vite": "^8.0.14",
     "vite-plugin-vue-devtools": "^8.1.2",
+    "vitest": "^4.1.9",
     "vue-tsc": "^3.3.3"
   }
 }

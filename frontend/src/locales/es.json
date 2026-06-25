@@ -26,7 +26,8 @@
     "colCaId": "ID de CA",
     "enterValidityPeriod": "Introduzca el periodo de validez",
     "or": "o",
-    "hostname": "nombre de host"
+    "hostname": "nombre de host",
+    "search": "Buscar..."
   },
   "sidebar": {
     "overview": "Resumen",
@@ -54,7 +55,10 @@
     "passwordHintOidc": "Puede dejarlo vacío si usa OAuth (OIDC).",
     "passwordHintRequired": "Requerida para el inicio de sesión local.",
     "completeSetup": "Completar configuración",
-    "setupFailed": "Error en la configuración."
+    "setupFailed": "Error en la configuración.",
+    "sectionAccount": "Cuenta",
+    "sectionCa": "Autoridad de Certificación",
+    "sectionSecurity": "Seguridad"
   },
   "overview": {
     "title": "Certificados",
@@ -111,14 +115,24 @@
   },
   "ca": {
     "title": "Autoridades de Certificación",
+    "subtitle": "Gestionar Autoridades de Certificación",
+    "noCasFound": "No se encontraron CAs.",
     "crl": "CRL",
     "krl": "KRL",
     "toggle_dropdown": "Alternar menú",
     "der_format": "Formato DER",
     "pem_format": "Formato PEM",
     "createCa": "Crear nueva CA",
+    "importCa": "Importar CA",
     "loadingCas": "Cargando CAs...",
     "enterCaCommonName": "Introduzca el nombre común de la CA",
+    "tagImported": "Importada",
+    "tagInternal": "Interna",
+    "colSource": "Origen",
+    "downloadCrl": "Descargar CRL",
+    "downloadKrl": "Descargar KRL",
+    "downloadCrlDer": "DER",
+    "downloadCrlPem": "PEM",
     "createModal": {
       "title": "Crear nueva autoridad de certificación",
       "caName": "Nombre de CA (CN)",
@@ -126,18 +140,26 @@
       "create": "Crear CA"
     },
     "deleteModal": {
-      "title": "Eliminar certificado",
+      "title": "Eliminar Autoridad de Certificación",
       "confirm": "¿Está seguro de que desea eliminar la CA {name}?"
     }
   },
   "users": {
     "title": "Usuarios",
+    "subtitle": "Gestionar usuarios de la aplicación",
     "colRole": "Rol",
+    "roleUser": "Usuario",
+    "roleAdmin": "Administrador",
+    "noUsers": "No se encontraron usuarios.",
     "createUser": "Crear nuevo usuario",
     "createModal": {
       "title": "Crear nuevo usuario",
       "role": "Rol",
       "create": "Crear usuario"
+    },
+    "editModal": {
+      "title": "Editar usuario",
+      "saving": "Guardando..."
     },
     "deleteModal": {
       "title": "Eliminar usuario",
@@ -147,6 +169,7 @@
   },
   "settings": {
     "title": "Configuración",
+    "subtitle": "Preferencias de la aplicación y del usuario",
     "common": {
       "heading": "General",
       "passwordEnabled": "Inicio de sesión con contraseña habilitado",
@@ -203,10 +226,71 @@
     },
     "savedSuccessfully": "Configuración guardada correctamente"
   },
+  "certs": {
+    "subtitle": "Gestionar certificados TLS y SSH",
+    "import": "Importar",
+    "create": "Crear certificado",
+    "cn": "Nombre Común",
+    "type": "Tipo",
+    "ca": "CA",
+    "validUntil": "Válido hasta",
+    "status": "Estado",
+    "statusValid": "Válido",
+    "statusExpiringSoon": "Próximo a vencer",
+    "statusExpired": "Vencido",
+    "statusRevoked": "Revocado",
+    "showPassword": "Mostrar contraseña",
+    "hidePassword": "Ocultar contraseña",
+    "copyPassword": "Copiar contraseña"
+  },
+  "importCert": {
+    "title": "Importar certificado",
+    "mode": "Modo de importación",
+    "p12File": "Archivo PKCS#12 (.p12 / .pfx)",
+    "certFile": "Archivo de certificado (.pem / .crt)",
+    "keyFile": "Archivo de clave privada (.pem / .key)",
+    "chainFile": "Archivo de cadena de certificados",
+    "password": "Contraseña",
+    "user": "Usuario",
+    "selectUser": "Seleccionar usuario",
+    "ca": "Autoridad de Certificación",
+    "selectCa": "Seleccionar CA",
+    "certType": "Tipo de certificado",
+    "selectCertType": "Seleccionar tipo",
+    "renewMethod": "Método de renovación",
+    "selectRenewMethod": "Seleccionar método",
+    "optional": "opcional",
+    "import": "Importar",
+    "importing": "Importando...",
+    "errorTitle": "Error al importar",
+    "errorGeneric": "Se produjo un error inesperado"
+  },
+  "importCa": {
+    "title": "Importar autoridad de certificación",
+    "caCertFile": "Archivo de certificado CA (.pem / .crt)",
+    "caKeyFile": "Archivo de clave privada CA (.pem / .key)",
+    "name": "Nombre (reemplaza CN)",
+    "namePlaceholder": "Dejar vacío para usar el CN del certificado",
+    "optional": "opcional",
+    "import": "Importar CA",
+    "importing": "Importando...",
+    "errorTitle": "Error al importar",
+    "errorGeneric": "Se produjo un error inesperado",
+    "errorCaCertRequired": "El archivo de certificado CA es obligatorio"
+  },
+  "nav": {
+    "certificates": "Certificados",
+    "cas": "Autoridades de Certificación",
+    "acme": "ACME",
+    "users": "Usuarios",
+    "settings": "Configuración"
+  },
   "acme": {
     "title": "Cuentas ACME",
+    "subtitle": "Gestionar cuentas ACME y órdenes de certificados",
     "ordersTitle": "Órdenes ACME",
     "hideDeactivated": "Ocultar cuentas desactivadas",
+    "noAccounts": "No se encontraron cuentas ACME.",
     "colId": "ID",
     "colAllowedDomains": "Dominios permitidos",
     "colStatus": "Estado",
@@ -267,6 +351,14 @@
       "title": "Desactivar cuenta ACME",
       "confirm": "¿Está seguro de que desea desactivar la cuenta ACME {name}? La cuenta ya no podrá emitir certificados.",
       "deactivate": "Desactivar"
+    }
+  },
+  "import": {
+    "validation": {
+      "userIdRequired": "El usuario es obligatorio",
+      "p12Required": "El archivo PKCS#12 es obligatorio",
+      "certRequired": "El archivo de certificado es obligatorio",
+      "keyRequired": "El archivo de clave privada es obligatorio"
     }
   }
 }

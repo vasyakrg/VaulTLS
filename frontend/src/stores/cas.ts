@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import type {CA, CARequirements} from '@/types/CA';
-import {createCA, deleteCA, downloadCAByID, downloadCRL, fetchCAs} from "@/api/cas.ts";
+import {createCA, deleteCA, downloadCAByID, downloadCRL, fetchCAs, importCa} from "@/api/cas.ts";
 import axios from 'axios';
 
 export const useCAStore = defineStore('ca', {
@@ -88,6 +88,25 @@ export const useCAStore = defineStore('ca', {
                     this.error = 'Failed to delete the CA';
                 }
                 console.error(err);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async importCa(form: FormData): Promise<void> {
+            this.loading = true;
+            this.error = null;
+            try {
+                await importCa(form);
+                await this.fetchCAs();
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to import CA: ' + err.response?.data?.error;
+                } else {
+                    this.error = 'Failed to import CA';
+                }
+                console.error(err);
+                throw err;
             } finally {
                 this.loading = false;
             }

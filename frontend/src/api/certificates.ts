@@ -26,3 +26,7 @@ export const deleteCertificate = async (id: number): Promise<void> => {
 export const revokeCertificate = async (id: number): Promise<void> => {
     await ApiClient.post<void>(`/certificates/${id}/revoke`);
 };
+
+export const importCertificate = async (form: FormData): Promise<void> => {
+    await ApiClient.postForm<void>('/certificates/import', form);
+};
