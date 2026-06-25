@@ -265,6 +265,14 @@
     "errorTitle": "Import Failed",
     "errorGeneric": "An unexpected error occurred"
   },
+  "import": {
+    "validation": {
+      "userIdRequired": "User is required",
+      "p12Required": "PKCS#12 file is required",
+      "certRequired": "Certificate file is required",
+      "keyRequired": "Private key file is required"
+    }
+  },
   "importCa": {
     "title": "Import Certificate Authority",
     "caCertFile": "CA Certificate File (.pem / .crt)",

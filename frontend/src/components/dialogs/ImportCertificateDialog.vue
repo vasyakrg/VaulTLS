@@ -95,7 +95,7 @@
       </div>
 
       <div v-if="validationErrors.length" class="vt-errors">
-        <div v-for="err in validationErrors" :key="err" class="vt-error-item">{{ err }}</div>
+        <div v-for="err in validationErrors" :key="err" class="vt-error-item">{{ $t(`import.validation.${err}`) }}</div>
       </div>
     </div>
 

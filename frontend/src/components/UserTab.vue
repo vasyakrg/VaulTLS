@@ -265,7 +265,9 @@ const closeCreateModal = () => {
 
 const handleCreateUser = async () => {
   await userStore.createUser(newUser.value)
-  closeCreateModal()
+  if (!userStore.error) {
+    closeCreateModal()
+  }
 }
 
 // --- Edit ---

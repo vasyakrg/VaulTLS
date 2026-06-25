@@ -1,6 +1,5 @@
 import './assets/tailwind.css'
 import './assets/theme.css'
-import './assets/styles/variables.css'
 import 'primeicons/primeicons.css'
 
 import { createApp } from 'vue'

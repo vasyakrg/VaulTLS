@@ -352,5 +352,13 @@
       "confirm": "¿Está seguro de que desea desactivar la cuenta ACME {name}? La cuenta ya no podrá emitir certificados.",
       "deactivate": "Desactivar"
     }
+  },
+  "import": {
+    "validation": {
+      "userIdRequired": "El usuario es obligatorio",
+      "p12Required": "El archivo PKCS#12 es obligatorio",
+      "certRequired": "El archivo de certificado es obligatorio",
+      "keyRequired": "El archivo de clave privada es obligatorio"
+    }
   }
 }
