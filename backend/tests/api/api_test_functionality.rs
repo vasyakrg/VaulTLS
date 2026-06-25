@@ -781,6 +781,35 @@ async fn import_leaf_auto_imports_ca_case_b() {
 }
 
 #[tokio::test]
+async fn import_leaf_with_fullchain_in_cert_auto_imports_ca() {
+    // The cert file carries leaf + CA (a full chain), and NO separate chain
+    // field is sent. The issuing CA must still be auto-imported.
+    let client = VaulTLSClient::new_authenticated().await;
+
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Fullchain CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc-fc.example.com", &ca_pem, &ca_key_pem);
+
+    let mut fullchain = leaf_pem.clone();
+    fullchain.extend_from_slice(&ca_pem);
+
+    let boundary = "FCBND";
+    let body = crate::common::helper::multipart_import_cert_only(
+        boundary, &fullchain, &leaf_key_pem, 1,
+    );
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::Ok);
+
+    let cas = client.get_all_ca().await.unwrap();
+    assert!(cas.iter().any(|c| c.is_imported));
+}
+
+#[tokio::test]
 async fn import_external_ca_with_key_succeeds() {
     use rocket::http::ContentType;
     let client = VaulTLSClient::new_authenticated().await;

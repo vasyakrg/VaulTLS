@@ -519,15 +519,24 @@ pub(crate) async fn import_certificate(
                 .ok_or_else(|| ApiError::BadRequest("key required with cert".into()))?;
             let cert_bytes = read_tempfile(cert_f).await?;
             let key_bytes = read_tempfile(key_f).await?;
-            let leaf = parse_cert(&cert_bytes)
-                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            // The cert file may itself contain a full chain (leaf + CA certs).
+            // Take the first as the leaf and the rest as the chain; append the
+            // separate chain file too, if one was provided.
+            let cert_certs = parse_pem_bundle(&cert_bytes).unwrap_or_default();
+            let leaf = match cert_certs.first() {
+                Some(c) => c.clone(),
+                None => parse_cert(&cert_bytes)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+            };
             let key = parse_private_key(&key_bytes)
                 .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-            let chain = match &form.chain {
-                Some(cf) => parse_pem_bundle(&read_tempfile(cf).await?)
-                    .map_err(|e| ApiError::BadRequest(e.to_string()))?,
-                None => Vec::new(),
-            };
+            let mut chain: Vec<openssl::x509::X509> =
+                cert_certs.into_iter().skip(1).collect();
+            if let Some(cf) = &form.chain {
+                let extra = parse_pem_bundle(&read_tempfile(cf).await?)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+                chain.extend(extra);
+            }
             // Repackage as PKCS#12 for uniform storage
             let pwd = form.password.clone().unwrap_or_default();
             let mut ca_stack = openssl::stack::Stack::new()?;

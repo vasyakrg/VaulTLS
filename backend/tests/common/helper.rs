@@ -163,6 +163,31 @@ pub(crate) fn multipart_import_leaf(
     body
 }
 
+/// Build a multipart body for POST /certificates/import with NO separate chain
+/// field — the cert file itself may carry a full chain. Fields: cert, key, user_id.
+pub(crate) fn multipart_import_cert_only(
+    boundary: &str,
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    user_id: i64,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"cert\"; filename=\"leaf.pem\"\r\n\r\n");
+    body.extend_from_slice(cert_pem);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"key\"; filename=\"leaf.key\"\r\n\r\n");
+    body.extend_from_slice(key_pem);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"user_id\"\r\n\r\n");
+    body.extend_from_slice(user_id.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    body
+}
+
 /// Build a multipart body for POST /certificates/import with explicit ca_id field.
 /// Fields: cert (file), key (file), chain (file), user_id (text), ca_id (text)
 pub(crate) fn multipart_import_leaf_with_ca_id(
