@@ -606,7 +606,7 @@ onMounted(async () => {
 }
 
 .vt-success {
-  background: var(--p-green-500, #22c55e);
+  background: var(--vt-ok);
   color: #fff;
   padding: 8px 12px;
   border-radius: 6px;

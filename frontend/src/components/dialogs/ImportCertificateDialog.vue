@@ -20,22 +20,34 @@
 
       <div v-if="mode === 'p12'" class="vt-field">
         <label>{{ $t('importCert.p12File') }}</label>
-        <input type="file" accept=".p12,.pfx" @change="onP12Change" />
+        <div class="drop-zone" :class="{ 'drag-over': dragging.p12 }" @dragover.prevent="dragging.p12 = true" @dragleave="dragging.p12 = false" @drop.prevent="onDropP12">
+          <input type="file" accept=".p12,.pfx" @change="onP12Change" />
+          <p class="drop-hint">{{ p12File ? p12File.name : 'Перетащите файл или нажмите для выбора' }}</p>
+        </div>
       </div>
 
       <div v-if="mode === 'certkey'" class="vt-field">
         <label>{{ $t('importCert.certFile') }}</label>
-        <input type="file" accept=".pem,.crt,.cer" @change="onCertChange" />
+        <div class="drop-zone" :class="{ 'drag-over': dragging.cert }" @dragover.prevent="dragging.cert = true" @dragleave="dragging.cert = false" @drop.prevent="onDropCert">
+          <input type="file" accept=".pem,.crt,.cer" @change="onCertChange" />
+          <p class="drop-hint">{{ certFile ? certFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+        </div>
       </div>
 
       <div v-if="mode === 'certkey'" class="vt-field">
         <label>{{ $t('importCert.keyFile') }}</label>
-        <input type="file" accept=".pem,.key" @change="onKeyChange" />
+        <div class="drop-zone" :class="{ 'drag-over': dragging.key }" @dragover.prevent="dragging.key = true" @dragleave="dragging.key = false" @drop.prevent="onDropKey">
+          <input type="file" accept=".pem,.key" @change="onKeyChange" />
+          <p class="drop-hint">{{ keyFile ? keyFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+        </div>
       </div>
 
       <div v-if="mode === 'certkey'" class="vt-field">
         <label>{{ $t('importCert.chainFile') }} <span class="vt-optional">({{ $t('importCert.optional') }})</span></label>
-        <input type="file" accept=".pem,.crt,.cer" @change="onChainChange" />
+        <div class="drop-zone" :class="{ 'drag-over': dragging.chain }" @dragover.prevent="dragging.chain = true" @dragleave="dragging.chain = false" @drop.prevent="onDropChain">
+          <input type="file" accept=".pem,.crt,.cer" @change="onChainChange" />
+          <p class="drop-hint">{{ chainFile ? chainFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+        </div>
       </div>
 
       <div class="vt-field">
@@ -112,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
 import Dialog from 'primevue/dialog'
@@ -142,6 +154,7 @@ const p12File = ref<File | null>(null)
 const certFile = ref<File | null>(null)
 const keyFile = ref<File | null>(null)
 const chainFile = ref<File | null>(null)
+const dragging = reactive({ p12: false, cert: false, key: false, chain: false })
 const password = ref('')
 const userId = ref<number | null>(null)
 const caId = ref<number | null>(null)
@@ -188,6 +201,23 @@ const onKeyChange = (e: Event) => {
 }
 const onChainChange = (e: Event) => {
   chainFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
+}
+
+const onDropP12 = (e: DragEvent) => {
+  dragging.p12 = false
+  p12File.value = e.dataTransfer?.files?.[0] ?? null
+}
+const onDropCert = (e: DragEvent) => {
+  dragging.cert = false
+  certFile.value = e.dataTransfer?.files?.[0] ?? null
+}
+const onDropKey = (e: DragEvent) => {
+  dragging.key = false
+  keyFile.value = e.dataTransfer?.files?.[0] ?? null
+}
+const onDropChain = (e: DragEvent) => {
+  dragging.chain = false
+  chainFile.value = e.dataTransfer?.files?.[0] ?? null
 }
 
 const resetForm = () => {
@@ -279,7 +309,7 @@ const submit = async () => {
 }
 
 .vt-errors {
-  background: var(--vt-err, #ef4444);
+  background: var(--vt-err);
   color: #fff;
   border-radius: 6px;
   padding: 8px 12px;
@@ -291,5 +321,36 @@ const submit = async () => {
 
 .vt-error-item {
   list-style: none;
+}
+
+.drop-zone {
+  position: relative;
+  border: 2px dashed var(--vt-border);
+  border-radius: 6px;
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.drop-zone.drag-over {
+  border-color: var(--vt-primary);
+  background: color-mix(in srgb, var(--vt-primary) 8%, transparent);
+}
+
+.drop-zone input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+}
+
+.drop-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--vt-muted);
+  pointer-events: none;
 }
 </style>

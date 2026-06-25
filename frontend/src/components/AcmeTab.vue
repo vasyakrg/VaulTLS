@@ -859,8 +859,8 @@ const deleteAccount = async () => {
 }
 
 .vt-warn-banner {
-  background: color-mix(in srgb, var(--vt-warn, #f59e0b) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--vt-warn, #f59e0b) 40%, transparent);
+  background: color-mix(in srgb, var(--vt-warn) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vt-warn) 40%, transparent);
   border-radius: 6px;
   padding: 10px 14px;
   font-size: 13px;
@@ -893,7 +893,7 @@ const deleteAccount = async () => {
 }
 
 .vt-error-cell {
-  color: var(--vt-err, #dc2626);
+  color: var(--vt-err);
   cursor: help;
 }
 </style>
