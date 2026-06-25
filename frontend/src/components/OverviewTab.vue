@@ -202,8 +202,8 @@
       </DataTable>
     </div>
 
-    <!-- ImportCertificateDialog подключается в Task 4 -->
-    <!-- <ImportCertificateDialog v-model:visible="showImport" @imported="certificateStore.fetchCertificates()" /> -->
+    <!-- ImportCertificateDialog -->
+    <ImportCertificateDialog v-model:visible="showImport" @imported="certificateStore.fetchCertificates()" />
 
     <!-- Generate Certificate Dialog -->
     <Dialog
@@ -428,6 +428,7 @@ import Select from 'primevue/select'
 import Dialog from 'primevue/dialog'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode } from '@primevue/core/api'
+import ImportCertificateDialog from '@/components/dialogs/ImportCertificateDialog.vue'
 
 const { t } = useI18n()
 

@@ -221,6 +221,28 @@
     "hidePassword": "Ocultar contraseña",
     "copyPassword": "Copiar contraseña"
   },
+  "importCert": {
+    "title": "Importar certificado",
+    "mode": "Modo de importación",
+    "p12File": "Archivo PKCS#12 (.p12 / .pfx)",
+    "certFile": "Archivo de certificado (.pem / .crt)",
+    "keyFile": "Archivo de clave privada (.pem / .key)",
+    "chainFile": "Archivo de cadena de certificados",
+    "password": "Contraseña",
+    "user": "Usuario",
+    "selectUser": "Seleccionar usuario",
+    "ca": "Autoridad de Certificación",
+    "selectCa": "Seleccionar CA",
+    "certType": "Tipo de certificado",
+    "selectCertType": "Seleccionar tipo",
+    "renewMethod": "Método de renovación",
+    "selectRenewMethod": "Seleccionar método",
+    "optional": "opcional",
+    "import": "Importar",
+    "importing": "Importando...",
+    "errorTitle": "Error al importar",
+    "errorGeneric": "Se produjo un error inesperado"
+  },
   "nav": {
     "certificates": "Certificados"
   },

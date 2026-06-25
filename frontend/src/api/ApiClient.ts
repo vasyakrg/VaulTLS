@@ -80,6 +80,18 @@ class ApiClient {
         }
     }
 
+    async postForm<T>(url: string, form: FormData): Promise<T> {
+        try {
+            const response: AxiosResponse<T> = await this.client.post(url, form, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            return response.data;
+        } catch (error) {
+            console.error(`POST ${url} (form) failed:`, error);
+            throw error;
+        }
+    }
+
     async put<T>(url: string, data: Record<string, any> = {}): Promise<T> {
         try {
             const response: AxiosResponse<T> = await this.client.put(url, data);
