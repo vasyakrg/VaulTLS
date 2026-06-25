@@ -1,237 +1,438 @@
-// src/components/UserTab.vue
 <template>
   <div>
-    <h1>{{ $t('users.title') }}</h1>
-    <hr />
-    <!-- Loading and Error states -->
-    <div v-if="userStore.loading" class="alert alert-info">
-      {{ $t('common.loading') }}
-    </div>
-    <div v-if="userStore.error" class="alert alert-danger">
-      {{ userStore.error }}
-    </div>
+    <header class="vt-head">
+      <div>
+        <h1>{{ $t('users.title') }}</h1>
+        <p class="vt-sub">{{ $t('users.subtitle') }}</p>
+      </div>
+      <div class="vt-actions">
+        <Button
+          id="CreateUserButton"
+          :label="$t('users.createUser')"
+          icon="pi pi-plus"
+          @click="showCreateModal"
+        />
+      </div>
+    </header>
 
-    <!-- Users Table -->
-    <div class="table-responsive">
-      <table class="table table-striped">
-        <thead>
-          <tr>
-            <th>{{ $t('common.username') }}</th>
-            <th>{{ $t('common.email') }}</th>
-            <th>{{ $t('users.colRole') }}</th>
-            <th>{{ $t('common.actions') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="user in userStore.users" :key="user.id">
-            <td :id="'UserName-' + user.id">{{ user.name }}</td>
-            <td :id="'UserMail-' + user.id">{{ user.email }}</td>
-            <td :id="'UserRole-' + user.id">{{ UserRole[user.role] }}</td>
-            <td>
-              <div class="d-flex flex-sm-row flex-column gap-1">
-                <button
-                    :id="'UserDeletebutton-' + user.id"
-                    class="btn btn-danger btn-sm flex-grow-1"
-                    @click="confirmDeleteUser(user)"
-                >
-                  {{ $t('common.delete') }}
-                </button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <div v-if="userStore.loading" class="vt-status">{{ $t('common.loading') }}</div>
+    <div v-if="userStore.error" class="vt-error">{{ userStore.error }}</div>
 
-    <!-- Create User Button -->
-    <button
-      class="btn btn-primary mb-3"
-      @click="isCreateModalVisible = true"
+    <DataTable
+      :value="userStore.users"
+      dataKey="id"
+      :globalFilterFields="['name', 'email']"
+      v-model:filters="filters"
+      filterDisplay="menu"
+      removableSort
+      class="vt-table"
     >
-      {{ $t('users.createUser') }}
-    </button>
-
-    <!-- Create User Modal -->
-    <div
-      class="modal fade"
-      :class="{ 'show d-block': isCreateModalVisible }"
-      tabindex="-1"
-      v-if="isCreateModalVisible"
-    >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">{{ $t('users.createModal.title') }}</h5>
-            <button
-              type="button"
-              class="btn-close"
-              @click="isCreateModalVisible = false"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <form @submit.prevent="handleCreateUser">
-              <div class="mb-3">
-                <label for="user_name" class="form-label">{{ $t('common.username') }}</label>
-                <input
-                  type="text"
-                  class="form-control"
-                  id="user_name"
-                  v-model="newUser.user_name"
-                  required
-                >
-              </div>
-              <div class="mb-3">
-                <label for="user_email" class="form-label">{{ $t('common.email') }}</label>
-                <input
-                    type="text"
-                    class="form-control"
-                    id="user_email"
-                    v-model="newUser.user_email"
-                    required
-                >
-              </div>
-              <div class="mb-3">
-                <label for="password" class="form-label">{{ $t('common.password') }}</label>
-                <input
-                  type="password"
-                  class="form-control"
-                  id="password"
-                  v-model="newUser.password"
-                >
-              </div>
-              <div class="mb-3">
-                <label for="user_role" class="form-label">{{ $t('users.createModal.role') }}</label>
-                <select
-                    class="form-select"
-                    id="user_role"
-                    v-model="newUser.role"
-                    required
-                >
-                  <option :value="UserRole.User">User</option>
-                  <option :value="UserRole.Admin">Admin</option>
-                </select>
-              </div>
-
-              <div class="modal-footer">
-                <button
-                  type="button"
-                  class="btn btn-secondary"
-                  @click="isCreateModalVisible = false"
-                >
-                  {{ $t('common.cancel') }}
-                </button>
-                <button type="submit" class="btn btn-primary">
-                  {{ $t('users.createModal.create') }}
-                </button>
-              </div>
-            </form>
+      <template #header>
+        <div class="vt-table-header">
+          <div class="p-input-icon-left vt-search-wrap">
+            <i class="pi pi-search" />
+            <InputText
+              v-model="filters['global'].value"
+              :placeholder="$t('common.search')"
+              class="vt-search"
+            />
           </div>
         </div>
-      </div>
-    </div>
-    <!-- Modal Backdrop -->
-    <div
-      class="modal-backdrop fade show"
-      v-if="isCreateModalVisible"
-    ></div>
+      </template>
 
-    <!-- Delete Confirmation Modal -->
-    <div
-        v-if="isDeleteModalVisible"
-        class="modal show d-block"
-        tabindex="-1"
-        style="background: rgba(0, 0, 0, 0.5)"
+      <Column field="name" :header="$t('common.username')" sortable>
+        <template #body="{ data }">
+          <span :id="'UserName-' + data.id">{{ data.name }}</span>
+        </template>
+      </Column>
+      <Column field="email" :header="$t('common.email')" sortable>
+        <template #body="{ data }">
+          <span :id="'UserMail-' + data.id">{{ data.email }}</span>
+        </template>
+      </Column>
+      <Column field="role" :header="$t('users.colRole')" sortable>
+        <template #body="{ data }">
+          <Tag
+            :id="'UserRole-' + data.id"
+            :severity="data.role === UserRole.Admin ? 'warn' : 'secondary'"
+            :value="data.role === UserRole.Admin ? $t('users.roleAdmin') : $t('users.roleUser')"
+          />
+        </template>
+      </Column>
+      <Column :header="$t('common.actions')">
+        <template #body="{ data }">
+          <div class="vt-row-actions">
+            <Button
+              :id="'UserEditButton-' + data.id"
+              :label="$t('acme.edit')"
+              icon="pi pi-pencil"
+              severity="secondary"
+              outlined
+              size="small"
+              @click="openEditModal(data)"
+            />
+            <Button
+              :id="'UserDeletebutton-' + data.id"
+              :label="$t('common.delete')"
+              icon="pi pi-trash"
+              severity="danger"
+              outlined
+              size="small"
+              @click="confirmDeleteUser(data)"
+            />
+          </div>
+        </template>
+      </Column>
+
+      <template #empty>
+        <div class="vt-empty">{{ $t('users.noUsers') }}</div>
+      </template>
+    </DataTable>
+
+    <!-- Create User Dialog -->
+    <Dialog
+      v-model:visible="isCreateModalVisible"
+      :header="$t('users.createModal.title')"
+      modal
+      :closable="true"
+      :draggable="false"
+      :style="{ width: '450px' }"
+      @hide="closeCreateModal"
     >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">{{ $t('users.deleteModal.title') }}</h5>
-            <button type="button" class="btn-close" @click="closeDeleteModal"></button>
-          </div>
-          <div class="modal-body">
-            <p>
-              {{ $t('users.deleteModal.confirm', { name: userToDelete?.name }) }}
-            </p>
-            <p class="text-warning">
-              <small>{{ $t('users.deleteModal.disclaimer') }}</small>
-            </p>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" @click="closeDeleteModal">
-              {{ $t('common.cancel') }}
-            </button>
-            <button type="button" class="btn btn-danger" @click="deleteUser">
-              {{ $t('common.delete') }}
-            </button>
-          </div>
+      <div class="vt-form">
+        <div class="vt-field">
+          <label>{{ $t('common.username') }}</label>
+          <InputText
+            v-model="newUser.user_name"
+            :placeholder="$t('common.username')"
+            class="vt-input-full"
+          />
+        </div>
+        <div class="vt-field">
+          <label>{{ $t('common.email') }}</label>
+          <InputText
+            v-model="newUser.user_email"
+            :placeholder="$t('common.email')"
+            class="vt-input-full"
+          />
+        </div>
+        <div class="vt-field">
+          <label>{{ $t('common.password') }}</label>
+          <InputText
+            v-model="newUser.password"
+            type="password"
+            :placeholder="$t('common.password')"
+            class="vt-input-full"
+          />
+        </div>
+        <div class="vt-field">
+          <label>{{ $t('users.createModal.role') }}</label>
+          <Select
+            v-model="newUser.role"
+            :options="roleOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="vt-select"
+          />
         </div>
       </div>
-    </div>
+      <template #footer>
+        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeCreateModal" />
+        <Button
+          :label="userStore.loading ? $t('common.creating') : $t('users.createModal.create')"
+          icon="pi pi-check"
+          :disabled="userStore.loading || !newUser.user_name || !newUser.user_email"
+          @click="handleCreateUser"
+        />
+      </template>
+    </Dialog>
+
+    <!-- Edit User Dialog -->
+    <Dialog
+      v-model:visible="isEditModalVisible"
+      :header="$t('users.editModal.title')"
+      modal
+      :closable="true"
+      :draggable="false"
+      :style="{ width: '450px' }"
+      @hide="closeEditModal"
+    >
+      <div class="vt-form" v-if="editUser">
+        <div class="vt-field">
+          <label>{{ $t('common.username') }}</label>
+          <InputText
+            v-model="editUser.name"
+            :placeholder="$t('common.username')"
+            class="vt-input-full"
+          />
+        </div>
+        <div class="vt-field">
+          <label>{{ $t('common.email') }}</label>
+          <InputText
+            v-model="editUser.email"
+            :placeholder="$t('common.email')"
+            class="vt-input-full"
+          />
+        </div>
+        <div class="vt-field">
+          <label>{{ $t('users.createModal.role') }}</label>
+          <Select
+            v-model="editUser.role"
+            :options="roleOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="vt-select"
+          />
+        </div>
+      </div>
+      <template #footer>
+        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeEditModal" />
+        <Button
+          :label="userStore.loading ? $t('users.editModal.saving') : $t('common.save')"
+          icon="pi pi-check"
+          :disabled="userStore.loading || !editUser?.name || !editUser?.email"
+          @click="handleUpdateUser"
+        />
+      </template>
+    </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <Dialog
+      v-model:visible="isDeleteModalVisible"
+      :header="$t('users.deleteModal.title')"
+      modal
+      :draggable="false"
+      :style="{ width: '400px' }"
+    >
+      <p>{{ $t('users.deleteModal.confirm', { name: userToDelete?.name }) }}</p>
+      <p class="vt-disclaimer">
+        <small>{{ $t('users.deleteModal.disclaimer') }}</small>
+      </p>
+      <template #footer>
+        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeDeleteModal" />
+        <Button :label="$t('common.delete')" severity="danger" @click="deleteUser" />
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { type CreateUserRequest, UserRole, type User } from '@/types/User';
-import { useUserStore } from '@/stores/users.ts';
-import { useCertificateStore } from '@/stores/certificates.ts';
+import { computed, onMounted, ref } from 'vue'
+import { type CreateUserRequest, UserRole, type User } from '@/types/User'
+import { useUserStore } from '@/stores/users.ts'
+import { useCertificateStore } from '@/stores/certificates.ts'
+import { useI18n } from 'vue-i18n'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import Tag from 'primevue/tag'
+import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
+import Select from 'primevue/select'
+import Dialog from 'primevue/dialog'
+import { FilterMatchMode } from '@primevue/core/api'
 
-// Stores
-const userStore = useUserStore();
+const { t } = useI18n()
 
-// Local state
-const isCreateModalVisible = ref(false);
-const isDeleteModalVisible = ref(false);
-const userToDelete = ref<User | null>(null);
+// stores
+const userStore = useUserStore()
+
+// filters
+const filters = ref({ global: { value: null, matchMode: FilterMatchMode.CONTAINS } })
+
+// role options
+const roleOptions = computed(() => [
+  { label: t('users.roleUser'), value: UserRole.User },
+  { label: t('users.roleAdmin'), value: UserRole.Admin },
+])
+
+// --- Create ---
+const isCreateModalVisible = ref(false)
 const newUser = ref<CreateUserRequest>({
   user_name: '',
   user_email: '',
   password: '',
   role: UserRole.User,
-});
+})
 
-// Lifecycle hook
-onMounted(async () => {
-  await userStore.fetchUsers();
-});
+const showCreateModal = () => {
+  isCreateModalVisible.value = true
+}
 
-// Methods
+const closeCreateModal = () => {
+  isCreateModalVisible.value = false
+  newUser.value = { user_name: '', user_email: '', password: '', role: UserRole.User }
+}
+
 const handleCreateUser = async () => {
-  await userStore.createUser(newUser.value);
-  isCreateModalVisible.value = false;
-  // Reset form
-  newUser.value = {
-    user_name: '',
-    user_email: '',
-    password: '',
-    role: UserRole.User,
-  };
-};
+  await userStore.createUser(newUser.value)
+  closeCreateModal()
+}
 
-const confirmDeleteUser = async (user: User) => {
-  userToDelete.value = user;
-  isDeleteModalVisible.value = true;
-};
+// --- Edit ---
+const isEditModalVisible = ref(false)
+const editUser = ref<User | null>(null)
+
+const openEditModal = (user: User) => {
+  editUser.value = { ...user }
+  isEditModalVisible.value = true
+}
+
+const closeEditModal = () => {
+  editUser.value = null
+  isEditModalVisible.value = false
+}
+
+const handleUpdateUser = async () => {
+  if (editUser.value) {
+    const ok = await userStore.updateUser(editUser.value)
+    if (ok) {
+      await userStore.fetchUsers(true)
+      closeEditModal()
+    }
+  }
+}
+
+// --- Delete ---
+const isDeleteModalVisible = ref(false)
+const userToDelete = ref<User | null>(null)
+
+const confirmDeleteUser = (user: User) => {
+  userToDelete.value = user
+  isDeleteModalVisible.value = true
+}
 
 const closeDeleteModal = () => {
-  userToDelete.value = null;
-  isDeleteModalVisible.value = false;
-};
+  userToDelete.value = null
+  isDeleteModalVisible.value = false
+}
 
 const deleteUser = async () => {
   if (userToDelete.value) {
-    await userStore.deleteUser(userToDelete.value.id);
-    const certStore = useCertificateStore();
-    await certStore.fetchCertificates();
-    closeDeleteModal();
+    await userStore.deleteUser(userToDelete.value.id)
+    const certStore = useCertificateStore()
+    await certStore.fetchCertificates()
+    closeDeleteModal()
   }
-};
+}
+
+// lifecycle
+onMounted(async () => {
+  await userStore.fetchUsers()
+})
 </script>
 
-
 <style scoped>
+.vt-head {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 22px;
+}
 
-:deep(.modal.show) {
-  background-color: rgba(0, 0, 0, 0.5);
+.vt-head h1 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.vt-sub {
+  font-size: 13px;
+  color: var(--vt-muted);
+  margin-top: 3px;
+}
+
+.vt-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 10px;
+}
+
+.vt-status {
+  color: var(--vt-muted);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.vt-error {
+  background: var(--vt-err);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.vt-table {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--vt-border);
+}
+
+.vt-table-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 0;
+}
+
+.vt-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.vt-search-wrap i {
+  position: absolute;
+  left: 10px;
+  color: var(--vt-muted);
+  z-index: 1;
+}
+
+.vt-search {
+  padding-left: 32px;
+}
+
+.vt-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.vt-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--vt-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.vt-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.vt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vt-field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vt-muted);
+}
+
+.vt-input-full {
+  width: 100%;
+}
+
+.vt-select {
+  width: 100%;
+}
+
+.vt-disclaimer {
+  color: var(--vt-muted);
+  margin-top: 8px;
 }
 </style>

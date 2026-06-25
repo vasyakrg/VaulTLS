@@ -142,12 +142,20 @@
   },
   "users": {
     "title": "Users",
+    "subtitle": "Manage application users",
     "colRole": "Role",
+    "roleUser": "User",
+    "roleAdmin": "Admin",
+    "noUsers": "No users found.",
     "createUser": "Create New User",
     "createModal": {
       "title": "Create New User",
       "role": "Role",
       "create": "Create User"
+    },
+    "editModal": {
+      "title": "Edit User",
+      "saving": "Saving..."
     },
     "deleteModal": {
       "title": "Delete User",

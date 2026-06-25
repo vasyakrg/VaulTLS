@@ -142,12 +142,20 @@
   },
   "users": {
     "title": "Usuarios",
+    "subtitle": "Gestionar usuarios de la aplicación",
     "colRole": "Rol",
+    "roleUser": "Usuario",
+    "roleAdmin": "Administrador",
+    "noUsers": "No se encontraron usuarios.",
     "createUser": "Crear nuevo usuario",
     "createModal": {
       "title": "Crear nuevo usuario",
       "role": "Rol",
       "create": "Crear usuario"
+    },
+    "editModal": {
+      "title": "Editar usuario",
+      "saving": "Guardando..."
     },
     "deleteModal": {
       "title": "Eliminar usuario",
