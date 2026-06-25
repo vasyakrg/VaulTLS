@@ -26,7 +26,8 @@
     "colCaId": "ID de CA",
     "enterValidityPeriod": "Introduzca el periodo de validez",
     "or": "o",
-    "hostname": "nombre de host"
+    "hostname": "nombre de host",
+    "search": "Buscar..."
   },
   "sidebar": {
     "overview": "Resumen",
@@ -202,6 +203,26 @@
       "optionallyAppend": "Opcionalmente, añada {hostname} para la verificación TLS."
     },
     "savedSuccessfully": "Configuración guardada correctamente"
+  },
+  "certs": {
+    "subtitle": "Gestionar certificados TLS y SSH",
+    "import": "Importar",
+    "create": "Crear certificado",
+    "cn": "Nombre Común",
+    "type": "Tipo",
+    "ca": "CA",
+    "validUntil": "Válido hasta",
+    "status": "Estado",
+    "statusValid": "Válido",
+    "statusExpiringSoon": "Próximo a vencer",
+    "statusExpired": "Vencido",
+    "statusRevoked": "Revocado",
+    "showPassword": "Mostrar contraseña",
+    "hidePassword": "Ocultar contraseña",
+    "copyPassword": "Copiar contraseña"
+  },
+  "nav": {
+    "certificates": "Certificados"
   },
   "acme": {
     "title": "Cuentas ACME",
