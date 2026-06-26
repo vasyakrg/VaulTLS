@@ -147,6 +147,21 @@ pub struct ServiceTokenRequest {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
+pub struct CreateServiceAccountRequest {
+    pub name: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ServiceAccountCreated {
+    pub id: i64,
+    pub name: String,
+    pub client_id: String,
+    pub secret: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct ServiceTokenResponse {
     pub access_token: String,
     pub token_type: String,

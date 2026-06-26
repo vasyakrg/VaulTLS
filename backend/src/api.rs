@@ -10,7 +10,7 @@ use rocket::http::{ContentType, Cookie, CookieJar, SameSite};
 use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
-use crate::auth::service_auth::verify_secret;
+use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
 use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
@@ -18,10 +18,10 @@ use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
-use crate::data::objects::{AppState, Name, User};
+use crate::data::objects::{AppState, Name, ServiceAccount, User};
 use crate::notification::mail::{MailMessage, Mailer};
     use crate::settings::{FrontendSettings, InnerSettings};
 
@@ -1411,4 +1411,74 @@ pub(crate) async fn service_token(
         expires_in: 3600,
         scopes: sa.scopes,
     }))
+}
+
+const ALLOWED_SCOPES: [&str; 2] = ["cert:read", "cert:issue"];
+
+#[openapi(tag = "Service Accounts")]
+#[post("/users/<id>/service-accounts", format = "json", data = "<payload>")]
+/// Create a service account owned by a user. Requires admin. Returns the secret once.
+pub(crate) async fn create_service_account(
+    state: &State<AppState>,
+    id: i64,
+    payload: Json<CreateServiceAccountRequest>,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<ServiceAccountCreated>, ApiError> {
+    // Validate scopes
+    for scope in &payload.scopes {
+        if !ALLOWED_SCOPES.contains(&scope.as_str()) {
+            return Err(ApiError::BadRequest(format!("Unknown scope: {scope}")));
+        }
+    }
+    // Owner must exist
+    state.db.get_user(id).await.map_err(|_| ApiError::NotFound(None))?;
+
+    let (client_id, secret) = generate_credentials();
+    let secret_hash = hash_secret(&secret)?;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let sa = ServiceAccount {
+        id: -1,
+        name: payload.name.clone(),
+        client_id: client_id.clone(),
+        secret_hash,
+        user_id: id,
+        scopes: payload.scopes.clone(),
+        created_at: now,
+        last_used_at: None,
+        revoked: false,
+    };
+    let saved = state.db.insert_service_account(sa).await?;
+
+    Ok(Json(ServiceAccountCreated {
+        id: saved.id,
+        name: saved.name,
+        client_id,
+        secret,
+        scopes: saved.scopes,
+    }))
+}
+
+#[openapi(tag = "Service Accounts")]
+#[get("/users/<id>/service-accounts")]
+/// List a user's service accounts (no secrets). Requires admin.
+pub(crate) async fn list_service_accounts(
+    state: &State<AppState>,
+    id: i64,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<Vec<ServiceAccount>>, ApiError> {
+    let accounts = state.db.list_service_accounts_by_user(id).await?;
+    Ok(Json(accounts))
+}
+
+#[openapi(tag = "Service Accounts")]
+#[delete("/service-accounts/<sid>")]
+/// Revoke a service account. Requires admin.
+pub(crate) async fn revoke_service_account(
+    state: &State<AppState>,
+    sid: i64,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<(), ApiError> {
+    state.db.revoke_service_account(sid).await?;
+    Ok(())
 }
