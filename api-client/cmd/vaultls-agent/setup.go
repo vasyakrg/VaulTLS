@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/vasyakrg/vaultls-agent/internal/wizard"
 )
@@ -37,7 +38,7 @@ func cmdSetup(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := os.MkdirAll("/etc/vaultls", 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}

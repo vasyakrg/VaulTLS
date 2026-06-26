@@ -18,7 +18,7 @@ func main() {
 	case "setup":
 		os.Exit(cmdSetup(os.Args[2:]))
 	case "check":
-		os.Exit(cmdRun([]string{"--once"}))
+		os.Exit(cmdRun(append(os.Args[2:], "--once")))
 	case "version":
 		fmt.Println(version.String())
 	default:

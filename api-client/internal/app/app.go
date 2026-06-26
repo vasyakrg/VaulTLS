@@ -47,7 +47,11 @@ func Run(ctx context.Context, configPath, githubAPIBase string) error {
 			log.Error("exporter server", "err", err)
 		}
 	}()
-	defer srv.Shutdown(context.Background()) //nolint:errcheck
+	defer func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
 
 	// Self-update check now and daily.
 	checkUpdate(ctx, m, githubAPIBase, log)
