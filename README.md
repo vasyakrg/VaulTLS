@@ -111,8 +111,12 @@ If no user is found, a new one is created.
 Users can only see certificates created for them. Only admins can create new certificates.
 User certificates can be downloaded through the web interface.
 
-The current CA certificate to be integrated with your reverse proxy is available as a file at `/app/data/ca/ca.cert` 
-and as download via the API endpoint `/api/certificates/ca/download`.
+The current CA certificate to be integrated with your reverse proxy is available as a file at `/app/data/ca/ca.cert`
+and as download via the API endpoint `/api/certificates/ca/download` (the most recent TLS CA).
+When you run multiple TLS CAs, use `/api/certificates/ca/bundle` instead — it returns all TLS CA
+certificates as a single PEM, which is what a reverse proxy's trust pool needs. The public list of
+all CAs (id, name, dates, type) is available at `/api/certificates/ca`, and a specific CA at
+`/api/certificates/ca/<id>/download`.
 
 Further API documentation is available at the endpoint `/api`
 
@@ -169,7 +173,7 @@ tls {
   client_auth {
     mode <usually verify_if_given OR require_and_verify>
     trust_pool http {
-      endpoints <Address of VaulTLS Instance such as 127.0.0.1:5173>/api/certificates/ca/download
+      endpoints <Address of VaulTLS Instance such as 127.0.0.1:5173>/api/certificates/ca/bundle
     }
   }
 }

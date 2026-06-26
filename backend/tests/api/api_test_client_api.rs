@@ -172,3 +172,32 @@ async fn download_unknown_ca_is_404() -> Result<()> {
     assert_eq!(resp.status(), Status::NotFound, "unknown CA id must be 404, not 500");
     Ok(())
 }
+
+#[tokio::test]
+async fn ca_bundle_is_public_pem() -> Result<()> {
+    // new_setup creates one TLS CA but does NOT log in.
+    let client = VaulTLSClient::new_setup().await;
+    let resp = client.get("/certificates/ca/bundle").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok, "bundle must be public");
+    let cd = resp.headers().get_one("Content-Disposition").unwrap_or("").to_string();
+    let body = resp.into_bytes().await.unwrap();
+    assert!(body.starts_with(b"-----BEGIN CERTIFICATE-----"), "bundle must be PEM");
+    assert!(cd.contains("ca-bundle.crt"), "filename should be ca-bundle.crt, got {cd}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn ca_bundle_contains_all_tls_cas() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    client.create_second_ca().await?;
+    let resp = client.get("/certificates/ca/bundle").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body = resp.into_bytes().await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(
+        text.matches("-----BEGIN CERTIFICATE-----").count(),
+        2,
+        "bundle must contain both TLS CAs"
+    );
+    Ok(())
+}

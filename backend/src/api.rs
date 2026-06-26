@@ -891,6 +891,28 @@ pub(crate) async fn download_current_tls_ca(
 }
 
 #[openapi(tag = "Certificates")]
+#[get("/certificates/ca/bundle")]
+/// Public: all TLS CA certificates concatenated as one PEM (trust pool for reverse proxies).
+pub(crate) async fn download_ca_bundle(
+    state: &State<AppState>,
+) -> Result<DownloadResponse, ApiError> {
+    let all = state.db.get_all_ca().await?;
+    let mut bundle: Vec<u8> = Vec::new();
+    for ca in all.iter().filter(|c| c.ca_type == CAType::TLS) {
+        let pem = get_tls_pem(ca).map_err(ApiError::OpenSsl)?;
+        bundle.extend_from_slice(&pem);
+    }
+    if bundle.is_empty() {
+        return Err(ApiError::NotFound(None));
+    }
+    Ok(DownloadResponse::new_typed(
+        bundle,
+        "ca-bundle.crt",
+        ContentType::new("application", "x-pem-file"),
+    ))
+}
+
+#[openapi(tag = "Certificates")]
 #[get("/certificates/ca/ssh/download")]
 /// Download the current CA certificate.
 pub(crate) async fn download_current_ssh_ca(
