@@ -53,7 +53,7 @@ persistence:
   enabled: true
   # -- storageClass; empty string uses the cluster default.
   storageClass: ""
-  accessMode: с
+  accessMode: ReadWriteOnce
   size: 1Gi
   # -- Mount path inside the container.
   mountPath: /app/data
