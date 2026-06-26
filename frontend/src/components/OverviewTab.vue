@@ -48,6 +48,15 @@
             />
           </div>
           <div class="vt-filter-row">
+            <Select
+              v-model="typeFilter"
+              :options="typeFilterOptions"
+              optionLabel="label"
+              optionValue="value"
+              :placeholder="$t('common.colType')"
+              showClear
+              class="vt-type-filter"
+            />
             <label class="vt-checkbox-label">
               <input
                 v-model="hideAcmeCerts"
@@ -443,15 +452,17 @@ const shownCerts = ref(new Set<number>())
 const copiedCerts = ref(new Set<number>())
 const hideAcmeCerts = ref(localStorage.getItem('hideAcmeCerts') === 'true')
 watch(hideAcmeCerts, (val) => localStorage.setItem('hideAcmeCerts', String(val)))
+const typeFilter = ref<CertificateType | null>(null)
 
 const filters = ref({ global: { value: null, matchMode: FilterMatchMode.CONTAINS } })
 
 // computed
 const certificates = computed(() => certificateStore.certificates)
 const filteredActiveCertificates = computed(() => {
-  const all = Array.from(certificates.value.values()).filter((cert) => !cert.revoked_at)
-  if (!hideAcmeCerts.value) return all
-  return all.filter((cert) => cert.name.ou != 'ACME')
+  let all = Array.from(certificates.value.values()).filter((cert) => !cert.revoked_at)
+  if (hideAcmeCerts.value) all = all.filter((cert) => cert.name.ou != 'ACME')
+  if (typeFilter.value !== null) all = all.filter((cert) => cert.certificate_type === typeFilter.value)
+  return all
 })
 const revokedCertificates = computed(() =>
   Array.from(certificates.value.values()).filter((cert) => !!cert.revoked_at),
@@ -513,6 +524,8 @@ const certTypeOptions = computed(() => [
   { label: t('overview.generateModal.sshClient'), value: CertificateType.SSHClient },
   { label: t('overview.generateModal.sshServer'), value: CertificateType.SSHServer },
 ])
+
+const typeFilterOptions = computed(() => certTypeOptions.value)
 
 const userOptions = computed(() =>
   userStore.users.map((u: { id: number; name: string }) => ({ label: u.name, value: u.id })),
@@ -757,7 +770,11 @@ const removeUsageField = (index: number) => {
 .vt-filter-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 16px;
+}
+
+.vt-type-filter {
+  min-width: 160px;
 }
 
 .vt-checkbox-label {

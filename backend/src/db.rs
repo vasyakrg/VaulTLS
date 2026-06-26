@@ -421,8 +421,8 @@ impl VaulTLSDB {
     pub(crate) async fn update_user(&self, user: User) -> Result<()> {
         db_do!(self.pool, |conn: &Connection| {
             Ok(conn.execute(
-                "UPDATE users SET name = ?1, email =?2 WHERE id=?3",
-                params![user.name, user.email, user.id]
+                "UPDATE users SET name = ?1, email = ?2, role = ?3 WHERE id = ?4",
+                params![user.name, user.email, user.role as u8, user.id]
             ).map(|_| ())?)
         })
     }
