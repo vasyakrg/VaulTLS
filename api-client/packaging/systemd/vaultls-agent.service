@@ -1,0 +1,18 @@
+[Unit]
+Description=VaulTLS certificate agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vaultls-agent run --config /etc/vaultls/config.yaml
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/etc/ssl/vaultls /etc/vaultls
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+name: vaultls-agent
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: vasyakrg <vasyakrg@users.noreply.github.com>
+description: VaulTLS certificate agent (pulls certs, writes PEM, reloads services)
+homepage: https://github.com/vasyakrg/VaulTLS
+license: MIT
+contents:
+  - src: ./dist/vaultls-agent
+    dst: /usr/bin/vaultls-agent
+    file_info:
+      mode: 0755
+  - src: ./packaging/systemd/vaultls-agent.service
+    dst: /lib/systemd/system/vaultls-agent.service
+  - src: ./packaging/config.example.yaml
+    dst: /etc/vaultls/config.example.yaml
+    type: config|noreplace
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
