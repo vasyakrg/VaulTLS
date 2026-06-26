@@ -13,7 +13,10 @@ import (
 // Check queries GitHub Releases latest and compares with current.
 func Check(ctx context.Context, apiBase, repo, current string) (string, bool, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", strings.TrimRight(apiBase, "/"), repo)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("build request: %w", err)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
