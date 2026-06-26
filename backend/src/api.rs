@@ -4,7 +4,7 @@ use rocket_okapi::openapi;
 use rocket::{delete, get, post, put, State};
 use rocket::response::Redirect;
 use rocket::serde::json::Json;
-use rocket::http::{Cookie, CookieJar, SameSite};
+use rocket::http::{ContentType, Cookie, CookieJar, SameSite};
 use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
@@ -857,15 +857,35 @@ async fn send_notification_email(state: &State<AppState>, user_id: i64, cert: &C
     });
 }
 
+/// Build a download response for a TLS CA in PEM (default) or DER.
+fn tls_ca_download(ca: &CA, format: Option<DataFormat>, base_name: &str) -> Result<DownloadResponse, ApiError> {
+    match format {
+        Some(DataFormat::DER) => Ok(DownloadResponse::new_typed(
+            ca.cert.clone(),
+            &format!("{base_name}.der"),
+            ContentType::new("application", "pkix-cert"),
+        )),
+        _ => {
+            // None or Some(PEM): keep PEM as the default to preserve current behaviour.
+            let pem = get_tls_pem(ca).map_err(ApiError::OpenSsl)?;
+            Ok(DownloadResponse::new_typed(
+                pem,
+                &format!("{base_name}.crt"),
+                ContentType::new("application", "x-pem-file"),
+            ))
+        }
+    }
+}
+
 #[openapi(tag = "Certificates")]
-#[get("/certificates/ca/download")]
-/// Download the current CA certificate.
+#[get("/certificates/ca/download?<format>")]
+/// Download the current TLS CA certificate (PEM by default, or DER via ?format=der).
 pub(crate) async fn download_current_tls_ca(
-    state: &State<AppState>
+    state: &State<AppState>,
+    format: Option<DataFormat>,
 ) -> Result<DownloadResponse, ApiError> {
     let ca = state.db.get_latest_tls_ca().await?;
-    let pem = get_tls_pem(&ca)?;
-    Ok(DownloadResponse::new(pem, "ca_certificate.pem"))
+    tls_ca_download(&ca, format, "ca")
 }
 
 #[openapi(tag = "Certificates")]
@@ -880,25 +900,25 @@ pub(crate) async fn download_current_ssh_ca(
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/ca/<id>/download")]
-/// Download a CA certificate identified by id.
+#[get("/certificates/ca/<id>/download?<format>")]
+/// Download a CA certificate by id (TLS: PEM by default or DER via ?format=der; SSH: .pub).
 pub(crate) async fn download_ca(
     state: &State<AppState>,
-    id: i64
+    id: i64,
+    format: Option<DataFormat>,
 ) -> Result<DownloadResponse, ApiError> {
     let ca = state.db.get_ca_by_id(id).await?;
-
-    let pem = match ca.ca_type {
-        CAType::TLS => get_tls_pem(&ca)?,
-        CAType::SSH => get_ssh_pem(&ca)?
-    };
-
-    let file_name = match ca.ca_type {
-        CAType::TLS => format!("ca_{}.pem", ca.name),
-        CAType::SSH => format!("ca_{}.pub", ca.name)
-    };
-
-    Ok(DownloadResponse::new(pem, &file_name))
+    match ca.ca_type {
+        CAType::TLS => tls_ca_download(&ca, format, &format!("ca_{}", ca.name)),
+        CAType::SSH => {
+            let pem = get_ssh_pem(&ca).map_err(|e| ApiError::Other(e.to_string()))?;
+            Ok(DownloadResponse::new_typed(
+                pem,
+                &format!("ca_{}.pub", ca.name),
+                ContentType::new("application", "octet-stream"),
+            ))
+        }
+    }
 }
 
 #[openapi(tag = "Certificates")]

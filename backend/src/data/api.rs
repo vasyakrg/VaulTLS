@@ -71,18 +71,23 @@ pub struct CreateUserCertificateRequest {
     pub ca_id: Option<i64>
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Serialize, Debug)]
 pub struct DownloadResponse {
     pub content: Vec<u8>,
     pub filename: String,
+    #[serde(skip)]
+    pub content_type: ContentType,
 }
 
 impl DownloadResponse {
+    /// Backwards-compatible constructor; defaults to text/plain.
     pub fn new(content: Vec<u8>, filename: &str) -> Self {
-        Self {
-            content,
-            filename: filename.to_string(),
-        }
+        Self { content, filename: filename.to_string(), content_type: ContentType::Text }
+    }
+
+    /// Constructor with an explicit content type.
+    pub fn new_typed(content: Vec<u8>, filename: &str, content_type: ContentType) -> Self {
+        Self { content, filename: filename.to_string(), content_type }
     }
 }
 
@@ -90,7 +95,7 @@ impl<'r> Responder<'r, 'static> for DownloadResponse {
     fn respond_to(self, _req: &'r Request<'_>) -> rocket::response::Result<'static> {
         Response::build()
             .status(Status::Ok)
-            .header(ContentType::Text)
+            .header(self.content_type)
             .header(Header::new(
                 "Content-Disposition",
                 format!("attachment; filename=\"{}\"", self.filename),

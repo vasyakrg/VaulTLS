@@ -229,7 +229,6 @@ impl VaulTLSClient {
         let response = request.dispatch().await;
 
         assert_eq!(response.status(), Status::Ok);
-        assert_eq!(response.content_type(), Some(ContentType::Text));
 
         let Some(body) = response.into_bytes().await else { return Err(anyhow::anyhow!("No body")) };
         assert!(!body.is_empty());

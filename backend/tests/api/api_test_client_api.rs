@@ -78,3 +78,26 @@ async fn issuance_records_serial() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn ca_download_pem_default_and_der() -> Result<()> {
+    let client = VaulTLSClient::new_setup().await;
+
+    // Default (PEM)
+    let resp = client.get("/certificates/ca/download").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let cd = resp.headers().get_one("Content-Disposition").unwrap_or("").to_string();
+    let body = resp.into_bytes().await.unwrap();
+    assert!(body.starts_with(b"-----BEGIN CERTIFICATE-----"), "default must be PEM");
+    assert!(cd.contains("ca.crt"), "filename should be ca.crt, got {cd}");
+
+    // Explicit DER
+    let resp = client.get("/certificates/ca/download?format=der").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let cd = resp.headers().get_one("Content-Disposition").unwrap_or("").to_string();
+    let body = resp.into_bytes().await.unwrap();
+    assert!(!body.starts_with(b"-----BEGIN"), "DER must not be PEM-armored");
+    assert!(cd.contains("ca.der"), "filename should be ca.der, got {cd}");
+
+    Ok(())
+}
