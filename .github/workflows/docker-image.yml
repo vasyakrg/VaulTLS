@@ -42,8 +42,8 @@ jobs:
 
           case "${{ github.event_name }}" in
             push)
-              # Push to main publishes a rolling dev image.
-              TAGS="${REPO}:dev"
+              # Push to main publishes the rolling latest image (plus :dev).
+              TAGS="${REPO}:latest,${REPO}:dev"
               ;;
             workflow_dispatch)
               TAGS="${REPO}:${{ github.event.inputs.tag_name }},${REPO}:rc"
