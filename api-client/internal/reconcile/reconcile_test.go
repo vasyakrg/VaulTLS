@@ -76,6 +76,10 @@ func TestReconcileWritesAndRenews(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("privkey mode = %v, want 0600", info.Mode().Perm())
 	}
+	hinfo, _ := os.Stat(filepath.Join(dir, "haproxy.pem"))
+	if hinfo.Mode().Perm() != 0o600 {
+		t.Errorf("haproxy mode = %v, want 0600", hinfo.Mode().Perm())
+	}
 	st, _ := store.Read(dir)
 	if st.Serial != "A1B2C" {
 		t.Errorf("state serial = %q", st.Serial)
@@ -113,5 +117,37 @@ func TestReconcileDomainNotFound(t *testing.T) {
 	r := New(api, m, 720*time.Hour, time.Now)
 	if err := r.Domain(context.Background(), newDomain(dir)); err == nil {
 		t.Fatal("expected error when domain cert not found")
+	}
+}
+
+func TestReconcileSelectsByCertID(t *testing.T) {
+	dir := t.TempDir()
+	vu := time.Now().Add(48 * time.Hour).UnixMilli()
+	// Two certs: the Name does not match either; CertID must drive selection.
+	api := &fakeAPI{
+		certs: []vaultls.Cert{
+			{ID: 7, Name: "wrong-a", ValidUntil: vu},
+			{ID: 9, Name: "wrong-b", ValidUntil: vu},
+		},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	m := metrics.New()
+	r := New(api, m, 720*time.Hour, time.Now)
+	d := newDomain(dir)
+	d.Name = "no-such-name"
+	d.CertID = 9
+	if err := r.Domain(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if api.dlCount != 1 {
+		t.Errorf("expected one download for the cert picked by CertID, dlCount = %d", api.dlCount)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "fullchain.pem")); err != nil {
+		t.Errorf("missing fullchain.pem: %v", err)
+	}
+	st, _ := store.Read(dir)
+	if st.CertID != 9 {
+		t.Errorf("state cert_id = %d, want 9 (selected by CertID)", st.CertID)
 	}
 }

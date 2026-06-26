@@ -54,7 +54,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 
 	prev, err := store.Read(d.OutDir)
 	if err != nil {
-		r.m.IncReconcileError(label, "state")
+		r.m.IncReconcileError(label, "state_read")
 		return fmt.Errorf("read state: %w", err)
 	}
 
@@ -63,7 +63,10 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 	// to issue a replacement; until ValidUntil changes we have nothing new to deploy.
 	if prev.CertID == cert.ID && prev.ValidUntil == cert.ValidUntil && prev.Serial != "" {
 		prev.LastCheck = now.UnixMilli()
-		_ = store.Write(d.OutDir, prev)
+		if err := store.Write(d.OutDir, prev); err != nil {
+			r.m.IncReconcileError(label, "state_write")
+			return fmt.Errorf("write state: %w", err)
+		}
 		r.m.SetCertSerial(label, prev.Serial)
 		return nil
 	}
@@ -100,7 +103,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 		next.LastRenewal = now.UnixMilli()
 	}
 	if err := store.Write(d.OutDir, next); err != nil {
-		r.m.IncReconcileError(label, "state")
+		r.m.IncReconcileError(label, "state_write")
 		return fmt.Errorf("write state: %w", err)
 	}
 	r.m.SetCertSerial(label, bundle.Serial)

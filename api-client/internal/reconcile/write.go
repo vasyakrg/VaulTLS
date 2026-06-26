@@ -31,23 +31,28 @@ func writeFile(dir, name string, data []byte, mode os.FileMode, d config.Domain)
 	return nil
 }
 
+// lookupOwner resolves the configured owner/group to numeric ids. A -1 in
+// either dimension means "preserve" for os.Chown, so only-owner or only-group
+// configs are honored. Returns ok=false when nothing is configured, or when a
+// configured name cannot be resolved (configured-but-unresolvable → skip chown).
 func lookupOwner(d config.Domain) (int, int, bool) {
 	if d.Owner == "" && d.Group == "" {
 		return 0, 0, false
 	}
 	uid, gid := -1, -1
 	if d.Owner != "" {
-		if u, err := user.Lookup(d.Owner); err == nil {
-			uid, _ = strconv.Atoi(u.Uid)
+		u, err := user.Lookup(d.Owner)
+		if err != nil {
+			return 0, 0, false
 		}
+		uid, _ = strconv.Atoi(u.Uid)
 	}
 	if d.Group != "" {
-		if g, err := user.LookupGroup(d.Group); err == nil {
-			gid, _ = strconv.Atoi(g.Gid)
+		g, err := user.LookupGroup(d.Group)
+		if err != nil {
+			return 0, 0, false
 		}
-	}
-	if uid < 0 || gid < 0 {
-		return 0, 0, false
+		gid, _ = strconv.Atoi(g.Gid)
 	}
 	return uid, gid, true
 }
