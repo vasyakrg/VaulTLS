@@ -124,12 +124,15 @@ impl_openapi_auth!(AuthenticatedPrivileged, "UserRole::Admin");
 
 pub(crate) fn authenticate_auth_token(request: &Request<'_>) -> Option<Claims> {
     // Prefer an explicit Authorization: Bearer header (service tokens) over the private
-    // cookie (human sessions). This lets service tokens work even when a browser cookie
-    // is present in the same request, and matches standard API client behaviour.
-    let token = if let Some(header) = request.headers().get_one("Authorization") {
-        header.strip_prefix("Bearer ")?.trim().to_string()
-    } else {
-        request.cookies().get_private("auth_token")?.value().to_string()
+    // cookie (human sessions). A non-Bearer Authorization header is ignored and we fall
+    // back to the cookie, so it cannot break human cookie authentication.
+    let token = match request
+        .headers()
+        .get_one("Authorization")
+        .and_then(|h| h.strip_prefix("Bearer "))
+    {
+        Some(bearer) => bearer.trim().to_string(),
+        None => request.cookies().get_private("auth_token")?.value().to_string(),
     };
 
     let config = request.rocket().state::<AppState>()?;

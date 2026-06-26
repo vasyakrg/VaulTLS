@@ -161,3 +161,16 @@ async fn service_issue_binds_to_owner() -> Result<()> {
     assert_eq!(v["user_id"].as_i64().unwrap(), 1, "service must issue for its owner, not user 2");
     Ok(())
 }
+
+#[tokio::test]
+async fn non_bearer_authorization_header_falls_back_to_cookie() -> Result<()> {
+    use rocket::http::Header;
+    let client = VaulTLSClient::new_authenticated().await; // admin, cookie set
+    let resp = client
+        .get("/certificates")
+        .header(Header::new("Authorization", "Basic dXNlcjpwYXNz"))
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok, "non-Bearer Authorization must not break cookie auth");
+    Ok(())
+}
