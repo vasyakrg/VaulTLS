@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/template"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Answers struct {
@@ -16,29 +17,38 @@ type Answers struct {
 	Reload   string
 }
 
-const tmpl = `server:
-  url: {{ .URL }}
-  client_id: {{ .ClientID }}
-  secret: {{ .Secret }}
-schedule: "0 3 1 * *"
-exporter:
-  listen: "127.0.0.1:9105"
-domains:
-  - name: "{{ .Domain }}"
-    formats: [pem]
-    reload: "{{ .Reload }}"
-`
+type renderDoc struct {
+	Server struct {
+		URL      string `yaml:"url"`
+		ClientID string `yaml:"client_id"`
+		Secret   string `yaml:"secret"`
+	} `yaml:"server"`
+	Schedule string `yaml:"schedule"`
+	Exporter struct {
+		Listen string `yaml:"listen"`
+	} `yaml:"exporter"`
+	Domains []renderDomain `yaml:"domains"`
+}
+
+type renderDomain struct {
+	Name    string   `yaml:"name"`
+	Formats []string `yaml:"formats"`
+	Reload  string   `yaml:"reload"`
+}
 
 func Render(a Answers) ([]byte, error) {
-	t, err := template.New("config").Parse(tmpl)
-	if err != nil {
-		return nil, err
-	}
-	var b strings.Builder
-	if err := t.Execute(&b, a); err != nil {
-		return nil, err
-	}
-	return []byte(b.String()), nil
+	var doc renderDoc
+	doc.Server.URL = a.URL
+	doc.Server.ClientID = a.ClientID
+	doc.Server.Secret = a.Secret
+	doc.Schedule = "0 3 1 * *"
+	doc.Exporter.Listen = "127.0.0.1:9105"
+	doc.Domains = []renderDomain{{
+		Name:    a.Domain,
+		Formats: []string{"pem"},
+		Reload:  a.Reload,
+	}}
+	return yaml.Marshal(&doc)
 }
 
 // RunInteractive prompts only for fields empty in preset.
