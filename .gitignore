@@ -4,3 +4,5 @@ frontend/node_modules
 .env
 frontend/dist
 backend/settings.json
+# Реальные prod-значения Helm с секретами — только example коммитим
+helm-chart/values-prod.yaml

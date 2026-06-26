@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vaultls.fullname" . }}
+  labels:
+    {{- include "vaultls.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    # RWO volume + SQLite: never run two writers at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "vaultls.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vaultls.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vaultls
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: VAULTLS_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: api-secret
+            - name: VAULTLS_URL
+              value: {{ .Values.config.url | quote }}
+            - name: VAULTLS_INSECURE
+              value: {{ .Values.config.insecure | quote }}
+            - name: VAULTLS_LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            {{- if .Values.secrets.dbSecret }}
+            - name: VAULTLS_DB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: db-secret
+            {{- end }}
+            {{- if .Values.config.oidc.authUrl }}
+            - name: VAULTLS_OIDC_AUTH_URL
+              value: {{ .Values.config.oidc.authUrl | quote }}
+            - name: VAULTLS_OIDC_CALLBACK_URL
+              value: {{ .Values.config.oidc.callbackUrl | quote }}
+            - name: VAULTLS_OIDC_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: oidc-client-id
+            - name: VAULTLS_OIDC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: oidc-client-secret
+            {{- end }}
+            {{- if .Values.config.acme.enabled }}
+            - name: VAULTLS_ACME_ENABLED
+              value: "true"
+            {{- end }}
+            {{- if .Values.config.acme.accountEmail }}
+            - name: VAULTLS_ACCOUNT_EMAIL
+              value: {{ .Values.config.acme.accountEmail | quote }}
+            {{- end }}
+            {{- if .Values.secrets.accountPassword }}
+            - name: VAULTLS_ACCOUNT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: account-password
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "vaultls.pvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

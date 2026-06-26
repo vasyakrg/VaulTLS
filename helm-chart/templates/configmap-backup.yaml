@@ -1,0 +1,61 @@
+{{- if .Values.backup.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-backup" (include "vaultls.fullname" .) }}
+  labels:
+    {{- include "vaultls.labels" . | nindent 4 }}
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+
+    DATA_DIR="{{ .Values.persistence.mountPath }}"
+    STAGE="/stage"
+
+    echo "==> installing restic + sqlite"
+    apk add --no-cache restic sqlite >/dev/null
+
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
+
+    echo "==> creating consistent SQLite snapshots"
+    found_db=0
+    for db in $(find "$DATA_DIR" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null); do
+      found_db=1
+      rel="${db#$DATA_DIR/}"
+      dest="$STAGE/$rel"
+      mkdir -p "$(dirname "$dest")"
+      echo "    sqlite .backup: $rel"
+      sqlite3 "$db" ".backup '$dest'"
+    done
+    [ "$found_db" -eq 0 ] && echo "    no SQLite database found, archiving files only"
+
+    echo "==> staging remaining files (certs, keys, crl, ...)"
+    tar -C "$DATA_DIR" \
+      --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
+      --exclude='*.sqlite' --exclude='*.sqlite3' \
+      -cf - . | tar -C "$STAGE" -xf -
+
+    export RESTIC_REPOSITORY="s3:${S3_ENDPOINT}/${S3_BUCKET}/${S3_PATH}"
+
+    echo "==> ensuring restic repository exists"
+    if ! restic snapshots >/dev/null 2>&1; then
+      echo "    initializing repository at ${RESTIC_REPOSITORY}"
+      restic init
+    fi
+
+    echo "==> backing up"
+    restic backup --host vaultls --tag vaultls "$STAGE"
+
+    echo "==> applying retention policy"
+    restic forget --host vaultls --tag vaultls \
+      --keep-daily "$KEEP_DAILY" \
+      --keep-weekly "$KEEP_WEEKLY" \
+      --keep-monthly "$KEEP_MONTHLY" \
+      --prune
+
+    echo "==> current snapshots"
+    restic snapshots --host vaultls
+    echo "==> backup completed"
+{{- end }}

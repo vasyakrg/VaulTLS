@@ -1,4 +1,4 @@
-![VaulTLS Logo](https://github.com/7ritn/VaulTLS/blob/main/assets/logoText.png)
+![VaulTLS Logo](assets/logoText.png)
 
 VaulTLS is a modern solution for managing mTLS (mutual TLS) certificates with ease.
 It provides a centralized platform for generating, managing, and distributing TLS certificates for your home lab.
@@ -6,11 +6,12 @@ It provides a centralized platform for generating, managing, and distributing TL
 The main reason why I developed VaulTLS was that I didn't like messing with shell scripts and OpenSSL.
 I also did not have an overview about the expiration of individual certificates.
 
-![WebUI Overview](https://github.com/7ritn/VaulTLS/blob/main/assets/vaultls-overview.png)
+![WebUI Overview](assets/vaultls-overview.png)
 
 ## Features
 
 - 🔒 Comprehensive TLS X.509 certificate management
+- 📥 Import of externally purchased certificates with automatic CA chain import
 - 💻 SSH certificate management
 - 📱 Modern web interface for certificate management
 - 🔐 OpenID Connect authentication support
@@ -18,11 +19,13 @@ I also did not have an overview about the expiration of individual certificates.
 - 🚀 RESTful API for automation
 - 🤖 ACME CA support (Traefik, acme.sh, and other ACME clients)
 - 🛠 Docker/Podman container support
+- ☸️ Kubernetes deployment via Helm chart with optional S3 backup (restic)
 - ⚡ Built with Rust (backend) and Vue.js (frontend) for performance and reliability
 
 ## Screenshots
-![WebUI CAs](https://github.com/7ritn/VaulTLS/blob/main/assets/vaultls-ca.png)
-![WebUI Users](https://github.com/7ritn/VaulTLS/blob/main/assets/vaultls-users.png)
+![WebUI CAs](assets/vaultls-ca.png)
+
+![WebUI ACME accounts](assets/vaultls-acme.png)
 
 ## Installation
 Installation is managed through a Container. The app should be behind a reverse proxy for TLS handling.
@@ -37,8 +40,26 @@ podman run -d \
   -v vaultls-data:/app/data \
   -e VAULTLS_API_SECRET="[VAULTLS_API_SECRET]" \
   -e VAULTLS_URL="https://vaultls.example.com/" \
-  ghcr.io/7ritn/vaultls:latest
+  ghcr.io/vasyakrg/vaultls:latest
 ```
+
+### Kubernetes (Helm)
+For cluster deployments a Helm chart is provided under [`helm-chart/`](helm-chart/). It renders
+the Deployment, Service, Ingress, persistent volume and an optional restic→S3 backup CronJob.
+
+```bash
+# 1. copy the prod values template and fill in secrets (kept out of git)
+cp helm-chart/values.yaml helm-chart/values-prod.yaml
+
+# 2. install / upgrade
+helm upgrade --install vaultls ./helm-chart \
+  -n vaultls --create-namespace \
+  -f helm-chart/values-prod.yaml
+```
+
+`values-prod.yaml` is gitignored — never commit real secrets. Generate `apiSecret` / `dbSecret`
+with `openssl rand -base64 32`. Keep `replicaCount: 1`: SQLite on an RWO volume does not tolerate
+two writers. See [`helm-chart/values.yaml`](helm-chart/values.yaml) for all options.
 
 ### Encrypting the Database
 By specifying the `VAULTLS_DB_SECRET` environmental variable, the database is encrypted. Data is retained. It is not possible to go back.

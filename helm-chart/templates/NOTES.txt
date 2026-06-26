@@ -1,0 +1,37 @@
+VaulTLS установлен как релиз "{{ .Release.Name }}" в namespace "{{ .Release.Namespace }}".
+
+{{- if .Values.ingress.enabled }}
+
+Доступ:
+  https://{{ .Values.ingress.host }}
+{{- else }}
+
+Ingress отключён. Проброс порта для проверки:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "vaultls.fullname" . }} 8080:{{ .Values.service.port }}
+  открыть http://localhost:8080
+{{- end }}
+
+Данные хранятся в PVC "{{ include "vaultls.pvcName" . }}" ({{ .Values.persistence.mountPath }}).
+
+{{- if .Values.backup.enabled }}
+
+Бекап (restic → S3):
+  расписание: {{ .Values.backup.schedule }}
+  репозиторий: s3:{{ .Values.backup.restic.s3Endpoint }}/{{ .Values.backup.restic.s3Bucket }}/{{ .Values.backup.restic.s3Path }}
+  retention:   daily={{ .Values.backup.restic.keepDaily }} weekly={{ .Values.backup.restic.keepWeekly }} monthly={{ .Values.backup.restic.keepMonthly }}
+
+Запустить бекап вручную сейчас:
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "vaultls.fullname" . }}-backup {{ include "vaultls.fullname" . }}-backup-manual
+
+Посмотреть снапшоты / восстановить — см. README.md (раздел "Восстановление").
+{{- else }}
+
+ВНИМАНИЕ: бекап отключён (backup.enabled=false). Данные не резервируются.
+{{- end }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- if not .Values.secrets.dbSecret }}
+
+ПРЕДУПРЕЖДЕНИЕ: VAULTLS_DB_SECRET не задан — база данных не шифруется на диске.
+{{- end }}
+{{- end }}

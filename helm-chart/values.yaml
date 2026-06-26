@@ -1,0 +1,144 @@
+# Default values for vaultls.
+
+# -- Number of replicas. Keep at 1: SQLite + RWO volume do not tolerate two writers.
+replicaCount: 1
+
+image:
+  # Fork image (Phase 1 import + Phase 3 redesign + fixes). Published by the
+  # fork's docker-image.yml workflow on release / workflow_dispatch.
+  repository: ghcr.io/vasyakrg/vaultls
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets. The fork's ghcr package is public, so none are needed.
+#    If the package is ever made private, create a docker-registry secret and list it here.
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Application configuration. Non-secret values go into env directly.
+config:
+  # -- Public URL of the instance (VAULTLS_URL).
+  url: "https://vaultls.example.com/"
+  # -- Allow access without HTTPS at the app level (VAULTLS_INSECURE). Keep false behind Ingress TLS.
+  insecure: false
+  # -- Log level: error | warn | info | debug | trace.
+  logLevel: "info"
+  # OIDC (optional). Leave urls empty to disable.
+  oidc:
+    authUrl: ""
+    callbackUrl: ""
+    # clientId / clientSecret are set under `secrets` below.
+  acme:
+    enabled: false
+    accountEmail: ""
+
+# Secrets. With the default approach the chart renders a Secret from these values.
+# WARNING: do NOT put real values here — this file is committed. Override real secrets
+#          via a gitignored values-prod.yaml (see values-prod.example.yaml) or --set.
+secrets:
+  # -- API secret, 256-bit base64. Generate: openssl rand -base64 32 (VAULTLS_API_SECRET).
+  apiSecret: ""
+  # -- Database encryption secret (VAULTLS_DB_SECRET). Empty = DB not encrypted at rest.
+  dbSecret: ""
+  # -- OIDC client id / secret (used only if config.oidc.authUrl is set).
+  oidcClientId: ""
+  oidcClientSecret: ""
+  # -- Optionally pre-set account email/password (VAULTLS_ACCOUNT_EMAIL / _PASSWORD).
+  accountEmail: ""
+  accountPassword: ""
+  # -- Use an existing Secret instead of generating one from the values above.
+  #    The referenced Secret must contain the same keys (see templates/secret.yaml).
+  existingSecret: ""
+
+persistence:
+  enabled: true
+  # -- storageClass; empty string uses the cluster default.
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  # -- Mount path inside the container.
+  mountPath: /app/data
+  # -- Use an existing PVC instead of creating one.
+  existingClaim: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  host: vaultls.example.com
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: true
+    # -- Pre-provisioned wildcard TLS secret (cert is pulled automatically, no cert-manager).
+    secretName: tls-example-ingress
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext: {}
+securityContext: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ----------------------------------------------------------------------------
+# S3 backup via restic (CronJob).
+# ----------------------------------------------------------------------------
+backup:
+  enabled: false
+  # -- Cron schedule (5-field). Default: daily at 03:00.
+  schedule: "0 3 * * *"
+  # -- Image used to run restic + sqlite3. Packages are installed at runtime.
+  image:
+    repository: alpine
+    tag: "3.21"
+    pullPolicy: IfNotPresent
+  # -- Keep at most this many completed/failed jobs in history.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  # -- Forbid overlapping runs.
+  concurrencyPolicy: Forbid
+  # -- Deadline (seconds) to start a missed job.
+  startingDeadlineSeconds: 300
+  # -- Pin the backup pod to the same node as the app pod so the RWO volume mounts to both.
+  #    Disable only if persistence.accessMode is ReadWriteMany.
+  pinToAppNode: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  # restic / S3 configuration.
+  restic:
+    # -- S3 endpoint, host[:port] without scheme (e.g. s3.example.com or minio.local:9000).
+    s3Endpoint: ""
+    # -- Bucket name.
+    s3Bucket: ""
+    # -- Path/prefix inside the bucket for this instance's repository.
+    s3Path: "vaultls"
+    # -- Region (optional for S3-compatible storage).
+    s3Region: ""
+    # -- S3 credentials.
+    accessKeyId: ""
+    secretAccessKey: ""
+    # -- restic repository encryption password. REQUIRED. Generate: openssl rand -base64 24.
+    password: ""
+    # -- Retention policy passed to `restic forget`.
+    keepDaily: 7
+    keepWeekly: 4
+    keepMonthly: 6
+    # -- Use an existing Secret with the backup keys instead of generating one.
+    existingSecret: ""
