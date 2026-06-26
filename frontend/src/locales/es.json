@@ -167,6 +167,29 @@
       "disclaimer": "Aviso: Eliminar el usuario también eliminará sus certificados. Los certificados seguirán siendo válidos hasta su vencimiento."
     }
   },
+  "serviceAccounts": {
+    "title": "Cuentas de servicio",
+    "subtitle": "Acceso API para {name}",
+    "openButton": "Cuentas de servicio",
+    "create": "Crear cuenta de servicio",
+    "name": "Nombre",
+    "scopes": "Permisos",
+    "clientId": "Client ID",
+    "created": "Creada",
+    "lastUsed": "Último uso",
+    "never": "nunca",
+    "status": "Estado",
+    "active": "Activa",
+    "revoked": "Revocada",
+    "revoke": "Revocar",
+    "noAccounts": "Aún no hay cuentas de servicio.",
+    "secretTitle": "Guarda este secreto ahora",
+    "secretWarning": "Este secreto se muestra solo una vez. Guárdalo de forma segura — no se puede recuperar después.",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "scopeCertRead": "Leer y descargar certificados (cert:read)",
+    "scopeCertIssue": "Emitir certificados (cert:issue)"
+  },
   "settings": {
     "title": "Configuración",
     "subtitle": "Preferencias de la aplicación y del usuario",
