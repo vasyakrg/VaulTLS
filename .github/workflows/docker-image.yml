@@ -1,6 +1,10 @@
 name: Build and Push Container Image
 
 on:
+  # Auto-build the image on every push to main (tested locally beforehand).
+  push:
+    branches:
+      - main
   release:
     types: [published]
   workflow_dispatch:
@@ -12,15 +16,7 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        arch: [ amd64, arm64 ]
-        include:
-          - arch: amd64
-            runner: [self-hosted, X64]
-          - arch: arm64
-            runner: [self-hosted, ARM64]
-    runs-on: ${{ matrix.runner }}
+    runs-on: [self-hosted, X64]
     permissions:
       contents: read
       packages: write
@@ -39,65 +35,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Metadata
+      - name: Determine image tags
         run: |
-          echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-          # Use the tag from the release event, or the manual input if triggered manually
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "RELEASE_TAG=${{ github.event.inputs.tag_name }}" >> $GITHUB_ENV
-          else
-            echo "RELEASE_TAG=${GITHUB_REF##*/}" >> $GITHUB_ENV
-          fi
+          REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')
+          REPO="ghcr.io/${REPO_LOWER}"
+
+          case "${{ github.event_name }}" in
+            push)
+              # Push to main publishes a rolling dev image.
+              TAGS="${REPO}:dev"
+              ;;
+            workflow_dispatch)
+              TAGS="${REPO}:${{ github.event.inputs.tag_name }},${REPO}:rc"
+              ;;
+            *)
+              # Release: tag with the release name plus latest/rc.
+              TAG_NAME="${GITHUB_REF##*/}"
+              if [ "${{ github.event.release.prerelease }}" = "false" ]; then
+                SECONDARY_TAG="latest"
+              else
+                SECONDARY_TAG="rc"
+              fi
+              TAGS="${REPO}:${TAG_NAME},${REPO}:${SECONDARY_TAG}"
+              ;;
+          esac
+
+          echo "TAGS=$TAGS" >> $GITHUB_ENV
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/${{ matrix.arch }}
+          platforms: linux/amd64
           file: ./Containerfile
           push: true
-          tags: ghcr.io/${{ env.REPO_LOWER }}:${{ env.RELEASE_TAG }}-${{ matrix.arch }}
+          tags: ${{ env.TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  manifest:
-    runs-on: self-hosted
-    needs: build
-    permissions:
-      packages: write
-    steps:
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create and push multi-arch manifest
-        run: |
-          REPO="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          
-          # Determine secondary tag (latest vs rc)
-          # Note: If triggered manually, we default to 'rc' to be safe
-          if [ "${{ github.event.release.prerelease }}" = "false" ]; then
-            SECONDARY_TAG="latest"
-          else
-            SECONDARY_TAG="rc"
-          fi
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-             TAG_NAME="${{ github.event.inputs.tag_name }}"
-          else
-             TAG_NAME="${GITHUB_REF##*/}"
-          fi
-
-          echo "Pushing manifest for $TAG_NAME and $SECONDARY_TAG..."
-
-          docker buildx imagetools create \
-            --tag ${REPO}:${TAG_NAME} \
-            --tag ${REPO}:${SECONDARY_TAG} \
-            ${REPO}:${TAG_NAME}-amd64 \
-            ${REPO}:${TAG_NAME}-arm64
