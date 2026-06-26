@@ -1,0 +1,21 @@
+[Unit]
+Description=VaulTLS certificate agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vaultls-agent run --config /etc/vaultls/config.yaml
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+# ProtectSystem=full makes /usr, /boot, /etc read-only except the paths below.
+# A domain out_dir outside these locations fails to write at runtime — add it
+# here via a drop-in override, e.g. ReadWritePaths+=/your/path
+ReadWritePaths=/etc/ssl/vaultls /etc/vaultls
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+name: agent-release
+on:
+  push:
+    tags: ["agent-v*"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: api-client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go test ./...
+      - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+      - name: Build deb
+        run: |
+          VERSION="${GITHUB_REF_NAME#agent-v}"
+          make deb VERSION="$VERSION"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: api-client/dist/*.deb

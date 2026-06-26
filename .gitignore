@@ -13,3 +13,5 @@ backend/database.db3
 backend/encrypted.db3
 # Реальные prod-значения Helm с секретами — только example коммитим
 helm-chart/values-prod.yaml
+# vaultls-agent build artifacts
+api-client/dist/
