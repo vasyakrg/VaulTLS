@@ -25,7 +25,7 @@ push в Pushgateway (только pull `/metrics`).
 
 Установлено по исходникам backend (Rust):
 
-- Авторизация сервисного аккаунта: `POST /service/token` с телом
+- Авторизация сервисного аккаунта: `POST /api/auth/token` с телом
   `{client_id, secret}` → `{access_token (JWT), token_type, expires_in, scopes}`.
   Нужен scope `cert:read`.
 - Список: `GET /certificates` (Bearer) → массив объектов с полями
@@ -84,7 +84,6 @@ server:
   insecure_skip_verify: false    # для self-signed; по умолчанию строгий TLS
 schedule: "0 3 1 * *"            # cron-spec: 03:00 1-го числа (раз в месяц)
 jitter: 30m                      # размазать нагрузку
-renew_before: 720h               # если до истечения < N — обновлять вне расписания
 exporter:
   listen: "127.0.0.1:9105"
 domains:
@@ -122,12 +121,15 @@ domains:
 
 ## 5. Поток reconcile (на каждый домен, изолированно)
 
-1. Получить JWT: `POST /service/token` (кэш в памяти до `expires_in`,
+1. Получить JWT: `POST /api/auth/token` (кэш в памяти до `expires_in`,
    один авто-reauth при 401).
-2. `GET /certificates` → найти запись по `name`/`cert_id`. Дешёвая проверка:
+2. `GET /api/certificates` → найти запись по `name`/`cert_id`. Дешёвая проверка:
    `(cert_id, valid_until)` против `store`.
-3. Если не изменилось **и** до истечения > `renew_before` → **skip**
-   (обновить метрики, на диск ничего не писать).
+3. Если идентичность не изменилась (`(cert_id, valid_until)` совпали и serial
+   уже сохранён) → **skip** (обновить метрики, на диск ничего не писать).
+   В pull-архитектуре renew на сервере = новая запись с новым `id`/`valid_until`,
+   поэтому проверка идентичности сама ловит обновление; отдельный `renew_before`
+   не нужен и удалён.
 4. Иначе: `GET /certificates/<id>/password` + `GET /certificates/<id>/download`
    (p12).
 5. `pki`: распаковать p12, извлечь serial. **Если serial == сохранённого →
@@ -243,9 +245,12 @@ systemd unit (hardening):
     полный прогон reconcile во временный каталог, проверка атомарности и прав.
 - Без выхода в реальную сеть; `selfupdate` за интерфейсом, мокается.
 
-## Открытые вопросы / допущения
+## Решённые при реализации детали
 
-- Точный путь `POST /service/token` относительно базового `url` уточняется при
-  реализации по роутингу backend (`/api/v1/...`).
+- Путь авторизации: `POST /api/auth/token`; листинг `GET /api/certificates`;
+  скачивание `GET /api/certificates/<id>/download`; пароль
+  `GET /api/certificates/<id>/password` (подтверждено по роутингу backend).
+- `renew_before` удалён: в pull-архитектуре обновление детектируется по
+  `(cert_id, valid_until)` из листинга, отдельный порог не нужен.
 - `owner/group/mode` применяются к PEM-файлам; privkey принудительно 0600
   вне зависимости от `mode`.
