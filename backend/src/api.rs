@@ -349,10 +349,9 @@ pub(crate) async fn get_certificates(
 
 #[openapi(tag = "Certificates")]
 #[get("/certificates/ca")]
-/// Get all CAs.
+/// Public: list all CAs (metadata only — private keys and DER bytes are never serialized).
 pub(crate) async fn get_all_ca(
     state: &State<AppState>,
-    _authentication: Authenticated
 ) -> Result<Json<Vec<CA>>, ApiError> {
     let certificates = state.db.get_all_ca().await?;
     Ok(Json(certificates))
@@ -910,7 +909,7 @@ pub(crate) async fn download_ca(
     id: i64,
     format: Option<DataFormat>,
 ) -> Result<DownloadResponse, ApiError> {
-    let ca = state.db.get_ca_by_id(id).await?;
+    let ca = state.db.get_ca_by_id(id).await.map_err(|_| ApiError::NotFound(None))?;
     match ca.ca_type {
         CAType::TLS => tls_ca_download(&ca, format, &format!("ca_{}", ca.name)),
         CAType::SSH => {

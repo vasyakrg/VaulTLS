@@ -142,3 +142,33 @@ async fn scalar_docs_served() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn ca_list_is_public_metadata_only() -> Result<()> {
+    // new_setup creates a default CA but does NOT log in.
+    let client = VaulTLSClient::new_setup().await;
+
+    let resp = client.get("/certificates/ca").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok, "CA list must be public");
+    let body = resp.into_string().await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body)?;
+
+    assert!(v.is_array());
+    assert!(!v.as_array().unwrap().is_empty(), "setup creates at least one CA");
+    // Metadata is present...
+    assert!(v[0].get("id").is_some());
+    assert!(v[0].get("name").is_some());
+    // ...but private key material / DER bytes are never serialized.
+    assert!(!body.contains("\"key\""), "private key must not be serialized");
+    assert!(!body.contains("BEGIN"), "no PEM/DER cert bytes in the list");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn download_unknown_ca_is_404() -> Result<()> {
+    let client = VaulTLSClient::new_setup().await;
+    let resp = client.get("/certificates/ca/9999/download").dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound, "unknown CA id must be 404, not 500");
+    Ok(())
+}
