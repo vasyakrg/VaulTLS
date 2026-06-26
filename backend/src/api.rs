@@ -10,17 +10,18 @@ use rocket::http::{ContentType, Cookie, CookieJar, SameSite};
 use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
-use crate::auth::session_auth::{generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
+use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
+use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
-use crate::data::objects::{AppState, Name, User};
+use crate::data::objects::{AppState, Name, ServiceAccount, User};
 use crate::notification::mail::{MailMessage, Mailer};
     use crate::settings::{FrontendSettings, InnerSettings};
 
@@ -176,6 +177,9 @@ pub(crate) async fn change_password(
     change_pass_req: Json<ChangePasswordRequest>,
     authentication: Authenticated
 ) -> Result<(), ApiError> {
+    if authentication.claims.is_service() {
+        return Err(ApiError::Forbidden(None));
+    }
     let user_id = authentication.claims.id;
     let user = state.db.get_user(user_id).await?;
     let password_hash = user.password_hash;
@@ -339,6 +343,9 @@ pub(crate) async fn get_certificates(
     state: &State<AppState>,
     authentication: Authenticated
 ) -> Result<Json<Vec<Certificate>>, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
     let user_id = match authentication.claims.role {
         UserRole::User => Some(authentication.claims.id),
         UserRole::Admin => None
@@ -671,8 +678,20 @@ pub(crate) async fn import_certificate(
 pub(crate) async fn create_user_certificate(
     state: &State<AppState>,
     payload: Json<CreateUserCertificateRequest>,
-    _authentication: AuthenticatedPrivileged
+    authentication: Authenticated,
 ) -> Result<Json<Certificate>, ApiError> {
+    let mut payload = payload.into_inner();
+
+    // Authorization: human Admin, or service with cert:issue (bound to its owner).
+    if authentication.claims.is_service() {
+        if !authentication.claims.has_scope("cert:issue") {
+            return Err(ApiError::Forbidden(None));
+        }
+        payload.user_id = authentication.claims.id; // force owner; never issue for another user
+    } else if authentication.claims.role != UserRole::Admin {
+        return Err(ApiError::Forbidden(None));
+    }
+
     debug!(cert_name=?payload.cert_name, "Creating certificate");
     trace!("{:?}", payload);
 
@@ -1009,6 +1028,9 @@ pub(crate) async fn download_certificate(
     id: i64,
     authentication: Authenticated
 ) -> Result<DownloadResponse, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
     let certificate = state.db.get_user_cert_by_id(id).await?;
     if certificate.user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
 
@@ -1028,6 +1050,9 @@ pub(crate) async fn fetch_certificate_password(
     id: i64,
     authentication: Authenticated
 ) -> Result<Json<String>, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
     let (user_id, password) = state.db.get_user_cert_password(id).await?;
     if user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
     Ok(Json(password))
@@ -1298,6 +1323,9 @@ pub(crate) async fn update_user(
     payload: Json<User>,
     authentication: Authenticated
 ) -> Result<(), ApiError> {
+    if authentication.claims.is_service() {
+        return Err(ApiError::Forbidden(None));
+    }
     if authentication.claims.id != id && authentication.claims.role != UserRole::Admin {
         return Err(ApiError::Forbidden(None))
     }
@@ -1376,4 +1404,108 @@ pub(crate) async fn validate_certificate(
             }))
         }
     }
+}
+
+#[openapi(tag = "Authentication")]
+#[post("/auth/token", format = "json", data = "<payload>")]
+/// Exchange service-account client_id + secret for a short-lived Bearer JWT.
+pub(crate) async fn service_token(
+    state: &State<AppState>,
+    payload: Json<ServiceTokenRequest>,
+) -> Result<Json<ServiceTokenResponse>, ApiError> {
+    let unauthorized = || ApiError::Unauthorized(Some("Invalid client credentials".to_string()));
+
+    let sa = state
+        .db
+        .get_service_account_by_client_id(payload.client_id.clone())
+        .await
+        .map_err(|_| unauthorized())?
+        .ok_or_else(unauthorized)?;
+
+    if sa.revoked || !verify_secret(&payload.secret, &sa.secret_hash) {
+        return Err(unauthorized());
+    }
+
+    let jwt_key = state.settings.get_jwt_key()?;
+    let token = generate_service_token(&jwt_key, sa.user_id, sa.id, sa.scopes.clone())?;
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let _ = state.db.touch_service_account_last_used(sa.id, now).await;
+
+    Ok(Json(ServiceTokenResponse {
+        access_token: token,
+        token_type: "Bearer".to_string(),
+        expires_in: 3600,
+        scopes: sa.scopes,
+    }))
+}
+
+const ALLOWED_SCOPES: [&str; 2] = ["cert:read", "cert:issue"];
+
+#[openapi(tag = "Service Accounts")]
+#[post("/users/<id>/service-accounts", format = "json", data = "<payload>")]
+/// Create a service account owned by a user. Requires admin. Returns the secret once.
+pub(crate) async fn create_service_account(
+    state: &State<AppState>,
+    id: i64,
+    payload: Json<CreateServiceAccountRequest>,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<ServiceAccountCreated>, ApiError> {
+    // Validate scopes
+    for scope in &payload.scopes {
+        if !ALLOWED_SCOPES.contains(&scope.as_str()) {
+            return Err(ApiError::BadRequest(format!("Unknown scope: {scope}")));
+        }
+    }
+    // Owner must exist
+    state.db.get_user(id).await.map_err(|_| ApiError::NotFound(None))?;
+
+    let (client_id, secret) = generate_credentials();
+    let secret_hash = hash_secret(&secret)?;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    let sa = ServiceAccount {
+        id: -1,
+        name: payload.name.clone(),
+        client_id: client_id.clone(),
+        secret_hash,
+        user_id: id,
+        scopes: payload.scopes.clone(),
+        created_at: now,
+        last_used_at: None,
+        revoked: false,
+    };
+    let saved = state.db.insert_service_account(sa).await?;
+
+    Ok(Json(ServiceAccountCreated {
+        id: saved.id,
+        name: saved.name,
+        client_id,
+        secret,
+        scopes: saved.scopes,
+    }))
+}
+
+#[openapi(tag = "Service Accounts")]
+#[get("/users/<id>/service-accounts")]
+/// List a user's service accounts (no secrets). Requires admin.
+pub(crate) async fn list_service_accounts(
+    state: &State<AppState>,
+    id: i64,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<Json<Vec<ServiceAccount>>, ApiError> {
+    let accounts = state.db.list_service_accounts_by_user(id).await?;
+    Ok(Json(accounts))
+}
+
+#[openapi(tag = "Service Accounts")]
+#[delete("/service-accounts/<sid>")]
+/// Revoke a service account. Requires admin.
+pub(crate) async fn revoke_service_account(
+    state: &State<AppState>,
+    sid: i64,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<(), ApiError> {
+    state.db.revoke_service_account(sid).await?;
+    Ok(())
 }

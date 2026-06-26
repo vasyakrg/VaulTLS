@@ -96,3 +96,17 @@ impl From<&str> for Name {
         value.to_string().into()
     }
 }
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, Debug)]
+pub struct ServiceAccount {
+    pub id: i64,
+    pub name: String,
+    pub client_id: String,
+    #[serde(skip)]
+    pub secret_hash: String,
+    pub user_id: i64,
+    pub scopes: Vec<String>,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub revoked: bool,
+}

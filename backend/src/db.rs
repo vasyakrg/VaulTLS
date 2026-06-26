@@ -1,6 +1,6 @@
 use crate::constants::{DB_FILE_PATH, TEMP_DB_FILE_PATH};
 use crate::data::enums::{CAType, CertificateRenewMethod, UserRole};
-use crate::data::objects::User;
+use crate::data::objects::{ServiceAccount, User};
 use crate::helper::get_secret;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -1015,6 +1015,60 @@ impl VaulTLSDB {
         }
         Ok(None)
     }
+
+    pub(crate) async fn insert_service_account(&self, mut sa: ServiceAccount) -> Result<ServiceAccount> {
+        db_do!(self.pool, |conn: &Connection| {
+            let scopes_csv = sa.scopes.join(",");
+            conn.execute(
+                "INSERT INTO service_accounts (name, client_id, secret_hash, user_id, scopes, created_at, last_used_at, revoked) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, 0)",
+                params![sa.name, sa.client_id, sa.secret_hash, sa.user_id, scopes_csv, sa.created_at],
+            )?;
+            sa.id = conn.last_insert_rowid();
+            Ok(sa)
+        })
+    }
+
+    pub(crate) async fn get_service_account_by_client_id(&self, client_id: String) -> Result<Option<ServiceAccount>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let result = conn.query_row(
+                "SELECT id, name, client_id, secret_hash, user_id, scopes, created_at, last_used_at, revoked \
+                 FROM service_accounts WHERE client_id = ?1",
+                params![client_id],
+                service_account_from_row,
+            );
+            match result {
+                Ok(sa) => Ok(Some(sa)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!(e)),
+            }
+        })
+    }
+
+    pub(crate) async fn list_service_accounts_by_user(&self, user_id: i64) -> Result<Vec<ServiceAccount>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, client_id, secret_hash, user_id, scopes, created_at, last_used_at, revoked \
+                 FROM service_accounts WHERE user_id = ?1 ORDER BY id ASC",
+            )?;
+            let rows = stmt.query_map(params![user_id], service_account_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<ServiceAccount>>>()?)
+        })
+    }
+
+    pub(crate) async fn revoke_service_account(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("UPDATE service_accounts SET revoked = 1 WHERE id = ?1", params![id])?;
+            Ok(())
+        })
+    }
+
+    pub(crate) async fn touch_service_account_last_used(&self, id: i64, now_ms: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("UPDATE service_accounts SET last_used_at = ?1 WHERE id = ?2", params![now_ms, id])?;
+            Ok(())
+        })
+    }
 }
 
 fn acme_account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeAccount> {
@@ -1046,6 +1100,26 @@ fn order_row_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeOrderRow>
         created_on: row.get(7)?,
         client_ip: row.get(8)?,
         error: row.get(9)?,
+    })
+}
+
+fn service_account_from_row(row: &rusqlite::Row) -> rusqlite::Result<ServiceAccount> {
+    let scopes_csv: String = row.get(5)?;
+    let scopes = if scopes_csv.is_empty() {
+        Vec::new()
+    } else {
+        scopes_csv.split(',').map(|s| s.to_string()).collect()
+    };
+    Ok(ServiceAccount {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        client_id: row.get(2)?,
+        secret_hash: row.get(3)?,
+        user_id: row.get(4)?,
+        scopes,
+        created_at: row.get(6)?,
+        last_used_at: row.get(7)?,
+        revoked: row.get::<_, i64>(8)? != 0,
     })
 }
 

@@ -140,6 +140,35 @@ pub struct CreateUserRequest {
     pub role: UserRole
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ServiceTokenRequest {
+    pub client_id: String,
+    pub secret: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct CreateServiceAccountRequest {
+    pub name: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ServiceAccountCreated {
+    pub id: i64,
+    pub name: String,
+    pub client_id: String,
+    pub secret: String,
+    pub scopes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ServiceTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: u64,
+    pub scopes: Vec<String>,
+}
+
 /// Pure status decision. Order matters: revocation first, then validity window.
 pub fn compute_cert_status(
     now_ms: i64,

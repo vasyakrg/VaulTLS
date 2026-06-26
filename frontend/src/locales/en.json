@@ -167,6 +167,29 @@
       "disclaimer": "Disclaimer: Deleting the user will also delete their certificates. The certificates are still valid until expiry."
     }
   },
+  "serviceAccounts": {
+    "title": "Service Accounts",
+    "subtitle": "API access for {name}",
+    "openButton": "Service accounts",
+    "create": "Create service account",
+    "name": "Name",
+    "scopes": "Scopes",
+    "clientId": "Client ID",
+    "created": "Created",
+    "lastUsed": "Last used",
+    "never": "never",
+    "status": "Status",
+    "active": "Active",
+    "revoked": "Revoked",
+    "revoke": "Revoke",
+    "noAccounts": "No service accounts yet.",
+    "secretTitle": "Save this secret now",
+    "secretWarning": "This secret is shown only once. Store it securely — it cannot be retrieved later.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "scopeCertRead": "Read & download certificates (cert:read)",
+    "scopeCertIssue": "Issue certificates (cert:issue)"
+  },
   "settings": {
     "title": "Settings",
     "subtitle": "Application and user preferences",
