@@ -1,21 +1,31 @@
 <template>
-  <Dialog
+  <BaseModal
     :visible="visible"
     @update:visible="$emit('update:visible', $event)"
-    :header="$t('importCa.title')"
-    modal
-    :draggable="false"
-    :style="{ width: '480px' }"
+    :title="$t('importCa.title')"
+    :submitLabel="submitting ? $t('importCa.importing') : $t('importCa.import')"
+    submitIcon="pi pi-upload"
+    :submitDisabled="submitting"
+    :loading="submitting"
+    @submit="submit"
+    @cancel="close"
+    width="480px"
   >
     <div class="vt-form">
       <div class="vt-field">
         <label>{{ $t('importCa.caCertFile') }}</label>
-        <input type="file" accept=".pem,.crt,.cer" @change="onCaCertChange" />
+        <div class="drop-zone" :class="{ 'drag-over': dragging.cert }" @dragover.prevent="dragging.cert = true" @dragleave="dragging.cert = false" @drop.prevent="onDropCaCert">
+          <input type="file" accept=".pem,.crt,.cer" @change="onCaCertChange" />
+          <p class="drop-hint">{{ caCertFile ? caCertFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+        </div>
       </div>
 
       <div class="vt-field">
         <label>{{ $t('importCa.caKeyFile') }} <span class="vt-optional">({{ $t('importCa.optional') }})</span></label>
-        <input type="file" accept=".pem,.key" @change="onCaKeyChange" />
+        <div class="drop-zone" :class="{ 'drag-over': dragging.key }" @dragover.prevent="dragging.key = true" @dragleave="dragging.key = false" @drop.prevent="onDropCaKey">
+          <input type="file" accept=".pem,.key" @change="onCaKeyChange" />
+          <p class="drop-hint">{{ caKeyFile ? caKeyFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+        </div>
       </div>
 
       <div class="vt-field">
@@ -28,26 +38,16 @@
       </div>
     </div>
 
-    <template #footer>
-      <Button :label="$t('common.cancel')" severity="secondary" outlined @click="close" />
-      <Button
-        :label="submitting ? $t('importCa.importing') : $t('importCa.import')"
-        icon="pi pi-upload"
-        :disabled="submitting"
-        @click="submit"
-      />
-    </template>
-  </Dialog>
+  </BaseModal>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
-import Dialog from 'primevue/dialog'
-import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import { useCAStore } from '@/stores/cas'
+import BaseModal from '@/components/BaseModal.vue'
 
 const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
@@ -64,12 +64,22 @@ const caKeyFile = ref<File | null>(null)
 const name = ref('')
 const submitting = ref(false)
 const validationErrors = ref<string[]>([])
+const dragging = reactive({ cert: false, key: false })
 
 const onCaCertChange = (e: Event) => {
   caCertFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
 }
 const onCaKeyChange = (e: Event) => {
   caKeyFile.value = (e.target as HTMLInputElement).files?.[0] ?? null
+}
+
+const onDropCaCert = (e: DragEvent) => {
+  dragging.cert = false
+  caCertFile.value = e.dataTransfer?.files?.[0] ?? null
+}
+const onDropCaKey = (e: DragEvent) => {
+  dragging.key = false
+  caKeyFile.value = e.dataTransfer?.files?.[0] ?? null
 }
 
 const resetForm = () => {
@@ -139,7 +149,7 @@ const submit = async () => {
 }
 
 .vt-errors {
-  background: var(--vt-err, #ef4444);
+  background: var(--vt-err);
   color: #fff;
   border-radius: 6px;
   padding: 8px 12px;
@@ -151,5 +161,36 @@ const submit = async () => {
 
 .vt-error-item {
   list-style: none;
+}
+
+.drop-zone {
+  position: relative;
+  border: 2px dashed var(--vt-border);
+  border-radius: 6px;
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.drop-zone.drag-over {
+  border-color: var(--vt-primary);
+  background: color-mix(in srgb, var(--vt-primary) 8%, transparent);
+}
+
+.drop-zone input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+}
+
+.drop-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--vt-muted);
+  pointer-events: none;
 }
 </style>

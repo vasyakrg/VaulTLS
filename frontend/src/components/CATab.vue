@@ -136,14 +136,16 @@
     <ImportCaDialog v-model:visible="showImportCa" @imported="caStore.fetchCAs()" />
 
     <!-- Create CA Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isCreateModalVisible"
-      :header="$t('ca.createModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '500px' }"
-      @hide="closeCreateModal"
+      :title="$t('ca.createModal.title')"
+      :submitLabel="loading ? $t('common.creating') : $t('ca.createModal.create')"
+      submitIcon="pi pi-check"
+      :submitDisabled="loading || !caReq.ca_name.cn || (!caReq.validity_duration && caReq.ca_type === CAType.TLS)"
+      :loading="loading"
+      @submit="createCA"
+      @cancel="closeCreateModal"
+      width="500px"
     >
       <div class="vt-form">
         <div class="vt-field">
@@ -203,31 +205,20 @@
         </div>
       </div>
 
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeCreateModal" />
-        <Button
-          :label="loading ? $t('common.creating') : $t('ca.createModal.create')"
-          icon="pi pi-check"
-          :disabled="loading || !caReq.ca_name.cn || (!caReq.validity_duration && caReq.ca_type === CAType.TLS)"
-          @click="createCA"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Delete Confirmation Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isDeleteModalVisible"
-      :header="$t('ca.deleteModal.title')"
-      modal
-      :draggable="false"
-      :style="{ width: '400px' }"
+      :title="$t('ca.deleteModal.title')"
+      :submitLabel="$t('common.delete')"
+      submitSeverity="danger"
+      @submit="deleteCA"
+      @cancel="closeDeleteModal"
+      width="400px"
     >
       <p>{{ $t('ca.deleteModal.confirm', { name: caToDelete?.name.cn }) }}</p>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeDeleteModal" />
-        <Button :label="$t('common.delete')" severity="danger" @click="deleteCA" />
-      </template>
-    </Dialog>
+    </BaseModal>
   </div>
 </template>
 
@@ -245,9 +236,9 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
-import Dialog from 'primevue/dialog'
 import { FilterMatchMode } from '@primevue/core/api'
 import ImportCaDialog from '@/components/dialogs/ImportCaDialog.vue'
+import BaseModal from '@/components/BaseModal.vue'
 
 const { t } = useI18n()
 

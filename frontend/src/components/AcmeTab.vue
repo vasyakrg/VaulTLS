@@ -153,14 +153,16 @@
     </div>
 
     <!-- Create Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isCreateModalVisible"
-      :header="$t('acme.createModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '500px' }"
-      @hide="closeCreateModal"
+      :title="$t('acme.createModal.title')"
+      :submitLabel="loading ? $t('common.creating') : $t('acme.createModal.create')"
+      submitIcon="pi pi-check"
+      :submitDisabled="loading || !createForm.name || !createForm.ca_id"
+      :loading="loading"
+      @submit="createAccount"
+      @cancel="closeCreateModal"
+      width="500px"
     >
       <div class="vt-form">
         <div class="vt-field">
@@ -230,27 +232,18 @@
         </div>
       </div>
 
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeCreateModal" />
-        <Button
-          :label="loading ? $t('common.creating') : $t('acme.createModal.create')"
-          icon="pi pi-check"
-          :disabled="loading || !createForm.name || !createForm.ca_id"
-          @click="createAccount"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Credentials Dialog -->
-    <Dialog
+    <BaseModal
       v-if="createdCredentials"
       v-model:visible="isCredentialsModalVisible"
-      :header="$t('acme.credentialsModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '600px' }"
-      @hide="closeCredentialsModal"
+      :title="$t('acme.credentialsModal.title')"
+      :submitLabel="$t('acme.credentialsModal.close')"
+      :hideFooter="false"
+      @submit="closeCredentialsModal"
+      @cancel="closeCredentialsModal"
+      width="600px"
     >
       <div class="vt-form">
         <div class="vt-warn-banner">{{ $t('acme.credentialsModal.hmacWarning') }}</div>
@@ -323,21 +316,20 @@
         </div>
       </div>
 
-      <template #footer>
-        <Button :label="$t('acme.credentialsModal.close')" @click="closeCredentialsModal" />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Edit Dialog -->
-    <Dialog
+    <BaseModal
       v-if="accountToEdit"
       v-model:visible="isEditModalVisible"
-      :header="$t('acme.editModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '500px' }"
-      @hide="closeEditModal"
+      :title="$t('acme.editModal.title')"
+      :submitLabel="loading ? $t('acme.editModal.saving') : $t('common.save')"
+      submitIcon="pi pi-check"
+      :submitDisabled="loading || !editForm.name"
+      :loading="loading"
+      @submit="saveEdit"
+      @cancel="closeEditModal"
+      width="500px"
     >
       <div class="vt-form">
         <div class="vt-field">
@@ -406,36 +398,21 @@
         </div>
       </div>
 
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeEditModal" />
-        <Button
-          :label="loading ? $t('acme.editModal.saving') : $t('common.save')"
-          icon="pi pi-check"
-          :disabled="loading || !editForm.name"
-          @click="saveEdit"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Deactivate Confirmation Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isDeleteModalVisible"
-      :header="$t('acme.deactivateModal.title')"
-      modal
-      :draggable="false"
-      :style="{ width: '400px' }"
+      :title="$t('acme.deactivateModal.title')"
+      :submitLabel="$t('acme.deactivateModal.deactivate')"
+      submitSeverity="danger"
+      submit-id="ConfirmDeleteButton"
+      @submit="deleteAccount"
+      @cancel="closeDeleteModal"
+      width="400px"
     >
       <p>{{ $t('acme.deactivateModal.confirm', { name: accountToDelete?.name }) }}</p>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeDeleteModal" />
-        <Button
-          id="ConfirmDeleteButton"
-          :label="$t('acme.deactivateModal.deactivate')"
-          severity="danger"
-          @click="deleteAccount"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
   </div>
 </template>
 
@@ -453,8 +430,8 @@ import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import Dialog from 'primevue/dialog'
 import ToggleSwitch from 'primevue/toggleswitch'
+import BaseModal from '@/components/BaseModal.vue'
 
 // stores
 const acmeStore = useAcmeStore()
@@ -859,8 +836,8 @@ const deleteAccount = async () => {
 }
 
 .vt-warn-banner {
-  background: color-mix(in srgb, var(--vt-warn, #f59e0b) 15%, transparent);
-  border: 1px solid color-mix(in srgb, var(--vt-warn, #f59e0b) 40%, transparent);
+  background: color-mix(in srgb, var(--vt-warn) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--vt-warn) 40%, transparent);
   border-radius: 6px;
   padding: 10px 14px;
   font-size: 13px;
@@ -893,7 +870,7 @@ const deleteAccount = async () => {
 }
 
 .vt-error-cell {
-  color: var(--vt-err, #dc2626);
+  color: var(--vt-err);
   cursor: help;
 }
 </style>

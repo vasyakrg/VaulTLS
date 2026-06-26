@@ -34,7 +34,11 @@ pub(crate) fn version() -> &'static str {
 pub(crate) async fn is_setup(
     state: &State<AppState>
 ) -> Result<Json<IsSetupResponse>, ApiError> {
-    let is_setup = state.db.is_setup().await.is_ok();
+    // Consider the server set up if there is a user OR any CA already exists.
+    // Relying on users alone let a wiped/half-initialized users table re-trigger
+    // first-setup and create duplicate default CAs.
+    let is_setup = state.db.is_setup().await.is_ok()
+        || !state.db.get_all_ca().await.unwrap_or_default().is_empty();
     let has_password = state.settings.get_password_enabled();
     let oidc_url = state.settings.get_oidc().auth_url.clone();
     let default_language = state.settings.get_default_language();
@@ -53,7 +57,9 @@ pub(crate) async fn setup(
     state: &State<AppState>,
     setup_req: Json<SetupRequest>
 ) -> Result<(), ApiError> {
-    if state.db.is_setup().await.is_ok() {
+    if state.db.is_setup().await.is_ok()
+        || !state.db.get_all_ca().await.unwrap_or_default().is_empty()
+    {
         warn!("Server is already setup.");
         return Err(ApiError::Unauthorized(None))
     }
@@ -446,15 +452,12 @@ pub(crate) async fn import_ca(
 
     let cn = form.name.clone().unwrap_or_else(|| cn_from_cert(&cert));
     let not_after_ms = asn1_to_unix_ms(cert.not_after())?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    let not_before_ms = asn1_to_unix_ms(cert.not_before())?;
 
     let mut ca = crate::certs::common::CA {
         id: -1,
         name: crate::data::objects::Name::from(cn),
-        created_on: now_ms,
+        created_on: not_before_ms,
         valid_until: not_after_ms,
         ca_type: crate::data::enums::CAType::TLS,
         cert: cert.to_der().map_err(ApiError::from)?,
@@ -522,15 +525,24 @@ pub(crate) async fn import_certificate(
                 .ok_or_else(|| ApiError::BadRequest("key required with cert".into()))?;
             let cert_bytes = read_tempfile(cert_f).await?;
             let key_bytes = read_tempfile(key_f).await?;
-            let leaf = parse_cert(&cert_bytes)
-                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            // The cert file may itself contain a full chain (leaf + CA certs).
+            // Take the first as the leaf and the rest as the chain; append the
+            // separate chain file too, if one was provided.
+            let cert_certs = parse_pem_bundle(&cert_bytes).unwrap_or_default();
+            let leaf = match cert_certs.first() {
+                Some(c) => c.clone(),
+                None => parse_cert(&cert_bytes)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?,
+            };
             let key = parse_private_key(&key_bytes)
                 .map_err(|e| ApiError::BadRequest(e.to_string()))?;
-            let chain = match &form.chain {
-                Some(cf) => parse_pem_bundle(&read_tempfile(cf).await?)
-                    .map_err(|e| ApiError::BadRequest(e.to_string()))?,
-                None => Vec::new(),
-            };
+            let mut chain: Vec<openssl::x509::X509> =
+                cert_certs.into_iter().skip(1).collect();
+            if let Some(cf) = &form.chain {
+                let extra = parse_pem_bundle(&read_tempfile(cf).await?)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+                chain.extend(extra);
+            }
             // Repackage as PKCS#12 for uniform storage
             let pwd = form.password.clone().unwrap_or_default();
             let mut ca_stack = openssl::stack::Stack::new()?;
@@ -599,10 +611,11 @@ pub(crate) async fn import_certificate(
                 None => {
                     let cn = cn_from_cert(&issuer);
                     let not_after_ms = asn1_to_unix_ms(issuer.not_after())?;
+                    let not_before_ms = asn1_to_unix_ms(issuer.not_before())?;
                     let ca = CA {
                         id: -1,
                         name: crate::data::objects::Name::from(cn),
-                        created_on: 0,
+                        created_on: not_before_ms,
                         valid_until: not_after_ms,
                         ca_type: CAType::TLS,
                         cert: issuer_der,
@@ -632,10 +645,11 @@ pub(crate) async fn import_certificate(
         None => CertificateRenewMethod::None,
     };
     let valid_until = asn1_to_unix_ms(leaf.not_after())?;
+    let created_on = asn1_to_unix_ms(leaf.not_before())?;
     let cert = Certificate {
         id: -1,
         name: crate::data::objects::Name::from(cn_from_cert(&leaf)),
-        created_on: 0,
+        created_on,
         valid_until,
         certificate_type: cert_type,
         user_id: form.user_id,
@@ -1203,8 +1217,11 @@ pub(crate) async fn update_user(
 pub(crate) async fn delete_user(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged
+    authentication: AuthenticatedPrivileged
 ) -> Result<(), ApiError> {
+    if id == authentication._claims.id {
+        return Err(ApiError::BadRequest("You cannot delete your own account".into()));
+    }
     state.db.delete_user(id).await?;
 
     info!(user=?id, "User deleted.");

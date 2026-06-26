@@ -72,6 +72,7 @@
               @click="openEditModal(data)"
             />
             <Button
+              v-if="data.id !== authStore.current_user?.id"
               :id="'UserDeletebutton-' + data.id"
               :label="$t('common.delete')"
               icon="pi pi-trash"
@@ -90,14 +91,16 @@
     </DataTable>
 
     <!-- Create User Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isCreateModalVisible"
-      :header="$t('users.createModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '450px' }"
-      @hide="closeCreateModal"
+      :title="$t('users.createModal.title')"
+      :submitLabel="userStore.loading ? $t('common.creating') : $t('users.createModal.create')"
+      submitIcon="pi pi-check"
+      :submitDisabled="userStore.loading || !newUser.user_name || !newUser.user_email"
+      :loading="userStore.loading"
+      @submit="handleCreateUser"
+      @cancel="closeCreateModal"
+      width="450px"
     >
       <div class="vt-form">
         <div class="vt-field">
@@ -136,26 +139,19 @@
           />
         </div>
       </div>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeCreateModal" />
-        <Button
-          :label="userStore.loading ? $t('common.creating') : $t('users.createModal.create')"
-          icon="pi pi-check"
-          :disabled="userStore.loading || !newUser.user_name || !newUser.user_email"
-          @click="handleCreateUser"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Edit User Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isEditModalVisible"
-      :header="$t('users.editModal.title')"
-      modal
-      :closable="true"
-      :draggable="false"
-      :style="{ width: '450px' }"
-      @hide="closeEditModal"
+      :title="$t('users.editModal.title')"
+      :submitLabel="userStore.loading ? $t('users.editModal.saving') : $t('common.save')"
+      submitIcon="pi pi-check"
+      :submitDisabled="userStore.loading || !editUser?.name || !editUser?.email"
+      :loading="userStore.loading"
+      @submit="handleUpdateUser"
+      @cancel="closeEditModal"
+      width="450px"
     >
       <div class="vt-form" v-if="editUser">
         <div class="vt-field">
@@ -185,34 +181,23 @@
           />
         </div>
       </div>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeEditModal" />
-        <Button
-          :label="userStore.loading ? $t('users.editModal.saving') : $t('common.save')"
-          icon="pi pi-check"
-          :disabled="userStore.loading || !editUser?.name || !editUser?.email"
-          @click="handleUpdateUser"
-        />
-      </template>
-    </Dialog>
+    </BaseModal>
 
     <!-- Delete Confirmation Dialog -->
-    <Dialog
+    <BaseModal
       v-model:visible="isDeleteModalVisible"
-      :header="$t('users.deleteModal.title')"
-      modal
-      :draggable="false"
-      :style="{ width: '400px' }"
+      :title="$t('users.deleteModal.title')"
+      :submitLabel="$t('common.delete')"
+      submitSeverity="danger"
+      @submit="deleteUser"
+      @cancel="closeDeleteModal"
+      width="400px"
     >
       <p>{{ $t('users.deleteModal.confirm', { name: userToDelete?.name }) }}</p>
       <p class="vt-disclaimer">
         <small>{{ $t('users.deleteModal.disclaimer') }}</small>
       </p>
-      <template #footer>
-        <Button :label="$t('common.cancel')" severity="secondary" outlined @click="closeDeleteModal" />
-        <Button :label="$t('common.delete')" severity="danger" @click="deleteUser" />
-      </template>
-    </Dialog>
+    </BaseModal>
   </div>
 </template>
 
@@ -221,6 +206,7 @@ import { computed, onMounted, ref } from 'vue'
 import { type CreateUserRequest, UserRole, type User } from '@/types/User'
 import { useUserStore } from '@/stores/users.ts'
 import { useCertificateStore } from '@/stores/certificates.ts'
+import { useAuthStore } from '@/stores/auth.ts'
 import { useI18n } from 'vue-i18n'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -228,13 +214,14 @@ import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
-import Dialog from 'primevue/dialog'
 import { FilterMatchMode } from '@primevue/core/api'
+import BaseModal from '@/components/BaseModal.vue'
 
 const { t } = useI18n()
 
 // stores
 const userStore = useUserStore()
+const authStore = useAuthStore()
 
 // filters
 const filters = ref({ global: { value: null, matchMode: FilterMatchMode.CONTAINS } })

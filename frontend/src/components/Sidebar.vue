@@ -19,8 +19,18 @@
     </nav>
 
     <div class="vt-foot">
+      <!-- Theme toggle collapsed -->
+      <button
+        v-if="collapsed"
+        class="vt-theme-btn vt-theme-cycle"
+        v-tooltip.right="'Тема: ' + themeStore.theme"
+        @click="cycleTheme"
+      >
+        <i :class="themeIcons[themeStore.theme]" />
+      </button>
+
       <!-- Theme toggle -->
-      <div class="vt-theme-row" :class="{ 'vt-theme-row--collapsed': collapsed }">
+      <div v-if="!collapsed" class="vt-theme-row" :class="{ 'vt-theme-row--collapsed': collapsed }">
         <button
           class="vt-theme-btn"
           :class="{ active: themeStore.theme === 'light' }"
@@ -108,6 +118,13 @@ const themeStore = useThemeStore()
 const router = useRouter()
 const { locale } = useI18n()
 
+const themes = ['light', 'dark', 'auto'] as const
+const themeIcons = { light: 'pi pi-sun', dark: 'pi pi-moon', auto: 'pi pi-desktop' } as const
+function cycleTheme() {
+  const idx = themes.indexOf(themeStore.theme)
+  themeStore.setTheme(themes[(idx + 1) % 3])
+}
+
 const changeLocale = (lang: string) => {
   locale.value = lang
   localStorage.setItem('locale', lang)
@@ -162,8 +179,9 @@ const items = computed(() => [
   overflow: hidden;
 }
 
-.vt-logo {
-  font-size: 20px;
+.vt-logo-img {
+  width: 28px;
+  height: 28px;
   flex-shrink: 0;
 }
 
