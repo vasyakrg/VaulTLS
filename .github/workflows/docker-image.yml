@@ -17,9 +17,9 @@ jobs:
         arch: [ amd64, arm64 ]
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: [self-hosted, X64]
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, ARM64]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -61,7 +61,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   manifest:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: build
     permissions:
       packages: write
