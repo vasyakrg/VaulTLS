@@ -39,7 +39,8 @@
     "lightMode": "Modo claro",
     "darkMode": "Modo oscuro",
     "autoMode": "Modo automático",
-    "version": "Versión: {version}"
+    "version": "Versión: {version}",
+    "toggleMenu": "Alternar menú"
   },
   "login": {
     "loginButton": "Iniciar sesión",

@@ -7,16 +7,18 @@
       </div>
       <div class="vt-actions" v-if="authStore.isAdmin">
         <Button
-          :label="$t('ca.importCa')"
           icon="pi pi-upload"
           severity="secondary"
           outlined
+          v-tooltip.top="$t('ca.importCa')"
+          :aria-label="$t('ca.importCa')"
           @click="showImportCa = true"
         />
         <Button
           id="CreateCAButton"
-          :label="$t('ca.createCa')"
           icon="pi pi-plus"
+          v-tooltip.top="$t('ca.createCa')"
+          :aria-label="$t('ca.createCa')"
           @click="showCreateModal"
         />
       </div>
@@ -77,50 +79,55 @@
           <div class="vt-row-actions">
             <Button
               :id="'DownloadButton-' + data.id"
-              :label="$t('common.download')"
               icon="pi pi-download"
               severity="secondary"
               outlined
               size="small"
+              v-tooltip.top="$t('common.download')"
+              :aria-label="$t('common.download')"
               @click="downloadCA(data.id)"
             />
             <template v-if="data.ca_type === CAType.TLS">
               <Button
                 :id="'CRLButton-' + data.id"
-                :label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
                 icon="pi pi-file"
                 severity="secondary"
                 outlined
                 size="small"
+                v-tooltip.top="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
+                :aria-label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
                 @click="downloadCRL(data.id, 'der')"
               />
               <Button
-                :label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
                 icon="pi pi-file"
                 severity="secondary"
                 outlined
                 size="small"
+                v-tooltip.top="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
+                :aria-label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
                 @click="downloadCRL(data.id, 'pem')"
               />
             </template>
             <Button
               v-if="data.ca_type === CAType.SSH"
               :id="'KRLButton-' + data.id"
-              :label="$t('ca.downloadKrl')"
               icon="pi pi-file"
               severity="secondary"
               outlined
               size="small"
+              v-tooltip.top="$t('ca.downloadKrl')"
+              :aria-label="$t('ca.downloadKrl')"
               @click="downloadCRL(data.id)"
             />
             <Button
               v-if="authStore.isAdmin"
               :id="'DeleteButton-' + data.id"
-              :label="$t('common.delete')"
               icon="pi pi-trash"
               severity="danger"
               outlined
               size="small"
+              v-tooltip.top="$t('common.delete')"
+              :aria-label="$t('common.delete')"
               @click="confirmDeletion(data)"
             />
           </div>
@@ -224,6 +231,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import Tooltip from 'primevue/tooltip'
 import { useCAStore } from '@/stores/cas'
 import { type CA, type CARequirements, CAType } from '@/types/CA'
 import { useAuthStore } from '@/stores/auth'
@@ -241,6 +249,8 @@ import ImportCaDialog from '@/components/dialogs/ImportCaDialog.vue'
 import BaseModal from '@/components/BaseModal.vue'
 
 const { t } = useI18n()
+
+const vTooltip = Tooltip
 
 // stores
 const caStore = useCAStore()

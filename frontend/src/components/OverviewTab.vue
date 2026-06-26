@@ -7,16 +7,18 @@
       </div>
       <div class="vt-actions" v-if="authStore.isAdmin">
         <Button
-          :label="$t('certs.import')"
           icon="pi pi-upload"
           severity="secondary"
           outlined
+          v-tooltip.top="$t('certs.import')"
+          :aria-label="$t('certs.import')"
           @click="showImport = true"
         />
         <Button
           id="CreateCertificateButton"
-          :label="$t('certs.create')"
           icon="pi pi-plus"
+          v-tooltip.top="$t('certs.create')"
+          :aria-label="$t('certs.create')"
           @click="showGenerateModal"
         />
       </div>
@@ -117,28 +119,31 @@
           <div class="vt-row-actions">
             <Button
               :id="'DownloadButton-' + data.id"
-              :label="$t('common.download')"
               icon="pi pi-download"
               severity="secondary"
               outlined
               size="small"
+              v-tooltip.top="$t('common.download')"
+              :aria-label="$t('common.download')"
               @click="downloadCertificate(data.id)"
             />
             <Button
-              :label="$t('overview.revoke')"
               icon="pi pi-ban"
               severity="warn"
               outlined
               size="small"
+              v-tooltip.top="$t('overview.revoke')"
+              :aria-label="$t('overview.revoke')"
               @click="confirmRevocation(data)"
             />
             <Button
               v-if="authStore.isAdmin"
-              :label="$t('common.delete')"
               icon="pi pi-trash"
               severity="danger"
               outlined
               size="small"
+              v-tooltip.top="$t('common.delete')"
+              :aria-label="$t('common.delete')"
               @click="confirmDeletion(data)"
             />
           </div>
@@ -187,11 +192,12 @@
         <Column :header="$t('common.actions')">
           <template #body="{ data }">
             <Button
-              :label="$t('common.delete')"
               icon="pi pi-trash"
               severity="danger"
               text
               size="small"
+              v-tooltip.top="$t('common.delete')"
+              :aria-label="$t('common.delete')"
               @click="confirmDeletion(data)"
             />
           </template>
@@ -396,6 +402,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import Tooltip from 'primevue/tooltip'
 import { useCertificateStore } from '@/stores/certificates'
 import { type Certificate, CertificateRenewMethod, CertificateType } from '@/types/Certificate'
 import type { CertificateRequirements } from '@/types/CertificateRequirements'
@@ -420,6 +427,8 @@ import ImportCertificateDialog from '@/components/dialogs/ImportCertificateDialo
 import BaseModal from '@/components/BaseModal.vue'
 
 const { t } = useI18n()
+
+const vTooltip = Tooltip
 
 // stores
 const certificateStore = useCertificateStore()

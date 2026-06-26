@@ -39,7 +39,8 @@
     "lightMode": "Light Mode",
     "darkMode": "Dark Mode",
     "autoMode": "Auto Mode",
-    "version": "Version: {version}"
+    "version": "Version: {version}",
+    "toggleMenu": "Toggle menu"
   },
   "login": {
     "loginButton": "Login",

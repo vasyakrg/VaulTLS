@@ -8,8 +8,9 @@
       <div class="vt-actions">
         <Button
           id="CreateUserButton"
-          :label="$t('users.createUser')"
           icon="pi pi-plus"
+          v-tooltip.top="$t('users.createUser')"
+          :aria-label="$t('users.createUser')"
           @click="showCreateModal"
         />
       </div>
@@ -64,30 +65,33 @@
           <div class="vt-row-actions">
             <Button
               :id="'UserServiceAccountsButton-' + data.id"
-              :label="$t('serviceAccounts.openButton')"
               icon="pi pi-key"
               severity="secondary"
               outlined
               size="small"
+              v-tooltip.top="$t('serviceAccounts.openButton')"
+              :aria-label="$t('serviceAccounts.openButton')"
               @click="openServiceAccounts(data)"
             />
             <Button
               :id="'UserEditButton-' + data.id"
-              :label="$t('acme.edit')"
               icon="pi pi-pencil"
               severity="secondary"
               outlined
               size="small"
+              v-tooltip.top="$t('acme.edit')"
+              :aria-label="$t('acme.edit')"
               @click="openEditModal(data)"
             />
             <Button
               v-if="data.id !== authStore.current_user?.id"
               :id="'UserDeletebutton-' + data.id"
-              :label="$t('common.delete')"
               icon="pi pi-trash"
               severity="danger"
               outlined
               size="small"
+              v-tooltip.top="$t('common.delete')"
+              :aria-label="$t('common.delete')"
               @click="confirmDeleteUser(data)"
             />
           </div>
@@ -217,6 +221,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import Tooltip from 'primevue/tooltip'
 import { type CreateUserRequest, UserRole, type User } from '@/types/User'
 import { useUserStore } from '@/stores/users.ts'
 import { useCertificateStore } from '@/stores/certificates.ts'
@@ -233,6 +238,8 @@ import BaseModal from '@/components/BaseModal.vue'
 import ServiceAccountsModal from '@/components/ServiceAccountsModal.vue'
 
 const { t } = useI18n()
+
+const vTooltip = Tooltip
 
 // stores
 const userStore = useUserStore()

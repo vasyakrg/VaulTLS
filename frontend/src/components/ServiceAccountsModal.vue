@@ -72,19 +72,21 @@
         <template #body="{ data }">
           <Button
             v-if="!data.revoked"
-            :label="$t('serviceAccounts.revoke')"
             icon="pi pi-ban"
             severity="danger"
             outlined
             size="small"
+            v-tooltip.top="$t('serviceAccounts.revoke')"
+            :aria-label="$t('serviceAccounts.revoke')"
             @click="onRevoke(data.id)"
           />
           <Button
             v-else
-            :label="$t('common.delete')"
             icon="pi pi-trash"
             severity="danger"
             size="small"
+            v-tooltip.top="$t('common.delete')"
+            :aria-label="$t('common.delete')"
             @click="onDelete(data.id)"
           />
         </template>
@@ -98,6 +100,7 @@
 
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import Tooltip from 'primevue/tooltip'
 import BaseModal from '@/components/BaseModal.vue'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -109,6 +112,8 @@ import type { User } from '@/types/User'
 
 const props = defineProps<{ visible: boolean; user: User | null }>()
 const emit = defineEmits<{ 'update:visible': [boolean] }>()
+
+const vTooltip = Tooltip
 
 const store = useServiceAccountStore()
 const newName = ref('')

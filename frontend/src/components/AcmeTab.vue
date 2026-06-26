@@ -8,8 +8,9 @@
       <div class="vt-actions" v-if="authStore.isAdmin">
         <Button
           id="CreateAcmeAccountButton"
-          :label="$t('acme.createAccount')"
           icon="pi pi-plus"
+          v-tooltip.top="$t('acme.createAccount')"
+          :aria-label="$t('acme.createAccount')"
           @click="openCreateModal"
         />
       </div>
@@ -81,21 +82,23 @@
             <Button
               :id="'EditButton-' + data.id"
               v-if="authStore.isAdmin"
-              :label="$t('acme.edit')"
               icon="pi pi-pencil"
               severity="secondary"
               outlined
               size="small"
+              v-tooltip.top="$t('acme.edit')"
+              :aria-label="$t('acme.edit')"
               @click="openEditModal(data)"
             />
             <Button
               :id="'DeleteButton-' + data.id"
               v-if="authStore.isAdmin && data.status !== 'deactivated'"
-              :label="$t('acme.deactivate')"
               icon="pi pi-ban"
               severity="danger"
               outlined
               size="small"
+              v-tooltip.top="$t('acme.deactivate')"
+              :aria-label="$t('acme.deactivate')"
               @click="confirmDeletion(data)"
             />
           </div>
@@ -418,6 +421,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import Tooltip from 'primevue/tooltip'
 import { useAcmeStore } from '@/stores/acme'
 import { useCAStore } from '@/stores/cas'
 import { useAuthStore } from '@/stores/auth'
@@ -432,6 +436,8 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import BaseModal from '@/components/BaseModal.vue'
+
+const vTooltip = Tooltip
 
 // stores
 const acmeStore = useAcmeStore()

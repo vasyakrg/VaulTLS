@@ -1,6 +1,10 @@
 <template>
   <aside :class="['vt-sidebar', { collapsed }]">
-    <div class="vt-brand">
+    <div
+      class="vt-brand"
+      @click="toggle"
+      v-tooltip.right="$t('sidebar.toggleMenu')"
+    >
       <span class="vt-logo">🔐</span>
       <span v-if="!collapsed">VaulTLS</span>
     </div>
@@ -87,10 +91,6 @@
       <!-- Profile card -->
       <ProfileCard v-if="!collapsed" />
 
-      <!-- Collapse toggle -->
-      <button class="vt-collapse" @click="toggle">
-        <i :class="collapsed ? 'pi pi-angle-right' : 'pi pi-angle-left'" />
-      </button>
     </div>
   </aside>
 </template>
@@ -172,11 +172,30 @@ const items = computed(() => [
 .vt-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-weight: 700;
-  padding: 8px 8px 18px;
+  padding: 9px 11px 18px;
   white-space: nowrap;
   overflow: hidden;
+  cursor: pointer;
+  border-radius: 9px;
+  color: var(--vt-text);
+  user-select: none;
+}
+
+.vt-brand:hover {
+  background: rgba(127, 127, 127, 0.08);
+}
+
+.vt-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 18px;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .vt-logo-img {
@@ -290,17 +309,4 @@ const items = computed(() => [
   overflow: hidden;
 }
 
-.vt-collapse {
-  background: transparent;
-  border: 1px solid var(--vt-border);
-  border-radius: 8px;
-  color: var(--vt-muted);
-  padding: 6px;
-  cursor: pointer;
-  align-self: flex-start;
-}
-
-.vt-collapse:hover {
-  color: var(--vt-text);
-}
 </style>
