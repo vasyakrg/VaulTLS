@@ -13,6 +13,12 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "run":
+		os.Exit(cmdRun(os.Args[2:]))
+	case "setup":
+		os.Exit(cmdSetup(os.Args[2:]))
+	case "check":
+		os.Exit(cmdRun([]string{"--once"}))
 	case "version":
 		fmt.Println(version.String())
 	default:
