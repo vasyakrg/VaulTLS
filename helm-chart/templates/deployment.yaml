@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "vaultls.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: 1
   strategy:
     # RWO volume + SQLite: never run two writers at once.
     type: Recreate
@@ -18,6 +18,10 @@ spec:
         {{- include "vaultls.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- if .Values.backup.enabled }}
+        checksum/backup-config: {{ include (print $.Template.BasePath "/configmap-backup.yaml") . | sha256sum }}
+        checksum/backup-secret: {{ include (print $.Template.BasePath "/secret-backup.yaml") . | sha256sum }}
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -94,6 +98,61 @@ spec:
               mountPath: {{ .Values.persistence.mountPath }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.backup.enabled }}
+        # Backup sidecar: shares the same PVC mount within this pod, so RWO volumes
+        # never need a second attachment (a standalone CronJob cannot mount RWO here).
+        - name: backup
+          image: "{{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}"
+          imagePullPolicy: {{ .Values.backup.image.pullPolicy }}
+          command: ["/bin/sh", "/scripts/entrypoint.sh"]
+          env:
+            - name: BACKUP_SCHEDULE
+              value: {{ .Values.backup.schedule | quote }}
+            {{- with .Values.backup.timezone }}
+            - name: TZ
+              value: {{ . | quote }}
+            {{- end }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.backup.restic.s3Endpoint | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.backup.restic.s3Bucket | quote }}
+            - name: S3_PATH
+              value: {{ .Values.backup.restic.s3Path | quote }}
+            {{- with .Values.backup.restic.s3Region }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.backupSecretName" . }}
+                  key: s3-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.backupSecretName" . }}
+                  key: s3-secret-access-key
+            - name: RESTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.backupSecretName" . }}
+                  key: restic-password
+            - name: KEEP_DAILY
+              value: {{ .Values.backup.restic.keepDaily | quote }}
+            - name: KEEP_WEEKLY
+              value: {{ .Values.backup.restic.keepWeekly | quote }}
+            - name: KEEP_MONTHLY
+              value: {{ .Values.backup.restic.keepMonthly | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: backup-scripts
+              mountPath: /scripts
+            - name: backup-work
+              mountPath: /run/backup
+          resources:
+            {{- toYaml .Values.backup.resources | nindent 12 }}
+        {{- end }}
       volumes:
         - name: data
           {{- if .Values.persistence.enabled }}
@@ -102,6 +161,13 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if .Values.backup.enabled }}
+        - name: backup-scripts
+          configMap:
+            name: {{ printf "%s-backup" (include "vaultls.fullname" .) }}
+        - name: backup-work
+          emptyDir: {}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

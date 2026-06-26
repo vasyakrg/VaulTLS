@@ -15,13 +15,16 @@ Ingress отключён. Проброс порта для проверки:
 
 {{- if .Values.backup.enabled }}
 
-Бекап (restic → S3):
-  расписание: {{ .Values.backup.schedule }}
+Бекап (restic → S3), sidecar `backup` в поде приложения:
+  расписание: {{ .Values.backup.schedule }} (TZ={{ .Values.backup.timezone | default "UTC" }})
   репозиторий: s3:{{ .Values.backup.restic.s3Endpoint }}/{{ .Values.backup.restic.s3Bucket }}/{{ .Values.backup.restic.s3Path }}
   retention:   daily={{ .Values.backup.restic.keepDaily }} weekly={{ .Values.backup.restic.keepWeekly }} monthly={{ .Values.backup.restic.keepMonthly }}
 
+Логи бекапа:
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "vaultls.fullname" . }} -c backup
+
 Запустить бекап вручную сейчас:
-  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "vaultls.fullname" . }}-backup {{ include "vaultls.fullname" . }}-backup-manual
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "vaultls.fullname" . }} -c backup -- /bin/sh /scripts/backup.sh
 
 Посмотреть снапшоты / восстановить — см. README.md (раздел "Восстановление").
 {{- else }}

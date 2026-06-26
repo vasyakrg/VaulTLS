@@ -2,7 +2,7 @@ apiVersion: v2
 name: vaultls
 description: VaulTLS — self-hosted mTLS certificate manager with S3 backup via restic
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "latest"
 home: https://github.com/7ritn/vaultls
 sources:

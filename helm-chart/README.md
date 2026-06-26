@@ -1,18 +1,17 @@
 # vaultls (Helm chart)
 
-Helm-чарт для [VaulTLS](https://github.com/7ritn/vaultls) — self-hosted менеджера mTLS-сертификатов (Rust + SQLite). Включает консистентный бекап данных в S3 через **restic** (CronJob).
+Helm-чарт для [VaulTLS](https://github.com/7ritn/vaultls) — self-hosted менеджера mTLS-сертификатов (Rust + SQLite). Включает консистентный бекап данных в S3 через **restic** (sidecar со встроенным cron).
 
 ## Что разворачивается
 
 | Ресурс | Назначение |
 |--------|-----------|
-| Deployment | приложение `ghcr.io/vasyakrg/vaultls`, 1 реплика, `strategy: Recreate` |
+| Deployment | приложение `ghcr.io/vasyakrg/vaultls`, 1 реплика, `strategy: Recreate`; при `backup.enabled` — sidecar `backup` (restic + cron) в том же поде |
 | PVC | данные `/app/data` (SQLite, CA, ключи, CRL), RWO |
 | Service | ClusterIP :80 |
 | Ingress | внешний доступ, TLS через готовый secret `tls-example-ingress` |
 | Secret | `VAULTLS_API_SECRET`, `VAULTLS_DB_SECRET`, OIDC, S3-креды, restic-пароль |
-| CronJob | ежедневный бекап в S3 |
-| ConfigMap | скрипт бекапа `backup.sh` |
+| ConfigMap | скрипты бекапа `entrypoint.sh` + `backup.sh` для sidecar |
 
 > **Почему 1 реплика и `Recreate`:** SQLite + том RWO не допускают двух одновременных писателей. Масштабирование приложения не поддерживается архитектурой VaulTLS.
 
@@ -35,18 +34,22 @@ openssl rand -base64 24   # restic password
 
 ## Бекап
 
-CronJob по расписанию (`backup.schedule`, по умолчанию `0 3 * * *`):
+Sidecar `backup` в поде приложения с busybox `crond` по расписанию (`backup.schedule`, по умолчанию `0 3 * * *`):
 
-1. Монтирует тот же PVC, что и приложение (через `podAffinity` встаёт на ту же ноду — иначе RWO-том не примонтируется).
+1. Делит **тот же mount PVC**, что и контейнер приложения, внутри одного пода — отдельный под (CronJob) к RWO-тому подключиться не может, поэтому бекап вынесен в sidecar.
 2. Делает **консистентный** снимок каждой SQLite-базы: `sqlite3 <db> ".backup ..."` (безопасно при активной записи — без риска битого файла).
 3. Архивирует остальные файлы (CA, приватные ключи, CRL).
 4. `restic backup` в S3 — инкрементально, с шифрованием на стороне клиента (приватные ключи не попадают в S3 в открытом виде).
 5. `restic forget --prune` по retention-политике (`keepDaily`/`keepWeekly`/`keepMonthly`).
 
+Логи бекапа:
+```bash
+kubectl -n vaultls logs -f deploy/vaultls -c backup
+```
+
 Запустить бекап немедленно:
 ```bash
-kubectl -n vaultls create job --from=cronjob/vaultls-backup vaultls-backup-manual
-kubectl -n vaultls logs -f job/vaultls-backup-manual
+kubectl -n vaultls exec deploy/vaultls -c backup -- /bin/sh /scripts/backup.sh
 ```
 
 > **Важно:** `restic.password` — единственный ключ к расшифровке бекапа. Храните его отдельно от кластера. Без него восстановление невозможно.
@@ -95,8 +98,10 @@ restic restore latest --target / --include /app/data
 | `persistence.storageClass` | `""` | пусто = default класс |
 | `ingress.host` | `vaultls.example.com` | хост |
 | `ingress.tls.secretName` | `tls-example-ingress` | готовый TLS-secret |
-| `backup.enabled` | `false` | включить CronJob бекапа |
-| `backup.schedule` | `0 3 * * *` | расписание |
+| `backup.enabled` | `false` | включить sidecar бекапа |
+| `backup.schedule` | `0 3 * * *` | расписание (busybox cron) |
+| `backup.timezone` | `""` | TZ расписания (пусто = UTC) |
+| `backup.runOnStart` | `false` | сделать бекап сразу при старте sidecar |
 | `backup.restic.s3Endpoint` | `""` | endpoint S3 (со схемой для MinIO http) |
 | `backup.restic.password` | — (обязателен при backup) | ключ шифрования restic |
 | `backup.restic.keepDaily/Weekly/Monthly` | `7/4/6` | retention |

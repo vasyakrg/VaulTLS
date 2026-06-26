@@ -1,8 +1,5 @@
 # Default values for vaultls.
 
-# -- Number of replicas. Keep at 1: SQLite + RWO volume do not tolerate two writers.
-replicaCount: 1
-
 image:
   # Fork image (Phase 1 import + Phase 3 redesign + fixes). Published by the
   # fork's docker-image.yml workflow on release / workflow_dispatch.
@@ -56,7 +53,7 @@ persistence:
   enabled: true
   # -- storageClass; empty string uses the cluster default.
   storageClass: ""
-  accessMode: ReadWriteOnce
+  accessMode: с
   size: 1Gi
   # -- Mount path inside the container.
   mountPath: /app/data
@@ -94,27 +91,23 @@ tolerations: []
 affinity: {}
 
 # ----------------------------------------------------------------------------
-# S3 backup via restic (CronJob).
+# S3 backup via restic. Runs as a sidecar (busybox crond) inside the app pod —
+# NOT a standalone CronJob: with RWO storage a separate pod cannot mount the
+# same PVC, so the backup container shares the app pod's volume mount instead.
 # ----------------------------------------------------------------------------
 backup:
   enabled: false
-  # -- Cron schedule (5-field). Default: daily at 03:00.
+  # -- Cron schedule (5-field, busybox crond). Default: daily at 03:00.
   schedule: "0 3 * * *"
-  # -- Image used to run restic + sqlite3. Packages are installed at runtime.
+  # -- Timezone for the schedule (IANA name, e.g. Europe/Moscow). Empty = UTC.
+  timezone: ""
+  # -- Run one backup immediately when the sidecar starts (then follow the schedule).
+  runOnStart: false
+  # -- Image used to run restic + sqlite3. Packages are installed at startup.
   image:
     repository: alpine
     tag: "3.21"
     pullPolicy: IfNotPresent
-  # -- Keep at most this many completed/failed jobs in history.
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  # -- Forbid overlapping runs.
-  concurrencyPolicy: Forbid
-  # -- Deadline (seconds) to start a missed job.
-  startingDeadlineSeconds: 300
-  # -- Pin the backup pod to the same node as the app pod so the RWO volume mounts to both.
-  #    Disable only if persistence.accessMode is ReadWriteMany.
-  pinToAppNode: true
   resources:
     requests:
       cpu: 50m

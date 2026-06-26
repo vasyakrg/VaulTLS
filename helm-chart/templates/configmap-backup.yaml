@@ -6,15 +6,53 @@ metadata:
   labels:
     {{- include "vaultls.labels" . | nindent 4 }}
 data:
+  # Sidecar entrypoint: installs tooling once, registers the cron schedule and
+  # runs busybox crond in the foreground. crond is PID 1 in this container, so
+  # job output redirected to /proc/1/fd/{1,2} surfaces in `kubectl logs ... -c backup`.
+  entrypoint.sh: |
+    #!/bin/sh
+    set -eu
+
+    echo "==> backup sidecar starting"
+    echo "==> installing restic + sqlite"
+    apk add --no-cache restic sqlite tzdata >/dev/null
+
+    mkdir -p /run/backup
+
+    # crond runs jobs with a minimal environment, so persist the backup env for backup.sh to source.
+    printenv | grep -E '^(S3_|AWS_|RESTIC_|KEEP_)' \
+      | sed 's/^\([^=]*\)=\(.*\)$/export \1="\2"/' > /run/backup/backup.env
+
+    mkdir -p /etc/crontabs
+    echo "${BACKUP_SCHEDULE} /bin/sh /scripts/backup.sh >/proc/1/fd/1 2>/proc/1/fd/2" > /etc/crontabs/root
+
+    echo "==> schedule: ${BACKUP_SCHEDULE} (TZ=${TZ:-UTC})"
+    {{- if .Values.backup.runOnStart }}
+    echo "==> running an initial backup on startup"
+    /bin/sh /scripts/backup.sh || echo "    initial backup failed (continuing into schedule)"
+    {{- end }}
+
+    exec crond -f -l 8
+
   backup.sh: |
     #!/bin/sh
     set -eu
 
-    DATA_DIR="{{ .Values.persistence.mountPath }}"
-    STAGE="/stage"
+    [ -f /run/backup/backup.env ] && . /run/backup/backup.env
 
-    echo "==> installing restic + sqlite"
-    apk add --no-cache restic sqlite >/dev/null
+    DATA_DIR="{{ .Values.persistence.mountPath }}"
+    WORK="/run/backup"
+    STAGE="$WORK/stage"
+    LOCK="$WORK/backup.lock"
+
+    # Atomic lock (mkdir) to skip overlapping runs without depending on flock.
+    if ! mkdir "$LOCK" 2>/dev/null; then
+      echo "==> another backup run is in progress, skipping"
+      exit 0
+    fi
+    trap 'rm -rf "$LOCK"' EXIT
+
+    echo "==> backup started: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
     rm -rf "$STAGE"
     mkdir -p "$STAGE"
@@ -57,5 +95,5 @@ data:
 
     echo "==> current snapshots"
     restic snapshots --host vaultls
-    echo "==> backup completed"
+    echo "==> backup completed: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 {{- end }}
