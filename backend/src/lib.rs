@@ -226,7 +226,8 @@ pub async fn create_rocket() -> Rocket<Build> {
                 get_acme_accounts,
                 create_acme_account,
                 update_acme_account,
-                delete_acme_account
+                delete_acme_account,
+                service_token
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -293,7 +294,8 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 get_users,
                 create_user,
                 delete_user,
-                update_user
+                update_user,
+                service_token
             ],
         )
         .mount(
@@ -331,7 +333,8 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 get_users,
                 create_user,
                 delete_user,
-                update_user
+                update_user,
+                service_token
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])

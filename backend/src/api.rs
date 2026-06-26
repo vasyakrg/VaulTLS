@@ -10,14 +10,15 @@ use rocket::http::{ContentType, Cookie, CookieJar, SameSite};
 use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
-use crate::auth::session_auth::{generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
+use crate::auth::service_auth::verify_secret;
+use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::{AppState, Name, User};
@@ -1376,4 +1377,38 @@ pub(crate) async fn validate_certificate(
             }))
         }
     }
+}
+
+#[openapi(tag = "Authentication")]
+#[post("/auth/token", format = "json", data = "<payload>")]
+/// Exchange service-account client_id + secret for a short-lived Bearer JWT.
+pub(crate) async fn service_token(
+    state: &State<AppState>,
+    payload: Json<ServiceTokenRequest>,
+) -> Result<Json<ServiceTokenResponse>, ApiError> {
+    let unauthorized = || ApiError::Unauthorized(Some("Invalid client credentials".to_string()));
+
+    let sa = state
+        .db
+        .get_service_account_by_client_id(payload.client_id.clone())
+        .await
+        .map_err(|_| unauthorized())?
+        .ok_or_else(unauthorized)?;
+
+    if sa.revoked || !verify_secret(&payload.secret, &sa.secret_hash) {
+        return Err(unauthorized());
+    }
+
+    let jwt_key = state.settings.get_jwt_key()?;
+    let token = generate_service_token(&jwt_key, sa.user_id, sa.id, sa.scopes.clone())?;
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let _ = state.db.touch_service_account_last_used(sa.id, now).await;
+
+    Ok(Json(ServiceTokenResponse {
+        access_token: token,
+        token_type: "Bearer".to_string(),
+        expires_in: 3600,
+        scopes: sa.scopes,
+    }))
 }
