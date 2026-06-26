@@ -19,6 +19,13 @@ use crate::acme::types::{AcmeAccount, AcmeIdentifier, AdminAcmeOrder, AcmeOrderR
 use crate::auth::password_auth::Password;
 use crate::certs::common::{Certificate, CA};
 
+pub(crate) struct CertStatusRow {
+    pub created_on: i64,
+    pub valid_until: i64,
+    pub revoked_at: Option<i64>,
+    pub ca_id: Option<i64>,
+}
+
 static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 macro_rules! db_do {
@@ -919,6 +926,26 @@ impl VaulTLSDB {
             );
             match result {
                 Ok(id) => Ok(Some(id)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!(e)),
+            }
+        })
+    }
+
+    pub(crate) async fn get_cert_status_by_serial_hex(&self, serial_hex: String) -> Result<Option<CertStatusRow>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let result = conn.query_row(
+                "SELECT created_on, valid_until, revoked_at, ca_id FROM user_certificates WHERE serial_hex = ?1",
+                params![serial_hex],
+                |row| Ok(CertStatusRow {
+                    created_on: row.get(0)?,
+                    valid_until: row.get(1)?,
+                    revoked_at: row.get(2)?,
+                    ca_id: row.get(3)?,
+                }),
+            );
+            match result {
+                Ok(r) => Ok(Some(r)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(anyhow::anyhow!(e)),
             }

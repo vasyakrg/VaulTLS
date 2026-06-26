@@ -8,7 +8,7 @@ use rocket_okapi::okapi::schemars;
 use rocket_okapi::{okapi, JsonSchema, OpenApiError};
 use rocket_okapi::okapi::openapi3::{Responses, Response as OAResponse, MediaType, RefOr};
 use rocket_okapi::response::OpenApiResponderInner;
-use crate::data::enums::{CAType, CertificateRenewMethod, CertificateType, TimespanUnit, UserRole};
+use crate::data::enums::{CAType, CertificateRenewMethod, CertificateType, CertStatus, TimespanUnit, UserRole};
 use crate::data::objects::Name;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -133,4 +133,60 @@ pub struct CreateUserRequest {
     pub user_email: String,
     pub password: Option<String>,
     pub role: UserRole
+}
+
+/// Pure status decision. Order matters: revocation first, then validity window.
+pub fn compute_cert_status(
+    now_ms: i64,
+    created_on: i64,
+    valid_until: i64,
+    revoked_at: Option<i64>,
+) -> CertStatus {
+    if revoked_at.is_some() {
+        CertStatus::Revoked
+    } else if now_ms > valid_until {
+        CertStatus::Expired
+    } else if now_ms < created_on {
+        CertStatus::NotYetValid
+    } else {
+        CertStatus::Valid
+    }
+}
+
+#[derive(serde::Serialize, rocket_okapi::JsonSchema)]
+pub struct CertStatusResponse {
+    pub serial: String,
+    pub status: CertStatus,
+    pub not_before: Option<i64>,
+    pub not_after: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub ca_id: Option<i64>,
+}
+
+#[cfg(test)]
+mod cert_status_tests {
+    use super::compute_cert_status;
+    use crate::data::enums::CertStatus;
+
+    #[test]
+    fn valid_when_within_window_and_not_revoked() {
+        // now between created_on and valid_until, not revoked
+        assert_eq!(compute_cert_status(150, 100, 200, None), CertStatus::Valid);
+    }
+
+    #[test]
+    fn revoked_takes_precedence_over_window() {
+        // revoked_at set, even though now is within the validity window
+        assert_eq!(compute_cert_status(150, 100, 200, Some(140)), CertStatus::Revoked);
+    }
+
+    #[test]
+    fn expired_when_now_past_valid_until() {
+        assert_eq!(compute_cert_status(250, 100, 200, None), CertStatus::Expired);
+    }
+
+    #[test]
+    fn not_yet_valid_when_now_before_created_on() {
+        assert_eq!(compute_cert_status(50, 100, 200, None), CertStatus::NotYetValid);
+    }
 }
