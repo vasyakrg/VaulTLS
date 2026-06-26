@@ -3,6 +3,11 @@ FROM python:3.14-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Force apt over IPv4: some Docker build networks advertise IPv6 but cannot
+# route it, so apt hangs on deb.debian.org's AAAA records. This config also
+# applies to `playwright install --with-deps`, which shells out to apt.
+RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
 # Install OS dependencies for Playwright (build stage only)
 RUN apt-get update && apt-get install -y \
     curl wget unzip gnupg \

@@ -15,9 +15,13 @@ def pv_select(page, select_id, *, label=None, index=None, exact=True):
     substring vs. exact matching) or ``index`` to pick the n-th option.
     """
     page.click(f"#{select_id}")
+    # Scope to the open PrimeVue overlay: a bare get_by_role("option") would
+    # also match <option> elements of unrelated native <select>s on the page
+    # (e.g. the hidden language switcher).
+    overlay = page.locator(".p-select-overlay")
     if index is not None:
-        option = page.get_by_role("option").nth(index)
+        option = overlay.get_by_role("option").nth(index)
     else:
-        option = page.get_by_role("option", name=label, exact=exact).first
+        option = overlay.get_by_role("option", name=label, exact=exact).first
     option.wait_for(state="visible")
     option.click()
