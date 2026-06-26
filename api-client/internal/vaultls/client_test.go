@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newServer(t *testing.T) *httptest.Server {
@@ -75,6 +76,64 @@ func TestSelectSkipsRevoked(t *testing.T) {
 	got, ok := SelectForName(certs, "a")
 	if !ok || got.ID != 1 {
 		t.Fatalf("expected non-revoked id 1, got %+v ok=%v", got, ok)
+	}
+}
+
+func TestRetriesTransient500(t *testing.T) {
+	var hits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok123", "token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	mux.HandleFunc("/api/certificates", func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if hits < 3 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode([]Cert{{ID: 1, Name: "a", ValidUntil: 1}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	c.retryBase = time.Millisecond
+	certs, err := c.List(context.Background())
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("expected 1 cert, got %d", len(certs))
+	}
+	if hits != 3 {
+		t.Fatalf("expected handler hit 3 times, got %d", hits)
+	}
+}
+
+func TestPersistent500FailsAfterRetries(t *testing.T) {
+	var hits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok123", "token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	mux.HandleFunc("/api/certificates", func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	c.retryBase = time.Millisecond
+	if _, err := c.List(context.Background()); err == nil {
+		t.Fatal("expected error after bounded retries on persistent 500")
+	}
+	if hits != 3 {
+		t.Fatalf("expected 3 attempts, got %d", hits)
 	}
 }
 

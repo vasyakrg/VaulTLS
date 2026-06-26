@@ -7,8 +7,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +152,44 @@ func TestReconcileSelectsByCertID(t *testing.T) {
 	st, _ := store.Read(dir)
 	if st.CertID != 9 {
 		t.Errorf("state cert_id = %d, want 9 (selected by CertID)", st.CertID)
+	}
+}
+
+func TestReconcileCertIDOnlyDistinctLabels(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	vu := time.Now().Add(48 * time.Hour).UnixMilli()
+	api := &fakeAPI{
+		certs: []vaultls.Cert{
+			{ID: 7, Name: "", ValidUntil: vu},
+			{ID: 9, Name: "", ValidUntil: vu},
+		},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	m := metrics.New()
+	r := New(api, m, time.Now)
+	ctx := context.Background()
+
+	dA := config.Domain{OutDir: dirA, Formats: []string{"pem"}, Mode: "0640", Reload: "true", CertID: 7}
+	dB := config.Domain{OutDir: dirB, Formats: []string{"pem"}, Mode: "0640", Reload: "true", CertID: 9}
+	if err := r.Domain(ctx, dA); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Domain(ctx, dB); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `domain="`+dirA+`"`) {
+		t.Errorf("metrics missing label for dirA %q\n%s", dirA, body)
+	}
+	if !strings.Contains(body, `domain="`+dirB+`"`) {
+		t.Errorf("metrics missing label for dirB %q\n%s", dirB, body)
+	}
+	if strings.Contains(body, `domain=""`) {
+		t.Errorf("metrics has empty domain label (collision)\n%s", body)
 	}
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ func applyDefaults(cfg *Config) error {
 func validate(cfg *Config) error {
 	if cfg.Server.URL == "" {
 		return fmt.Errorf("server.url is required")
+	}
+	if u, err := url.Parse(cfg.Server.URL); err != nil ||
+		(u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("server.url is not a valid http(s) URL")
 	}
 	if cfg.Server.ClientID == "" || cfg.Server.Secret == "" {
 		return fmt.Errorf("server.client_id and server.secret are required")

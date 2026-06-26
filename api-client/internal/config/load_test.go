@@ -55,6 +55,36 @@ func TestLoadRejectsMissingServerURL(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMalformedServerURL(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: "://bad"
+  client_id: svc_abc
+  secret: s3cr3t
+domains:
+  - name: "*.example.com"
+    reload: "x"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for malformed server.url")
+	}
+}
+
+func TestLoadRejectsNonHTTPServerURL(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: "ftp://vaultls.example.com"
+  client_id: svc_abc
+  secret: s3cr3t
+domains:
+  - name: "*.example.com"
+    reload: "x"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for non-http(s) server.url")
+	}
+}
+
 func TestFileModeParsesOctal(t *testing.T) {
 	d := Domain{Mode: "0600"}
 	m, err := d.FileMode()

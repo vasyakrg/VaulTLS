@@ -33,6 +33,9 @@ func New(api API, m *metrics.Metrics, now Clock) *Reconciler {
 
 func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 	label := d.Name
+	if label == "" {
+		label = d.OutDir
+	}
 	now := r.now()
 	r.m.MarkCheck(label, float64(now.Unix()))
 

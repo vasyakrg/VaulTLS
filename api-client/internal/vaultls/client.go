@@ -22,10 +22,11 @@ type Cert struct {
 }
 
 type Client struct {
-	base     string
-	clientID string
-	secret   string
-	http     *http.Client
+	base      string
+	clientID  string
+	secret    string
+	http      *http.Client
+	retryBase time.Duration
 
 	mu      sync.Mutex
 	token   string
@@ -38,10 +39,11 @@ func New(baseURL, clientID, secret string, insecure bool) *Client {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return &Client{
-		base:     strings.TrimRight(baseURL, "/"),
-		clientID: clientID,
-		secret:   secret,
-		http:     &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		base:      strings.TrimRight(baseURL, "/"),
+		clientID:  clientID,
+		secret:    secret,
+		http:      &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		retryBase: 1 * time.Second,
 	}
 }
 
@@ -52,7 +54,10 @@ func (c *Client) authToken(ctx context.Context, force bool) (string, error) {
 		return c.token, nil
 	}
 	body, _ := json.Marshal(map[string]string{"client_id": c.clientID, "secret": c.secret})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/auth/token", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/api/auth/token", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("auth: build request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -74,30 +79,80 @@ func (c *Client) authToken(ctx context.Context, force bool) (string, error) {
 	return c.token, nil
 }
 
-// do performs an authenticated GET, retrying once with a fresh token on 401.
+// do performs an authenticated GET. It retries up to 3 times on transient
+// failures (network errors or status >= 500) with exponential backoff, and
+// composes a single forced re-auth on a 401 (which is not a transient retry).
 func (c *Client) do(ctx context.Context, path string) ([]byte, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		tok, err := c.authToken(ctx, attempt == 1)
+	const maxAttempts = 3
+	reauthed := false
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			delay := c.retryBase << (attempt - 1)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+
+		tok, err := c.authToken(ctx, false)
 		if err != nil {
 			return nil, err
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
-		req.Header.Set("Authorization", "Bearer "+tok)
-		resp, err := c.http.Do(req)
+		raw, status, transient, err := c.get(ctx, path, tok)
 		if err != nil {
-			return nil, fmt.Errorf("request %s: %w", path, err)
+			if transient {
+				lastErr = err
+				continue
+			}
+			return nil, err
 		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+
+		// One forced re-auth on 401; not counted as a transient retry.
+		if status == http.StatusUnauthorized && !reauthed {
+			reauthed = true
+			tok, err = c.authToken(ctx, true)
+			if err != nil {
+				return nil, err
+			}
+			raw, status, transient, err = c.get(ctx, path, tok)
+			if err != nil {
+				if transient {
+					lastErr = err
+					continue
+				}
+				return nil, err
+			}
+		}
+
+		if status >= 500 {
+			lastErr = fmt.Errorf("GET %s: status %d", path, status)
 			continue
 		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("GET %s: status %d", path, resp.StatusCode)
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("GET %s: status %d", path, status)
 		}
 		return raw, nil
 	}
-	return nil, fmt.Errorf("GET %s: unauthorized after re-auth", path)
+	return nil, lastErr
+}
+
+// get performs a single authenticated GET. transient reports whether a non-nil
+// err is a retryable network failure (vs. a fatal request-build error).
+func (c *Client) get(ctx context.Context, path, tok string) (raw []byte, status int, transient bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("build request %s: %w", path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, true, fmt.Errorf("request %s: %w", path, err)
+	}
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return raw, resp.StatusCode, false, nil
 }
 
 func (c *Client) List(ctx context.Context) ([]Cert, error) {
