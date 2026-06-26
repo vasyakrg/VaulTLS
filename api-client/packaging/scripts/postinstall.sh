@@ -2,6 +2,7 @@
 set -e
 systemctl daemon-reload || true
 mkdir -p /etc/ssl/vaultls
+chmod 750 /etc/ssl/vaultls
 if [ ! -f /etc/vaultls/config.yaml ]; then
   echo "vaultls-agent installed. Configure it with:"
   echo "  sudo vaultls-agent setup"

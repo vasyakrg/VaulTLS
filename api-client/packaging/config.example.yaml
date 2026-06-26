@@ -9,6 +9,8 @@ exporter:
   listen: "127.0.0.1:9105"
 domains:
   - name: "*.example.com"
+    # out_dir must live under /etc/ssl/vaultls (the unit's ReadWritePaths).
+    # To write elsewhere, extend ReadWritePaths via a systemd override.
     out_dir: /etc/ssl/vaultls/example.com
     formats: [pem, haproxy]
     owner: root

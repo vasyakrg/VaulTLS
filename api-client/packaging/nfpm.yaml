@@ -20,3 +20,4 @@ contents:
     type: config|noreplace
 scripts:
   postinstall: ./packaging/scripts/postinstall.sh
+  postremove: ./packaging/scripts/postremove.sh
