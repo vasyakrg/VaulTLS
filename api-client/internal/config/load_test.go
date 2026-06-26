@@ -66,3 +66,62 @@ func TestFileModeParsesOctal(t *testing.T) {
 		t.Fatalf("FileMode() = %v, %v", m, err)
 	}
 }
+
+const validServerHdr = `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: s3cr3t
+`
+
+func TestLoadRejectsCertIDOnlyWithoutOutDir(t *testing.T) {
+	p := writeTmp(t, validServerHdr+`domains:
+  - cert_id: 42
+    reload: "x"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for cert_id-only domain without out_dir")
+	}
+}
+
+func TestLoadRejectsZeroDomains(t *testing.T) {
+	p := writeTmp(t, validServerHdr)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for zero domains")
+	}
+}
+
+func TestLoadRejectsMissingReload(t *testing.T) {
+	p := writeTmp(t, validServerHdr+`domains:
+  - name: "*.example.com"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for domain missing reload")
+	}
+}
+
+func TestLoadRejectsUnknownFormat(t *testing.T) {
+	p := writeTmp(t, validServerHdr+`domains:
+  - name: "*.example.com"
+    reload: "x"
+    formats: ["der"]
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for unknown format")
+	}
+}
+
+func TestLoadCertIDOnlyWithOutDir(t *testing.T) {
+	p := writeTmp(t, validServerHdr+`domains:
+  - cert_id: 42
+    out_dir: /etc/ssl/custom
+    reload: "x"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Domains[0].OutDir != "/etc/ssl/custom" {
+		t.Fatalf("out_dir = %q, want /etc/ssl/custom", cfg.Domains[0].OutDir)
+	}
+}

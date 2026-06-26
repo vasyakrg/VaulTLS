@@ -56,7 +56,7 @@ func applyDefaults(cfg *Config) error {
 		if len(d.Formats) == 0 {
 			d.Formats = []string{"pem"}
 		}
-		if d.OutDir == "" {
+		if d.OutDir == "" && d.Name != "" {
 			d.OutDir = "/etc/ssl/vaultls/" + strings.TrimPrefix(d.Name, "*.")
 		}
 	}
@@ -76,6 +76,9 @@ func validate(cfg *Config) error {
 	for i, d := range cfg.Domains {
 		if d.Name == "" && d.CertID == 0 {
 			return fmt.Errorf("domain[%d]: name or cert_id required", i)
+		}
+		if d.Name == "" && d.OutDir == "" {
+			return fmt.Errorf("domain[%d]: out_dir is required when name is empty", i)
 		}
 		if d.Reload == "" {
 			return fmt.Errorf("domain[%d] (%s): reload is required", i, d.Name)
