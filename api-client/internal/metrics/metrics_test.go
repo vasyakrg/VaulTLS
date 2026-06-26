@@ -3,6 +3,7 @@ package metrics
 import (
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -40,4 +41,57 @@ func TestExposesCoreMetrics(t *testing.T) {
 			t.Errorf("scrape missing %q", want)
 		}
 	}
+}
+
+func TestSetUpdateAvailableConcurrentScrape(t *testing.T) {
+	m := New()
+	const iters = 2000
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			m.SetUpdateAvailable(true, "1.3.0")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			_ = scrape(m)
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestLatestVersionNeverEmptyUnderConcurrency(t *testing.T) {
+	m := New()
+	m.SetUpdateAvailable(true, "1.0.0")
+	const iters = 5000
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			if i%2 == 0 {
+				m.SetUpdateAvailable(true, "1.3.0")
+			} else {
+				m.SetUpdateAvailable(true, "1.4.0")
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			body := scrape(m)
+			if !strings.Contains(body, "vaultls_agent_latest_version_info{") {
+				t.Errorf("scrape exposed no latest_version_info series (empty window)")
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
 }

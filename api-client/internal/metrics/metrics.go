@@ -23,8 +23,9 @@ type Metrics struct {
 	reloadFailures  *prometheus.CounterVec
 	tokenErrors     prometheus.Counter
 
-	mu      sync.Mutex
-	serials map[string]string
+	mu                 sync.Mutex
+	serials            map[string]string
+	latestVersionLabel string
 }
 
 func New() *Metrics {
@@ -67,8 +68,18 @@ func (m *Metrics) SetUpdateAvailable(available bool, latest string) {
 		m.updateAvailable.Set(0)
 	}
 	if latest != "" {
-		m.latestVersion.Reset()
+		// Set the new series BEFORE deleting the stale one so a concurrent
+		// scrape never observes an empty vaultls_agent_latest_version_info
+		// series. A bare Reset()+Set() leaves a window where the series is
+		// momentarily gone; the registry's Gather() does not take m.mu, so a
+		// mutex around Reset()+Set() would not close that window either.
+		m.mu.Lock()
+		defer m.mu.Unlock()
 		m.latestVersion.WithLabelValues(latest).Set(1)
+		if old := m.latestVersionLabel; old != "" && old != latest {
+			m.latestVersion.DeleteLabelValues(old)
+		}
+		m.latestVersionLabel = latest
 	}
 }
 
