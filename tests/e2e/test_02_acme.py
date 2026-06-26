@@ -20,6 +20,8 @@ from cryptography.x509.oid import NameOID
 from dnslib import QTYPE, RR, TXT
 from dnslib.server import BaseResolver, DNSServer
 
+from ui_helpers import pv_select
+
 
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -356,7 +358,7 @@ def test_acme_create_account(page):
     page.fill("#acmeName", "e2e_create_test")
     page.fill("#acmeDomainInput", "test.internal")
     page.click("button:has-text('Add')")
-    page.select_option("#acmeCA", index=1)
+    pv_select(page, "acmeCA", index=1)
     page.check("#acmeAutoValidate")
     page.click("button:has-text('Create Account')")
     page.click("button:has-text('Close')")
@@ -372,7 +374,7 @@ def test_acme_edit_account(page):
     assert "ACME Accounts" in page.locator("h1").first.inner_text()
     
     row = page.locator("tbody tr").filter(has_text="e2e_create_test").first
-    acct_id = row.locator("td[id^='AcmeId-']").inner_text()
+    acct_id = row.locator("[id^='AcmeId-']").inner_text()
 
     initial_count = count_acme_accounts(page)
     page.click(f"#EditButton-{acct_id}")
@@ -392,14 +394,14 @@ def test_acme_deactivate_account(page):
     page.fill("#acmeName", "e2e_delete_target")
     page.fill("#acmeDomainInput", "test.internal")
     page.click("button:has-text('Add')")
-    page.select_option("#acmeCA", index=1)
+    pv_select(page, "acmeCA", index=1)
     page.click("button:has-text('Create Account')")
     page.click("button:has-text('Close')")
     page.wait_for_timeout(500)
 
     initial_count = count_acme_accounts(page)
     row = page.locator("tbody tr").filter(has_text="e2e_delete_target").first
-    acct_id = row.locator("td[id^='AcmeId-']").inner_text()
+    acct_id = row.locator("[id^='AcmeId-']").inner_text()
 
     page.click(f"#DeleteButton-{acct_id}")
     page.click("#ConfirmDeleteButton")

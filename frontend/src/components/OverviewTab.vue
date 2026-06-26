@@ -35,7 +35,7 @@
       v-model:filters="filters"
       filterDisplay="menu"
       removableSort
-      class="vt-table"
+      class="vt-table active-certs"
     >
       <template #header>
         <div class="vt-table-header">
@@ -95,18 +95,22 @@
       <Column field="renew_method" :header="$t('overview.colRenewMethod')" sortable>
         <template #body="{ data }">{{ CertificateRenewMethod[data.renew_method] }}</template>
       </Column>
-      <Column field="ca_id" :header="$t('common.colCaId')" sortable />
+      <Column field="ca_id" :header="$t('common.colCaId')" sortable>
+        <template #body="{ data }"><span :id="'CaId-' + data.id">{{ data.ca_id }}</span></template>
+      </Column>
       <Column :header="$t('common.password')">
         <template #body="{ data }">
           <div class="vt-password-cell">
             <input
               type="text"
+              :id="'PasswordInput-' + data.id"
               :value="shownCerts.has(data.id) ? (data.password || '') : '•••••••••'"
               readonly
               class="vt-password-input"
               :placeholder="shownCerts.has(data.id) ? $t('overview.generateModal.blank') : undefined"
             />
             <button
+              :id="'PasswordButton-' + data.id"
               class="vt-icon-btn"
               :title="shownCerts.has(data.id) ? $t('certs.hidePassword') : $t('certs.showPassword')"
               @click="togglePasswordShown(data)"
@@ -237,6 +241,7 @@
           <label>{{ $t('overview.generateModal.commonName') }}</label>
           <div class="vt-input-group">
             <InputText
+              id="certName"
               v-model="certReq.cert_name.cn"
               :placeholder="$t('overview.generateModal.enterCommonName')"
               class="vt-input-grow"
@@ -305,6 +310,7 @@
         <div class="vt-field">
           <label>{{ $t('overview.generateModal.user') }}</label>
           <Select
+            id="userId"
             v-model="certReq.user_id"
             :options="userOptions"
             optionLabel="label"
@@ -317,6 +323,7 @@
         <div class="vt-field">
           <label>{{ $t('overview.generateModal.ca') }}</label>
           <Select
+            id="caId"
             v-model="certReq.ca_id"
             :options="caOptions"
             optionLabel="label"
@@ -330,12 +337,14 @@
           <label>{{ $t('common.validity') }}</label>
           <div class="vt-input-group">
             <InputNumber
+              input-id="validity"
               v-model="certReq.validity_duration"
               :min="0"
               :placeholder="$t('common.enterValidityPeriod')"
               class="vt-input-grow"
             />
             <Select
+              id="validity_unit"
               v-model="certReq.validity_unit"
               :options="validityUnitOptions"
               optionLabel="label"
@@ -356,6 +365,7 @@
         <div v-if="!certReq.system_generated_password" class="vt-field">
           <label>{{ $t('common.password') }}</label>
           <InputText
+            id="certPassword"
             v-model="certReq.cert_password"
             :placeholder="$t('overview.generateModal.enterPassword')"
           />
@@ -364,6 +374,7 @@
         <div class="vt-field">
           <label>{{ $t('overview.generateModal.renewMethod') }}</label>
           <Select
+            id="renewMethod"
             v-model="certReq.renew_method"
             :options="renewMethodOptions"
             optionLabel="label"
@@ -373,7 +384,7 @@
         </div>
 
         <div v-if="isMailValid" class="vt-field vt-switch-field">
-          <ToggleSwitch v-model="certReq.notify_user" />
+          <ToggleSwitch input-id="notify-user" v-model="certReq.notify_user" />
           <label>{{ $t('overview.generateModal.notifyUser') }}</label>
         </div>
       </div>

@@ -2,6 +2,8 @@ import time
 
 import requests
 
+from ui_helpers import pv_select
+
 MAILHOG_API_URL = "http://mailhog:8025"
 
 
@@ -35,9 +37,9 @@ def test_certificates(page):
     page.goto("http://127.0.0.1/overview")
     page.wait_for_url("**/overview")
     assert "Certificates" in page.locator("h1").inner_text()
-    page.click("button:has-text('Create New Certificate')")
+    page.click("#CreateCertificateButton")
     page.fill("#certName", "test_cert")
-    page.select_option("#userId", "1")
+    pv_select(page, "userId", label="test")
     page.fill("#certPassword", "password")
     page.locator("#notify-user").check()
     page.click("button:has-text('Create Certificate')")
@@ -54,13 +56,13 @@ def test_renewal_remind(page):
 
     page.goto("http://127.0.0.1/overview")
     page.wait_for_url("**/overview")
-    page.click("button:has-text('Create New Certificate')")
+    page.click("#CreateCertificateButton")
     page.fill("#certName", "test_cert_remind")
-    page.select_option("#userId", "1")
+    pv_select(page, "userId", label="test")
     page.fill("#certPassword", "password")
     page.fill("#validity", "0")
-    page.select_option("#validity_unit", "0")
-    page.select_option("#renewMethod", "1")
+    pv_select(page, "validity_unit", label="Years")
+    pv_select(page, "renewMethod", label="Remind")
     page.click("button:has-text('Create Certificate')")
 
     page.wait_for_timeout(5000)
@@ -73,13 +75,13 @@ def test_renewal_renew_notify(page):
 
     page.goto("http://127.0.0.1/overview")
     page.wait_for_url("**/overview")
-    page.click("button:has-text('Create New Certificate')")
+    page.click("#CreateCertificateButton")
     page.fill("#certName", "test_cert_renew")
-    page.select_option("#userId", "1")
+    pv_select(page, "userId", label="test")
     page.fill("#certPassword", "password")
     page.fill("#validity", "0")
-    page.select_option("#validity_unit", "0")
-    page.select_option("#renewMethod", "3")
+    pv_select(page, "validity_unit", label="Years")
+    pv_select(page, "renewMethod", label="Renew and Notify")
     page.click("button:has-text('Create Certificate')")
 
     page.wait_for_timeout(5000)
@@ -94,7 +96,7 @@ def test_users(page):
     page.goto("http://127.0.0.1/users")
     page.wait_for_url("**/users")
     assert "Users" in page.locator("h1").inner_text()
-    page.click("button:has-text('Create New User')")
+    page.click("#CreateUserButton")
     page.fill("#user_name", "test2")
     page.fill("#user_email", "test2@example.com")
     page.fill("#password", "password")
@@ -127,26 +129,27 @@ def test_create_ca_and_certificate_with_ca_verification(page):
     page.click("#CreateCAButton")
     page.fill("#caName", "Test CA 2")
     page.fill("#validity", "5")
-    page.select_option("#validity_unit", "0")  # Select Years (Year = 0)
+    pv_select(page, "validity_unit", label="Years")
     page.click("button:has-text('Create CA')")
 
     page.wait_for_timeout(2000)
     assert count_table_data_rows(page, "table") == initial_ca_count + 1
 
-    new_ca_id_element = page.locator("tbody tr").last.locator("td[id^='CaId-']")
-    new_ca_id = new_ca_id_element.inner_text()
+    # The CA list endpoint is public; resolve the new CA's id by name.
+    cas = requests.get("http://127.0.0.1/api/certificates/ca").json()
+    new_ca_id = next(c["id"] for c in cas if c["name"]["cn"] == "Test CA 2")
 
     page.goto("http://127.0.0.1/overview")
     page.wait_for_url("**/overview")
 
     initial_cert_count = count_table_data_rows(page)
 
-    page.click("button:has-text('Create New Certificate')")
+    page.click("#CreateCertificateButton")
     page.fill("#certName", "test_cert_with_new_ca")
-    page.select_option("#userId", "1")
+    pv_select(page, "userId", label="test")
     page.fill("#certPassword", "password")
 
-    page.select_option("#caId", new_ca_id)
+    pv_select(page, "caId", label=f"(ID: {new_ca_id})", exact=False)
 
     page.click("button:has-text('Create Certificate')")
 
@@ -154,5 +157,5 @@ def test_create_ca_and_certificate_with_ca_verification(page):
 
     assert count_table_data_rows(page) == initial_cert_count + 1
 
-    new_ca_id_element = page.locator("tbody tr").last.locator("td[id^='CaId-']").inner_text()
-    assert new_ca_id_element == new_ca_id
+    new_cert_ca_id = page.locator("tbody tr").last.locator("[id^='CaId-']").inner_text()
+    assert new_cert_ca_id == str(new_ca_id)

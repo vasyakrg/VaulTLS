@@ -159,6 +159,7 @@
           <label>{{ $t('ca.createModal.caName') }}</label>
           <div class="vt-input-group">
             <InputText
+              id="caName"
               v-model="caReq.ca_name.cn"
               :placeholder="$t('ca.enterCaCommonName')"
               class="vt-input-grow"
@@ -196,12 +197,14 @@
           <label>{{ $t('common.validity') }}</label>
           <div class="vt-input-group">
             <InputNumber
+              input-id="validity"
               v-model="caReq.validity_duration"
               :min="1"
               :placeholder="$t('common.enterValidityPeriod')"
               class="vt-input-grow"
             />
             <Select
+              id="validity_unit"
               v-model="caReq.validity_unit"
               :options="validityUnitOptions"
               optionLabel="label"

@@ -38,8 +38,12 @@
         </div>
       </template>
 
-      <Column field="id" :header="$t('acme.colId')" sortable />
-      <Column field="name" :header="$t('common.colName')" sortable />
+      <Column field="id" :header="$t('acme.colId')" sortable>
+        <template #body="{ data }"><span :id="'AcmeId-' + data.id">{{ data.id }}</span></template>
+      </Column>
+      <Column field="name" :header="$t('common.colName')" sortable>
+        <template #body="{ data }"><span :id="'AcmeName-' + data.id">{{ data.name }}</span></template>
+      </Column>
       <Column field="allowed_domains" :header="$t('acme.colAllowedDomains')">
         <template #body="{ data }">
           <span :title="data.allowed_domains">{{ truncateDomains(data.allowed_domains) }}</span>
@@ -227,7 +231,7 @@
         </div>
 
         <div class="vt-field vt-switch-field">
-          <ToggleSwitch id="acmeAutoValidate" v-model="createForm.auto_validate" />
+          <ToggleSwitch input-id="acmeAutoValidate" v-model="createForm.auto_validate" />
           <div>
             <label for="acmeAutoValidate">{{ $t('acme.createModal.autoValidate') }}</label>
             <div class="vt-warn-text vt-small">{{ $t('acme.createModal.autoValidateHelp') }}</div>

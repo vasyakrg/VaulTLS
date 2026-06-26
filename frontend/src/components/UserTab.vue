@@ -119,6 +119,7 @@
         <div class="vt-field">
           <label>{{ $t('common.username') }}</label>
           <InputText
+            id="user_name"
             v-model="newUser.user_name"
             :placeholder="$t('common.username')"
             class="vt-input-full"
@@ -127,6 +128,7 @@
         <div class="vt-field">
           <label>{{ $t('common.email') }}</label>
           <InputText
+            id="user_email"
             v-model="newUser.user_email"
             :placeholder="$t('common.email')"
             class="vt-input-full"
@@ -135,6 +137,7 @@
         <div class="vt-field">
           <label>{{ $t('common.password') }}</label>
           <InputText
+            id="password"
             v-model="newUser.password"
             type="password"
             :placeholder="$t('common.password')"
