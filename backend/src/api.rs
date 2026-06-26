@@ -14,8 +14,8 @@ use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, SetupRequest};
-use crate::data::enums::{CAType, CertificateType, DataFormat, PasswordRule, TimespanUnit, UserRole};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::{AppState, Name, User};
 use crate::notification::mail::{MailMessage, Mailer};
@@ -1234,4 +1234,46 @@ pub(crate) async fn delete_user(
     info!(user=?id, "User deleted.");
 
     Ok(())
+}
+
+#[openapi(tag = "Certificates")]
+#[get("/certificates/validate?<serial>")]
+/// Public: report the status of a certificate by its serial number (lowercase hex).
+/// Returns status + validity dates only — never subject/owner.
+pub(crate) async fn validate_certificate(
+    state: &State<AppState>,
+    serial: String,
+) -> Result<Json<CertStatusResponse>, ApiError> {
+    let normalized: String = serial
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect();
+    if normalized.is_empty() {
+        return Err(ApiError::BadRequest("Missing serial".into()));
+    }
+
+    match state.db.get_cert_status_by_serial_hex(normalized.clone()).await? {
+        None => Ok(Json(CertStatusResponse {
+            serial: normalized,
+            status: CertStatus::Unknown,
+            not_before: None,
+            not_after: None,
+            revoked_at: None,
+            ca_id: None,
+        })),
+        Some(row) => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let status = compute_cert_status(now, row.created_on, row.valid_until, row.revoked_at);
+            Ok(Json(CertStatusResponse {
+                serial: normalized,
+                status,
+                not_before: Some(row.created_on),
+                not_after: Some(row.valid_until),
+                revoked_at: row.revoked_at,
+                ca_id: row.ca_id,
+            }))
+        }
+    }
 }
