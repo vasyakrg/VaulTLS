@@ -17,6 +17,7 @@ I also did not have an overview about the expiration of individual certificates.
 - 🔐 OpenID Connect authentication support
 - 📨 Email notifications for certificate expiration
 - 🚀 RESTful API for automation
+- 📦 Certbot-style agent (`vaultls-agent`) that auto-distributes certificates to Debian hosts ([details](api-client/README.md))
 - 🤖 ACME CA support (Traefik, acme.sh, and other ACME clients)
 - 🛠 Docker/Podman container support
 - ☸️ Kubernetes deployment via Helm chart with optional S3 backup (restic)
@@ -194,6 +195,33 @@ VaulTLS can act as an ACME Certificate Authority, allowing clients like Traefik 
 Enable it with `VAULTLS_ACME_ENABLED=true` and create an account in the ACME tab of the admin UI to get EAB credentials.
 
 See the [ACME documentation](docs/acme.md) for full setup instructions including Traefik and acme.sh examples.
+
+## Certificate Agent (`vaultls-agent`)
+
+For Debian hosts that terminate TLS (nginx, HAProxy, Postfix, …) VaulTLS ships a
+certbot-style agent that **pulls** certificates from the server and deploys them
+locally — the deployment half of the PKI pipeline (VaulTLS issues; the agent distributes).
+
+The agent runs as a systemd daemon, authenticates with a VaulTLS **service account**
+(`cert:read` scope), and on a schedule:
+
+- selects the right certificate (by name, wildcard-aware, or pinned `cert_id`),
+- writes it to disk in `pem` and/or `haproxy` formats (private key always `0600`, atomic writes),
+- reloads the target service **only when the certificate actually changed** (serial compare),
+- exposes a built-in **Prometheus exporter** (`127.0.0.1:9105/metrics`) for expiry,
+  reconcile/reload errors and update-availability, with ready-made alerting rules.
+
+Install the `.deb` from [Releases](https://github.com/vasyakrg/VaulTLS/releases), then:
+
+```bash
+sudo vaultls-agent setup \
+  --url https://vaultls.example.com \
+  --client-id svc_xxxxxxxx --secret YOUR_SECRET \
+  --domain "*.example.com" --reload "systemctl reload nginx"
+```
+
+📖 **Full documentation** (flags, config reference, output formats, metrics, alert rules,
+build-from-source): [`api-client/README.md`](api-client/README.md).
 
 ## FAQ
 ### I can not login
