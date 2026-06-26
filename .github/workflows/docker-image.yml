@@ -49,14 +49,10 @@ jobs:
               TAGS="${REPO}:${{ github.event.inputs.tag_name }},${REPO}:rc"
               ;;
             *)
-              # Release: tag with the release name plus latest/rc.
+              # Release: tag with the release name plus the rc channel.
+              # :latest is published only from main, never from releases.
               TAG_NAME="${GITHUB_REF##*/}"
-              if [ "${{ github.event.release.prerelease }}" = "false" ]; then
-                SECONDARY_TAG="latest"
-              else
-                SECONDARY_TAG="rc"
-              fi
-              TAGS="${REPO}:${TAG_NAME},${REPO}:${SECONDARY_TAG}"
+              TAGS="${REPO}:${TAG_NAME},${REPO}:rc"
               ;;
           esac
 
