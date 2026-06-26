@@ -66,6 +66,11 @@ pub fn ski_of(cert: &X509) -> Option<Vec<u8>> {
     cert.subject_key_id().map(|s| s.as_slice().to_vec())
 }
 
+/// Authority Key Identifier bytes, if present.
+pub fn aki_of(cert: &X509) -> Option<Vec<u8>> {
+    cert.authority_key_id().map(|a| a.as_slice().to_vec())
+}
+
 /// Split a PEM bundle into individual certificates.
 pub fn parse_pem_bundle(bytes: &[u8]) -> Result<Vec<X509>> {
     let certs = X509::stack_from_pem(bytes)?;

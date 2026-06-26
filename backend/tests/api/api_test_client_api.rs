@@ -101,3 +101,24 @@ async fn ca_download_pem_default_and_der() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn fullchain_internal_ca_is_single_pem() -> Result<()> {
+    // The setup wizard creates a self-signed internal TLS CA with id 1.
+    let client = VaulTLSClient::new_setup().await;
+    let resp = client.get("/certificates/ca/1/fullchain").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let body = resp.into_bytes().await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    // Self-signed internal CA → exactly one certificate in the chain.
+    assert_eq!(text.matches("-----BEGIN CERTIFICATE-----").count(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fullchain_unknown_ca_is_404() -> Result<()> {
+    let client = VaulTLSClient::new_setup().await;
+    let resp = client.get("/certificates/ca/9999/fullchain").dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+    Ok(())
+}

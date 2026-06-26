@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::env;
 use openidconnect::{Nonce, PkceCodeVerifier};
+use openssl::x509::X509;
 use rocket_okapi::openapi;
 use rocket::{delete, get, post, put, State};
 use rocket::response::Redirect;
@@ -10,6 +12,7 @@ use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::session_auth::{generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
+use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
@@ -919,6 +922,62 @@ pub(crate) async fn download_ca(
             ))
         }
     }
+}
+
+#[openapi(tag = "Certificates")]
+#[get("/certificates/ca/<id>/fullchain")]
+/// Public: download a TLS CA's full chain (leaf CA first, root last) as one PEM file.
+pub(crate) async fn download_ca_fullchain(
+    state: &State<AppState>,
+    id: i64,
+) -> Result<DownloadResponse, ApiError> {
+    let ca = state.db.get_ca_by_id(id).await.map_err(|_| ApiError::NotFound(None))?;
+    if ca.ca_type != CAType::TLS {
+        return Err(ApiError::BadRequest("Fullchain is only available for TLS CAs".into()));
+    }
+
+    // Candidate issuers: all stored TLS CAs as X509.
+    let all = state.db.get_all_ca().await?;
+    let candidates: Vec<X509> = all
+        .iter()
+        .filter(|c| c.ca_type == CAType::TLS)
+        .filter_map(|c| X509::from_der(&c.cert).ok())
+        .collect();
+
+    let mut current = X509::from_der(&ca.cert).map_err(ApiError::OpenSsl)?;
+    let mut chain_pem: Vec<u8> = Vec::new();
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+
+    loop {
+        // Guard against cycles using the serial number as identity.
+        let key = current.serial_number().to_bn()
+            .map_err(ApiError::OpenSsl)?.to_vec();
+        if !seen.insert(key) {
+            break;
+        }
+        chain_pem.extend_from_slice(&current.to_pem().map_err(ApiError::OpenSsl)?);
+
+        // Stop at a self-signed certificate (subject == issuer).
+        let self_signed = current
+            .issuer_name()
+            .try_cmp(current.subject_name())
+            .map(|o| o.is_eq())
+            .unwrap_or(false);
+        if self_signed {
+            break;
+        }
+
+        match find_issuing_ca(&current, &candidates) {
+            Some(issuer) => current = issuer,
+            None => break,
+        }
+    }
+
+    Ok(DownloadResponse::new_typed(
+        chain_pem,
+        &format!("fullchain_{}.pem", ca.name),
+        ContentType::new("application", "x-pem-file"),
+    ))
 }
 
 #[openapi(tag = "Certificates")]
