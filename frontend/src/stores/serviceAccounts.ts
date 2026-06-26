@@ -9,6 +9,7 @@ import {
   listServiceAccounts,
   createServiceAccount,
   revokeServiceAccount,
+  deleteServiceAccount,
 } from '@/api/serviceAccounts'
 
 export const useServiceAccountStore = defineStore('serviceAccount', {
@@ -63,6 +64,22 @@ export const useServiceAccountStore = defineStore('serviceAccount', {
         this.error = axios.isAxiosError(err)
           ? 'Failed to revoke service account: ' + err.response?.data?.error
           : 'Failed to revoke service account'
+        console.error(err)
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async remove(userId: number, id: number): Promise<void> {
+      this.loading = true
+      this.error = null
+      try {
+        await deleteServiceAccount(id)
+        await this.fetchForUser(userId)
+      } catch (err) {
+        this.error = axios.isAxiosError(err)
+          ? 'Failed to delete service account: ' + err.response?.data?.error
+          : 'Failed to delete service account'
         console.error(err)
       } finally {
         this.loading = false

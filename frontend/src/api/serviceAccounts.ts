@@ -19,3 +19,7 @@ export const createServiceAccount = async (
 export const revokeServiceAccount = async (id: number): Promise<void> => {
   await ApiClient.delete<void>(`/service-accounts/${id}`)
 }
+
+export const deleteServiceAccount = async (id: number): Promise<void> => {
+  await ApiClient.delete<void>(`/service-accounts/${id}/permanent`)
+}

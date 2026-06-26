@@ -79,6 +79,14 @@
             size="small"
             @click="onRevoke(data.id)"
           />
+          <Button
+            v-else
+            :label="$t('common.delete')"
+            icon="pi pi-trash"
+            severity="danger"
+            size="small"
+            @click="onDelete(data.id)"
+          />
         </template>
       </Column>
       <template #empty>
@@ -132,6 +140,10 @@ const onCreate = async () => {
 
 const onRevoke = async (id: number) => {
   if (props.user) await store.revoke(props.user.id, id)
+}
+
+const onDelete = async (id: number) => {
+  if (props.user) await store.remove(props.user.id, id)
 }
 
 const onClose = () => {

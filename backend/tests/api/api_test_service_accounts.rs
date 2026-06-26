@@ -206,3 +206,27 @@ async fn service_token_cannot_update_user() -> Result<()> {
     assert_eq!(resp.status(), Status::Forbidden, "service token must not update the owner");
     Ok(())
 }
+
+#[tokio::test]
+async fn permanent_delete_removes_service_account() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let created = create_service_account(&client, 1, "to-delete", &["cert:read"]).await;
+    let sid = created["id"].as_i64().unwrap();
+
+    let del = client.delete(format!("/service-accounts/{sid}/permanent")).dispatch().await;
+    assert_eq!(del.status(), Status::Ok);
+
+    let resp = client.get("/users/1/service-accounts").dispatch().await;
+    let body = resp.into_string().await.unwrap();
+    assert!(!body.contains("to-delete"), "permanently deleted account must not appear in the list");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn permanent_delete_requires_admin() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated_unprivileged().await;
+    let resp = client.delete("/service-accounts/1/permanent").dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    Ok(())
+}

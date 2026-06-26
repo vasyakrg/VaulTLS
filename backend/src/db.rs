@@ -1063,6 +1063,13 @@ impl VaulTLSDB {
         })
     }
 
+    pub(crate) async fn delete_service_account(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM service_accounts WHERE id = ?1", params![id])?;
+            Ok(())
+        })
+    }
+
     pub(crate) async fn touch_service_account_last_used(&self, id: i64, now_ms: i64) -> Result<()> {
         db_do!(self.pool, |conn: &Connection| {
             conn.execute("UPDATE service_accounts SET last_used_at = ?1 WHERE id = ?2", params![now_ms, id])?;

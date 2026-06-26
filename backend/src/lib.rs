@@ -230,7 +230,8 @@ pub async fn create_rocket() -> Rocket<Build> {
                 service_token,
                 create_service_account,
                 list_service_accounts,
-                revoke_service_account
+                revoke_service_account,
+                delete_service_account
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -301,7 +302,8 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 service_token,
                 create_service_account,
                 list_service_accounts,
-                revoke_service_account
+                revoke_service_account,
+                delete_service_account
             ],
         )
         .mount(
@@ -343,7 +345,8 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 service_token,
                 create_service_account,
                 list_service_accounts,
-                revoke_service_account
+                revoke_service_account,
+                delete_service_account
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])

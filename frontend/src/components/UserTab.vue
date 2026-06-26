@@ -54,7 +54,7 @@
         <template #body="{ data }">
           <Tag
             :id="'UserRole-' + data.id"
-            :severity="data.role === UserRole.Admin ? 'warn' : 'secondary'"
+            :severity="data.role === UserRole.Admin ? 'success' : 'secondary'"
             :value="data.role === UserRole.Admin ? $t('users.roleAdmin') : $t('users.roleUser')"
           />
         </template>

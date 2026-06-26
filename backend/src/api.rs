@@ -1509,3 +1509,15 @@ pub(crate) async fn revoke_service_account(
     state.db.revoke_service_account(sid).await?;
     Ok(())
 }
+
+#[openapi(tag = "Service Accounts")]
+#[delete("/service-accounts/<sid>/permanent")]
+/// Permanently delete a service account from the database. Requires admin.
+pub(crate) async fn delete_service_account(
+    state: &State<AppState>,
+    sid: i64,
+    _authentication: AuthenticatedPrivileged,
+) -> Result<(), ApiError> {
+    state.db.delete_service_account(sid).await?;
+    Ok(())
+}
