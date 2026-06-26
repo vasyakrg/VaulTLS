@@ -36,14 +36,6 @@ func applyDefaults(cfg *Config) error {
 	if cfg.Exporter.Listen == "" {
 		cfg.Exporter.Listen = "127.0.0.1:9105"
 	}
-	cfg.RenewBefore = 720 * time.Hour
-	if cfg.RenewRaw != "" {
-		d, err := time.ParseDuration(cfg.RenewRaw)
-		if err != nil {
-			return fmt.Errorf("invalid renew_before: %w", err)
-		}
-		cfg.RenewBefore = d
-	}
 	if cfg.JitterRaw != "" {
 		d, err := time.ParseDuration(cfg.JitterRaw)
 		if err != nil {

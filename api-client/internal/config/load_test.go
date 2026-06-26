@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func writeTmp(t *testing.T, body string) string {
@@ -36,9 +35,6 @@ domains:
 	}
 	if cfg.Schedule != "0 3 1 * *" {
 		t.Fatalf("default schedule = %q", cfg.Schedule)
-	}
-	if cfg.RenewBefore != 720*time.Hour {
-		t.Fatalf("default renew_before = %v", cfg.RenewBefore)
 	}
 	if cfg.Exporter.Listen != "127.0.0.1:9105" {
 		t.Fatalf("default listen = %q", cfg.Exporter.Listen)

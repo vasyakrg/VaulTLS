@@ -27,13 +27,11 @@ type Domain struct {
 }
 
 type Config struct {
-	Server      Server        `yaml:"server"`
-	Schedule    string        `yaml:"schedule"`
-	Jitter      time.Duration `yaml:"-"`
-	JitterRaw   string        `yaml:"jitter"`
-	RenewBefore time.Duration `yaml:"-"`
-	RenewRaw    string        `yaml:"renew_before"`
-	Exporter    struct {
+	Server    Server        `yaml:"server"`
+	Schedule  string        `yaml:"schedule"`
+	Jitter    time.Duration `yaml:"-"`
+	JitterRaw string        `yaml:"jitter"`
+	Exporter  struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"exporter"`
 	Domains []Domain `yaml:"domains"`

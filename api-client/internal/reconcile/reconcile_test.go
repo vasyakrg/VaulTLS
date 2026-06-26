@@ -63,7 +63,7 @@ func TestReconcileWritesAndRenews(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, 720*time.Hour, time.Now)
+	r := New(api, m, time.Now)
 	if err := r.Domain(context.Background(), newDomain(dir)); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestReconcileSkipsWhenUnchanged(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, 720*time.Hour, time.Now)
+	r := New(api, m, time.Now)
 	ctx := context.Background()
 	d := newDomain(dir)
 	if err := r.Domain(ctx, d); err != nil {
@@ -114,7 +114,7 @@ func TestReconcileDomainNotFound(t *testing.T) {
 	dir := t.TempDir()
 	api := &fakeAPI{certs: []vaultls.Cert{{ID: 1, Name: "other", ValidUntil: 1}}}
 	m := metrics.New()
-	r := New(api, m, 720*time.Hour, time.Now)
+	r := New(api, m, time.Now)
 	if err := r.Domain(context.Background(), newDomain(dir)); err == nil {
 		t.Fatal("expected error when domain cert not found")
 	}
@@ -133,7 +133,7 @@ func TestReconcileSelectsByCertID(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, 720*time.Hour, time.Now)
+	r := New(api, m, time.Now)
 	d := newDomain(dir)
 	d.Name = "no-such-name"
 	d.CertID = 9

@@ -22,14 +22,13 @@ type API interface {
 type Clock func() time.Time
 
 type Reconciler struct {
-	api         API
-	m           *metrics.Metrics
-	renewBefore time.Duration
-	now         Clock
+	api API
+	m   *metrics.Metrics
+	now Clock
 }
 
-func New(api API, m *metrics.Metrics, renewBefore time.Duration, now Clock) *Reconciler {
-	return &Reconciler{api: api, m: m, renewBefore: renewBefore, now: now}
+func New(api API, m *metrics.Metrics, now Clock) *Reconciler {
+	return &Reconciler{api: api, m: m, now: now}
 }
 
 func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
@@ -58,9 +57,9 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 		return fmt.Errorf("read state: %w", err)
 	}
 
-	// Cheap skip: same cert identity already deployed — vault hasn't issued a new one.
-	// The renewal window (renewBefore) is used by the vault operator to decide when
-	// to issue a replacement; until ValidUntil changes we have nothing new to deploy.
+	// Cheap skip: same cert identity already deployed — vault hasn't issued a new
+	// one. Renewal in this pull-based design is detected purely via (CertID,
+	// ValidUntil); until either changes we have nothing new to deploy.
 	if prev.CertID == cert.ID && prev.ValidUntil == cert.ValidUntil && prev.Serial != "" {
 		prev.LastCheck = now.UnixMilli()
 		if err := store.Write(d.OutDir, prev); err != nil {
