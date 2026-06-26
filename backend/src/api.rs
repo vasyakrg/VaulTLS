@@ -177,6 +177,9 @@ pub(crate) async fn change_password(
     change_pass_req: Json<ChangePasswordRequest>,
     authentication: Authenticated
 ) -> Result<(), ApiError> {
+    if authentication.claims.is_service() {
+        return Err(ApiError::Forbidden(None));
+    }
     let user_id = authentication.claims.id;
     let user = state.db.get_user(user_id).await?;
     let password_hash = user.password_hash;
@@ -1320,6 +1323,9 @@ pub(crate) async fn update_user(
     payload: Json<User>,
     authentication: Authenticated
 ) -> Result<(), ApiError> {
+    if authentication.claims.is_service() {
+        return Err(ApiError::Forbidden(None));
+    }
     if authentication.claims.id != id && authentication.claims.role != UserRole::Admin {
         return Err(ApiError::Forbidden(None))
     }

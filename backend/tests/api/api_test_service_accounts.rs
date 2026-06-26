@@ -174,3 +174,35 @@ async fn non_bearer_authorization_header_falls_back_to_cookie() -> Result<()> {
     assert_eq!(resp.status(), Status::Ok, "non-Bearer Authorization must not break cookie auth");
     Ok(())
 }
+
+#[tokio::test]
+async fn service_token_cannot_change_password() -> Result<()> {
+    let admin = VaulTLSClient::new_authenticated().await;
+    let created = create_service_account(&admin, 1, "tok", &["cert:read"]).await;
+    let token = token_for(&admin, created["client_id"].as_str().unwrap(), created["secret"].as_str().unwrap()).await;
+    let resp = admin
+        .post("/auth/change_password")
+        .header(ContentType::JSON)
+        .header(Header::new("Authorization", format!("Bearer {token}")))
+        .body(r#"{"new_password":"hacked"}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Forbidden, "service token must not change the owner's password");
+    Ok(())
+}
+
+#[tokio::test]
+async fn service_token_cannot_update_user() -> Result<()> {
+    let admin = VaulTLSClient::new_authenticated().await;
+    let created = create_service_account(&admin, 1, "tok2", &["cert:read"]).await;
+    let token = token_for(&admin, created["client_id"].as_str().unwrap(), created["secret"].as_str().unwrap()).await;
+    let resp = admin
+        .put("/users/1")
+        .header(ContentType::JSON)
+        .header(Header::new("Authorization", format!("Bearer {token}")))
+        .body(r#"{"id":1,"name":"hacked","email":"x@y.z","has_password":true,"role":0}"#)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Forbidden, "service token must not update the owner");
+    Ok(())
+}
