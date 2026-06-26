@@ -103,6 +103,8 @@ const handleSubmit = () => {
 }
 
 const onShow = () => {
+  // reset submit guard so a reopened dialog emits cancel/reset correctly
+  isSubmitting.value = false
   // focus first focusable input in the dialog content
   setTimeout(() => {
     const dialog = document.querySelector('.p-dialog:not([aria-hidden="true"])')
