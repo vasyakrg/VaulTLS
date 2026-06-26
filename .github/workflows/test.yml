@@ -67,4 +67,4 @@ jobs:
 
       - name: Run Docker Compose for E2E tests
         working-directory: ./tests
-        run: docker-compose up --abort-on-container-exit --exit-code-from test
+        run: docker-compose up --build --abort-on-container-exit --exit-code-from test
