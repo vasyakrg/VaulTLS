@@ -122,3 +122,23 @@ async fn fullchain_unknown_ca_is_404() -> Result<()> {
     assert_eq!(resp.status(), Status::NotFound);
     Ok(())
 }
+
+#[tokio::test]
+async fn scalar_docs_served() -> Result<()> {
+    let client = VaulTLSClient::new_setup().await;
+
+    let resp = client.get("/api/").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let html = resp.into_string().await.unwrap();
+    assert!(html.contains("/api/openapi.json"), "HTML must reference the spec URL");
+    assert!(html.contains("/api/scalar.js"), "HTML must reference the self-hosted bundle");
+
+    let resp = client.get("/api/scalar.js").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    // Spec still served
+    let resp = client.get("/api/openapi.json").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    Ok(())
+}

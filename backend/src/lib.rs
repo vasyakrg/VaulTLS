@@ -2,11 +2,11 @@ use std::{env, fs};
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use rocket::{Build, Config, Rocket};
+use rocket::{get, routes, Build, Config, Rocket};
 use rocket::fairing::AdHoc;
 use rocket_okapi::openapi_get_routes;
-use rocket_okapi::rapidoc::{make_rapidoc, GeneralConfig, HideShowConfig, Layout, LayoutConfig, RapiDocConfig, RenderStyle, SchemaConfig, SchemaStyle};
-use rocket_okapi::settings::UrlObject;
+use rocket::http::ContentType;
+use rocket::response::content::RawHtml;
 use tokio::sync::Mutex;
 use tracing::{debug, info, trace};
 use tracing_subscriber::EnvFilter;
@@ -35,6 +35,22 @@ mod notification;
 mod acme;
 
 type ApiError = data::error::ApiError;
+
+#[get("/")]
+fn scalar_ui() -> RawHtml<String> {
+    let config = serde_json::json!({
+        "url": "/api/openapi.json",
+        "theme": "purple"
+    });
+    RawHtml(scalar_api_reference::scalar_html(&config, Some("/api/scalar.js")))
+}
+
+#[get("/scalar.js")]
+fn scalar_js() -> Option<(ContentType, Vec<u8>)> {
+    let (mime, content) = scalar_api_reference::get_asset_with_mime("scalar.js")?;
+    let ct = ContentType::parse_flexible(&mime).unwrap_or(ContentType::JavaScript);
+    Some((ct, content))
+}
 
 pub async fn create_rocket() -> Rocket<Build> {
     let mut filter = EnvFilter::try_from_default_env().unwrap_or_default();
@@ -211,30 +227,7 @@ pub async fn create_rocket() -> Rocket<Build> {
         )
         .mount("/api/acme", acme::protocol_routes())
         .attach(acme::NonceFairing)
-        .mount(
-            "/api",
-            make_rapidoc(&RapiDocConfig {
-                general: GeneralConfig {
-                    spec_urls: vec![UrlObject::new("General", "/api/openapi.json")],
-                    ..Default::default()
-                },
-                layout: LayoutConfig {
-                    layout: Layout::Row,
-                    render_style: RenderStyle::View,
-                    response_area_height: "300px".to_string(),
-                },
-                schema: SchemaConfig {
-                    schema_style: SchemaStyle::Table,
-                    ..Default::default()
-                },
-                hide_show: HideShowConfig {
-                    allow_spec_url_load: false,
-                    allow_spec_file_load: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-        )
+        .mount("/api", routes![scalar_ui, scalar_js])
         .attach(AdHoc::config::<Settings>())
 }
 
@@ -298,4 +291,42 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 update_user
             ],
         )
+        .mount(
+            "/api",
+            openapi_get_routes![
+                version,
+                get_certificates,
+                create_user_certificate,
+                create_ca,
+                import_ca,
+                import_certificate,
+                get_all_ca,
+                download_current_tls_ca,
+                download_current_ssh_ca,
+                download_ca,
+                download_ca_fullchain,
+                download_certificate,
+                delete_user_cert,
+                revoke_certificate,
+                download_crl,
+                validate_certificate,
+                delete_ca,
+                fetch_certificate_password,
+                fetch_settings,
+                update_settings,
+                is_setup,
+                setup,
+                login,
+                change_password,
+                logout,
+                oidc_login,
+                oidc_callback,
+                get_current_user,
+                get_users,
+                create_user,
+                delete_user,
+                update_user
+            ],
+        )
+        .mount("/api", routes![scalar_ui, scalar_js])
 }
