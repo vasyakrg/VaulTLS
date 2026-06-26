@@ -40,7 +40,10 @@ type ApiError = data::error::ApiError;
 fn scalar_ui() -> RawHtml<String> {
     let config = serde_json::json!({
         "url": "/api/openapi.json",
-        "theme": "purple"
+        "theme": "bluePlanet",
+        "hideDarkModeToggle": true,
+        "persistAuth": true,
+        "agent": { "disabled": true }
     });
     RawHtml(scalar_api_reference::scalar_html(&config, Some("/api/scalar.js")))
 }
