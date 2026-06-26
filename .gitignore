@@ -4,5 +4,12 @@ frontend/node_modules
 .env
 frontend/dist
 backend/settings.json
+# Runtime artifacts written to the working dir by local `cargo run`/`cargo test`
+# (CA_DIR_PATH = "./ca", CRL/KRL dirs, SQLite DB). In prod these live on the /app/data volume.
+backend/ca/
+backend/crl/
+backend/krl/
+backend/database.db3
+backend/encrypted.db3
 # Реальные prod-значения Helm с секретами — только example коммитим
 helm-chart/values-prod.yaml
