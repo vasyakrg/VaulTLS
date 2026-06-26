@@ -5,7 +5,7 @@ image:
   # fork's docker-image.yml workflow on release / workflow_dispatch.
   repository: ghcr.io/vasyakrg/vaultls
   tag: "latest"
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 # -- Image pull secrets. The fork's ghcr package is public, so none are needed.
 #    If the package is ever made private, create a docker-registry secret and list it here.
