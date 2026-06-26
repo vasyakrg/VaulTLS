@@ -340,6 +340,9 @@ pub(crate) async fn get_certificates(
     state: &State<AppState>,
     authentication: Authenticated
 ) -> Result<Json<Vec<Certificate>>, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
     let user_id = match authentication.claims.role {
         UserRole::User => Some(authentication.claims.id),
         UserRole::Admin => None
@@ -672,8 +675,20 @@ pub(crate) async fn import_certificate(
 pub(crate) async fn create_user_certificate(
     state: &State<AppState>,
     payload: Json<CreateUserCertificateRequest>,
-    _authentication: AuthenticatedPrivileged
+    authentication: Authenticated,
 ) -> Result<Json<Certificate>, ApiError> {
+    let mut payload = payload.into_inner();
+
+    // Authorization: human Admin, or service with cert:issue (bound to its owner).
+    if authentication.claims.is_service() {
+        if !authentication.claims.has_scope("cert:issue") {
+            return Err(ApiError::Forbidden(None));
+        }
+        payload.user_id = authentication.claims.id; // force owner; never issue for another user
+    } else if authentication.claims.role != UserRole::Admin {
+        return Err(ApiError::Forbidden(None));
+    }
+
     debug!(cert_name=?payload.cert_name, "Creating certificate");
     trace!("{:?}", payload);
 
@@ -1010,6 +1025,9 @@ pub(crate) async fn download_certificate(
     id: i64,
     authentication: Authenticated
 ) -> Result<DownloadResponse, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
     let certificate = state.db.get_user_cert_by_id(id).await?;
     if certificate.user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
 
@@ -1029,6 +1047,9 @@ pub(crate) async fn fetch_certificate_password(
     id: i64,
     authentication: Authenticated
 ) -> Result<Json<String>, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
     let (user_id, password) = state.db.get_user_cert_password(id).await?;
     if user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
     Ok(Json(password))
