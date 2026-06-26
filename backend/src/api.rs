@@ -1,21 +1,24 @@
+use std::collections::HashSet;
 use std::env;
 use openidconnect::{Nonce, PkceCodeVerifier};
+use openssl::x509::X509;
 use rocket_okapi::openapi;
 use rocket::{delete, get, post, put, State};
 use rocket::response::Redirect;
 use rocket::serde::json::Json;
-use rocket::http::{Cookie, CookieJar, SameSite};
+use rocket::http::{ContentType, Cookie, CookieJar, SameSite};
 use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::session_auth::{generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
+use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, SetupRequest};
-use crate::data::enums::{CAType, CertificateType, DataFormat, PasswordRule, TimespanUnit, UserRole};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::{AppState, Name, User};
 use crate::notification::mail::{MailMessage, Mailer};
@@ -685,14 +688,21 @@ pub(crate) async fn create_user_certificate(
     let mut cert = build_certificate(&payload, &ca, &cert_password, cert_validity, cert_validity_unit, state).await?;
     
     cert = state.db.insert_user_cert(cert).await?;
-    
+
+    if let Ok(serial) = cert.get_serial() {
+        let serial_hex: String = serial.iter().map(|b| format!("{b:02x}")).collect();
+        if !serial_hex.is_empty() {
+            let _ = state.db.set_cert_serial(cert.id, serial_hex).await;
+        }
+    }
+
     info!(cert=cert.name.cn, "New certificate created.");
     trace!("{:?}", cert);
-    
+
     if payload.notify_user == Some(true) {
         send_notification_email(state, payload.user_id, &cert).await;
     }
-    
+
     Ok(Json(cert))
 }
 
@@ -850,15 +860,35 @@ async fn send_notification_email(state: &State<AppState>, user_id: i64, cert: &C
     });
 }
 
+/// Build a download response for a TLS CA in PEM (default) or DER.
+fn tls_ca_download(ca: &CA, format: Option<DataFormat>, base_name: &str) -> Result<DownloadResponse, ApiError> {
+    match format {
+        Some(DataFormat::DER) => Ok(DownloadResponse::new_typed(
+            ca.cert.clone(),
+            &format!("{base_name}.der"),
+            ContentType::new("application", "pkix-cert"),
+        )),
+        _ => {
+            // None or Some(PEM): keep PEM as the default to preserve current behaviour.
+            let pem = get_tls_pem(ca).map_err(ApiError::OpenSsl)?;
+            Ok(DownloadResponse::new_typed(
+                pem,
+                &format!("{base_name}.crt"),
+                ContentType::new("application", "x-pem-file"),
+            ))
+        }
+    }
+}
+
 #[openapi(tag = "Certificates")]
-#[get("/certificates/ca/download")]
-/// Download the current CA certificate.
+#[get("/certificates/ca/download?<format>")]
+/// Download the current TLS CA certificate (PEM by default, or DER via ?format=der).
 pub(crate) async fn download_current_tls_ca(
-    state: &State<AppState>
+    state: &State<AppState>,
+    format: Option<DataFormat>,
 ) -> Result<DownloadResponse, ApiError> {
     let ca = state.db.get_latest_tls_ca().await?;
-    let pem = get_tls_pem(&ca)?;
-    Ok(DownloadResponse::new(pem, "ca_certificate.pem"))
+    tls_ca_download(&ca, format, "ca")
 }
 
 #[openapi(tag = "Certificates")]
@@ -873,25 +903,81 @@ pub(crate) async fn download_current_ssh_ca(
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/ca/<id>/download")]
-/// Download a CA certificate identified by id.
+#[get("/certificates/ca/<id>/download?<format>")]
+/// Download a CA certificate by id (TLS: PEM by default or DER via ?format=der; SSH: .pub).
 pub(crate) async fn download_ca(
     state: &State<AppState>,
-    id: i64
+    id: i64,
+    format: Option<DataFormat>,
 ) -> Result<DownloadResponse, ApiError> {
     let ca = state.db.get_ca_by_id(id).await?;
+    match ca.ca_type {
+        CAType::TLS => tls_ca_download(&ca, format, &format!("ca_{}", ca.name)),
+        CAType::SSH => {
+            let pem = get_ssh_pem(&ca).map_err(|e| ApiError::Other(e.to_string()))?;
+            Ok(DownloadResponse::new_typed(
+                pem,
+                &format!("ca_{}.pub", ca.name),
+                ContentType::new("application", "octet-stream"),
+            ))
+        }
+    }
+}
 
-    let pem = match ca.ca_type {
-        CAType::TLS => get_tls_pem(&ca)?,
-        CAType::SSH => get_ssh_pem(&ca)?
-    };
+#[openapi(tag = "Certificates")]
+#[get("/certificates/ca/<id>/fullchain")]
+/// Public: download a TLS CA's full chain (leaf CA first, root last) as one PEM file.
+pub(crate) async fn download_ca_fullchain(
+    state: &State<AppState>,
+    id: i64,
+) -> Result<DownloadResponse, ApiError> {
+    let ca = state.db.get_ca_by_id(id).await.map_err(|_| ApiError::NotFound(None))?;
+    if ca.ca_type != CAType::TLS {
+        return Err(ApiError::BadRequest("Fullchain is only available for TLS CAs".into()));
+    }
 
-    let file_name = match ca.ca_type {
-        CAType::TLS => format!("ca_{}.pem", ca.name),
-        CAType::SSH => format!("ca_{}.pub", ca.name)
-    };
+    // Candidate issuers: all stored TLS CAs as X509.
+    let all = state.db.get_all_ca().await?;
+    let candidates: Vec<X509> = all
+        .iter()
+        .filter(|c| c.ca_type == CAType::TLS)
+        .filter_map(|c| X509::from_der(&c.cert).ok())
+        .collect();
 
-    Ok(DownloadResponse::new(pem, &file_name))
+    let mut current = X509::from_der(&ca.cert).map_err(ApiError::OpenSsl)?;
+    let mut chain_pem: Vec<u8> = Vec::new();
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+
+    loop {
+        // Guard against cycles using the serial number as identity.
+        let key = current.serial_number().to_bn()
+            .map_err(ApiError::OpenSsl)?.to_vec();
+        if !seen.insert(key) {
+            break;
+        }
+        chain_pem.extend_from_slice(&current.to_pem().map_err(ApiError::OpenSsl)?);
+
+        // Stop at a self-signed certificate (subject == issuer).
+        let self_signed = current
+            .issuer_name()
+            .try_cmp(current.subject_name())
+            .map(|o| o.is_eq())
+            .unwrap_or(false);
+        if self_signed {
+            break;
+        }
+
+        match find_issuing_ca(&current, &candidates) {
+            Some(issuer) => current = issuer,
+            None => break,
+        }
+    }
+
+    Ok(DownloadResponse::new_typed(
+        chain_pem,
+        &format!("fullchain_{}.pem", ca.name),
+        ContentType::new("application", "x-pem-file"),
+    ))
 }
 
 #[openapi(tag = "Certificates")]
@@ -1227,4 +1313,46 @@ pub(crate) async fn delete_user(
     info!(user=?id, "User deleted.");
 
     Ok(())
+}
+
+#[openapi(tag = "Certificates")]
+#[get("/certificates/validate?<serial>")]
+/// Public: report the status of a certificate by its serial number (lowercase hex).
+/// Returns status + validity dates only — never subject/owner.
+pub(crate) async fn validate_certificate(
+    state: &State<AppState>,
+    serial: String,
+) -> Result<Json<CertStatusResponse>, ApiError> {
+    let normalized: String = serial
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect();
+    if normalized.is_empty() {
+        return Err(ApiError::BadRequest("Missing serial".into()));
+    }
+
+    match state.db.get_cert_status_by_serial_hex(normalized.clone()).await? {
+        None => Ok(Json(CertStatusResponse {
+            serial: normalized,
+            status: CertStatus::Unknown,
+            not_before: None,
+            not_after: None,
+            revoked_at: None,
+            ca_id: None,
+        })),
+        Some(row) => {
+            let now = chrono::Utc::now().timestamp_millis();
+            let status = compute_cert_status(now, row.created_on, row.valid_until, row.revoked_at);
+            Ok(Json(CertStatusResponse {
+                serial: normalized,
+                status,
+                not_before: Some(row.created_on),
+                not_after: Some(row.valid_until),
+                revoked_at: row.revoked_at,
+                ca_id: row.ca_id,
+            }))
+        }
+    }
 }

@@ -168,3 +168,13 @@ impl From<String> for DataFormat {
         }
     }
 }
+
+#[derive(serde::Serialize, rocket_okapi::JsonSchema, Clone, Debug, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CertStatus {
+    Valid,
+    Revoked,
+    Expired,
+    NotYetValid,
+    Unknown,
+}
