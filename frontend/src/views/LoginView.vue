@@ -23,7 +23,7 @@
           <div class="auth-field">
             <label for="password" class="auth-label">{{ $t('common.password') }}</label>
             <Password
-              id="password"
+              input-id="password"
               v-model="password"
               class="auth-input"
               input-class="auth-input"
