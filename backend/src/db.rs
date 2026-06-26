@@ -917,6 +917,27 @@ impl VaulTLSDB {
         })
     }
 
+    pub(crate) async fn backfill_serials(&self) -> Result<()> {
+        let ids: Vec<i64> = db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM user_certificates WHERE serial_hex IS NULL OR serial_hex = ''"
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+            Ok::<Vec<i64>, anyhow::Error>(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+        })?;
+
+        for id in ids {
+            let cert = self.get_user_cert_by_id(id).await?;
+            if let Ok(serial) = cert.get_serial() {
+                let serial_hex: String = serial.iter().map(|b| format!("{b:02x}")).collect();
+                if !serial_hex.is_empty() {
+                    self.set_cert_serial(id, serial_hex).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn get_cert_id_by_serial_hex(&self, serial_hex: String) -> Result<Option<i64>> {
         db_do!(self.pool, |conn: &Connection| {
             let result = conn.query_row(

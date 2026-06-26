@@ -85,6 +85,7 @@ pub async fn create_rocket() -> Rocket<Build> {
 
     let db = VaulTLSDB::new(encrypted, false).expect("Failed opening SQLite database");
     db.fix_password().await.expect("Failed fixing passwords");
+    db.backfill_serials().await.expect("Failed backfilling certificate serials");
     if !db_initialized {
         info!("New database. Set initial database file permissions to 0600");
         // Adjust permissions

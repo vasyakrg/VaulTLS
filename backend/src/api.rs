@@ -685,14 +685,21 @@ pub(crate) async fn create_user_certificate(
     let mut cert = build_certificate(&payload, &ca, &cert_password, cert_validity, cert_validity_unit, state).await?;
     
     cert = state.db.insert_user_cert(cert).await?;
-    
+
+    if let Ok(serial) = cert.get_serial() {
+        let serial_hex: String = serial.iter().map(|b| format!("{b:02x}")).collect();
+        if !serial_hex.is_empty() {
+            let _ = state.db.set_cert_serial(cert.id, serial_hex).await;
+        }
+    }
+
     info!(cert=cert.name.cn, "New certificate created.");
     trace!("{:?}", cert);
-    
+
     if payload.notify_user == Some(true) {
         send_notification_email(state, payload.user_id, &cert).await;
     }
-    
+
     Ok(Json(cert))
 }
 
