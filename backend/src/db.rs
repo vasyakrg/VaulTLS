@@ -1204,6 +1204,32 @@ impl VaulTLSDB {
             Ok::<(), anyhow::Error>(())
         })
     }
+
+    pub(crate) async fn insert_acme_client_certificate(
+        &self,
+        name: crate::data::objects::Name,
+        pkcs12_der: Vec<u8>,
+        password: String,
+        valid_until: i64,
+        user_id: i64,
+        provider_id: i64,
+    ) -> Result<i64> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        let id = db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, data, password, type, renew_method, ca_id, user_id, acme_provider_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
+                params![
+                    name, now, valid_until, pkcs12_der, password,
+                    crate::data::enums::CertificateType::TLSServer as u8,
+                    crate::data::enums::CertificateRenewMethod::None as u8,
+                    user_id, provider_id
+                ],
+            )?;
+            Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
+        })?;
+        Ok(id)
+    }
 }
 
 fn acme_client_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientProvider> {
@@ -1345,6 +1371,26 @@ mod tests {
         assert_eq!(db.get_all_acme_client_orders().await.unwrap().len(), 1);
         db.delete_acme_client_order(o.id).await.unwrap();
         assert_eq!(db.get_all_acme_client_orders().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn insert_acme_client_certificate_stores_external_cert() {
+        let db = mem_db().await;
+        // a user is required (FK user_id -> users)
+        let user = db.insert_user(User {
+            id: -1,
+            name: "admin".into(),
+            email: "a@b.c".into(),
+            password_hash: None,
+            oidc_id: None,
+            role: UserRole::Admin,
+        }).await.unwrap();
+        // provider seed id=1 exists from migration 13
+        let id = db.insert_acme_client_certificate(
+            crate::data::objects::Name::from("example.com"),
+            vec![1, 2, 3, 4], "".into(), 9_999_999_999_000, user.id, 1,
+        ).await.unwrap();
+        assert!(id > 0);
     }
 }
 

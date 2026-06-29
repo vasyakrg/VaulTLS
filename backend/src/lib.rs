@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, trace};
 use tracing_subscriber::EnvFilter;
 use crate::acme::admin::*;
+use crate::acme_client::routes::*;
 use crate::api::*;
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
@@ -233,7 +234,14 @@ pub async fn create_rocket() -> Rocket<Build> {
                 create_service_account,
                 list_service_accounts,
                 revoke_service_account,
-                delete_service_account
+                delete_service_account,
+                get_acme_client_providers,
+                create_acme_client_provider,
+                delete_acme_client_provider,
+                get_acme_client_orders,
+                create_acme_client_order,
+                issue_acme_client_order,
+                delete_acme_client_order
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -305,7 +313,14 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_service_account,
                 list_service_accounts,
                 revoke_service_account,
-                delete_service_account
+                delete_service_account,
+                get_acme_client_providers,
+                create_acme_client_provider,
+                delete_acme_client_provider,
+                get_acme_client_orders,
+                create_acme_client_order,
+                issue_acme_client_order,
+                delete_acme_client_order
             ],
         )
         .mount(
@@ -348,7 +363,14 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_service_account,
                 list_service_accounts,
                 revoke_service_account,
-                delete_service_account
+                delete_service_account,
+                get_acme_client_providers,
+                create_acme_client_provider,
+                delete_acme_client_provider,
+                get_acme_client_orders,
+                create_acme_client_order,
+                issue_acme_client_order,
+                delete_acme_client_order
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])
