@@ -613,8 +613,8 @@ watch(passwordRule, (newVal) => {
 onMounted(async () => {
   await certificateStore.fetchCertificates()
   await caStore.fetchCAs()
-  await acmeClientStore.fetchProviders()
   if (authStore.isAdmin) {
+    await acmeClientStore.fetchProviders()
     await userStore.fetchUsers()
   }
 })

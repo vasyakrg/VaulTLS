@@ -59,6 +59,11 @@ fn scalar_js() -> Option<(ContentType, Vec<u8>)> {
 }
 
 pub async fn create_rocket() -> Rocket<Build> {
+    // instant-acme's HTTP client uses rustls ClientConfig::builder(), which needs a
+    // process-wide CryptoProvider when multiple rustls backends are compiled in
+    // (aws-lc-rs + ring both present). Install aws-lc-rs as the default once.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let mut filter = EnvFilter::try_from_default_env().unwrap_or_default();
 
 
@@ -374,4 +379,19 @@ pub async fn create_test_rocket() -> Rocket<Build> {
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])
+}
+
+#[cfg(test)]
+mod tests {
+    /// Verify the rustls CryptoProvider install is idempotent and leaves
+    /// a default installed. Called in a single-threaded context so there is
+    /// no cross-test flakiness — install_default() is a no-op if already set.
+    #[test]
+    fn rustls_crypto_provider_installs() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "rustls default CryptoProvider should be set after install_default()"
+        );
+    }
 }

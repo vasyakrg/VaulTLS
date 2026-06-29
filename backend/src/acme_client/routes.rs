@@ -94,6 +94,11 @@ pub async fn issue_acme_client_order(
     id: i64,
 ) -> Result<Json<AcmeClientOrder>, ApiError> {
     let order = state.db.get_acme_client_order(id).await?;
+    if order.status != "pending_dns" && order.status != "ready" {
+        return Err(ApiError::BadRequest(format!(
+            "order {} is not awaiting issuance (status: {})", id, order.status
+        )));
+    }
     let provider = state.db.get_acme_client_provider(order.provider_id).await?;
     let order_url = order.order_url.clone()
         .ok_or_else(|| ApiError::BadRequest("order has no URL".into()))?;

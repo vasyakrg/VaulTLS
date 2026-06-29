@@ -66,7 +66,7 @@
           </template>
         </Column>
         <Column :header="$t('le.colCreated')">
-          <template #body="{ data }">{{ data.created_on ? new Date(data.created_on * 1000).toLocaleDateString() : '—' }}</template>
+          <template #body="{ data }">{{ data.created_on ? new Date(data.created_on).toLocaleDateString() : '—' }}</template>
         </Column>
         <Column :header="$t('common.actions')">
           <template #body="{ data }">
