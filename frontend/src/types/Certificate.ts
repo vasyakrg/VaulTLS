@@ -24,5 +24,6 @@ export interface Certificate {
     user_id: number;                      // User ID who owns the certificate
     renew_method: CertificateRenewMethod; // Method on what to do when the certificate is about to expire
     ca_id: number | null;                 // Cert ID used to create the certificate (null for ACME/LE certs)
+    acme_provider_id?: number | null;     // ACME provider ID for LE certs (set when ca_id is null)
     revoked_at?: number;                  // Date when the certificate was revoked (UNIX timestamp in ms)
 }
