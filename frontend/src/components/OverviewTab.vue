@@ -133,8 +133,8 @@
               severity="secondary"
               outlined
               size="small"
-              v-tooltip.top="$t('certs.downloadP12')"
-              :aria-label="$t('certs.downloadP12')"
+              v-tooltip.top="(data.certificate_type === CertificateType.TLSClient || data.certificate_type === CertificateType.TLSServer) ? $t('certs.downloadP12') : $t('common.download')"
+              :aria-label="(data.certificate_type === CertificateType.TLSClient || data.certificate_type === CertificateType.TLSServer) ? $t('certs.downloadP12') : $t('common.download')"
               @click="downloadCertificate(data.id)"
             />
             <Button
