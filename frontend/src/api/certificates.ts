@@ -10,8 +10,9 @@ export const fetchCertificatePassword = async (id: number): Promise<string> => {
     return await ApiClient.get<string>(`/certificates/${id}/password`);
 };
 
-export const downloadCertificate = async (id: number): Promise<void> => {
-    return await ApiClient.download(`/certificates/${id}/download`);
+export const downloadCertificate = async (id: number, format?: 'pem'): Promise<void> => {
+    const url = `/certificates/${id}/download${format ? `?download_format=${format}` : ''}`;
+    return await ApiClient.download(url);
 };
 
 export const createCertificate = async (certReq: CertificateRequirements): Promise<number> => {

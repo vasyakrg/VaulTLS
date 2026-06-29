@@ -46,6 +46,25 @@ export const useAcmeClientStore = defineStore('acmeClient', {
             }
         },
 
+        async editProvider(id: number, req: CreateProviderRequest): Promise<void> {
+            this.loading = true
+            this.error = null
+            try {
+                await api.updateProvider(id, req)
+                await this.fetchProviders()
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to update provider: ' + (err.response?.data?.error ?? 'Unknown error')
+                } else {
+                    this.error = 'Failed to update provider'
+                }
+                console.error(err)
+                throw err
+            } finally {
+                this.loading = false
+            }
+        },
+
         async addProvider(req: CreateProviderRequest): Promise<void> {
             this.loading = true
             this.error = null

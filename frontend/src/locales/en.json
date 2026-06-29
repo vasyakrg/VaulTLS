@@ -268,7 +268,9 @@
     "statusRevoked": "Revoked",
     "showPassword": "Show password",
     "hidePassword": "Hide password",
-    "copyPassword": "Copy password"
+    "copyPassword": "Copy password",
+    "downloadPem": "Download PEM bundle",
+    "downloadP12": "Download PKCS#12"
   },
   "importCert": {
     "title": "Import Certificate",
@@ -355,7 +357,8 @@
     "txtRecords": "TXT Records",
     "checkIssue": "Check & Issue",
     "dnsHint": "Add these TXT records to your bind9 zone, bump the serial and run rndc reload, then click Check & Issue.",
-    "copyValue": "Copy value"
+    "copyValue": "Copy value",
+    "editProvider": "Edit Provider"
   },
   "acme": {
     "title": "ACME Accounts",

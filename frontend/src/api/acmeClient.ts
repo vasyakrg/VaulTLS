@@ -13,6 +13,9 @@ export const fetchProviders = async (): Promise<AcmeClientProvider[]> =>
 export const createProvider = async (req: CreateProviderRequest): Promise<AcmeClientProvider> =>
     ApiClient.post<AcmeClientProvider>('/acme-client/providers', req as Record<string, any>)
 
+export const updateProvider = async (id: number, req: CreateProviderRequest): Promise<AcmeClientProvider> =>
+    ApiClient.put<AcmeClientProvider>(`/acme-client/providers/${id}`, req as Record<string, any>)
+
 export const deleteProvider = async (id: number): Promise<void> =>
     ApiClient.delete<void>(`/acme-client/providers/${id}`)
 

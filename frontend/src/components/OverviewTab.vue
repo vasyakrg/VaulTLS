@@ -133,9 +133,20 @@
               severity="secondary"
               outlined
               size="small"
-              v-tooltip.top="$t('common.download')"
-              :aria-label="$t('common.download')"
+              v-tooltip.top="$t('certs.downloadP12')"
+              :aria-label="$t('certs.downloadP12')"
               @click="downloadCertificate(data.id)"
+            />
+            <Button
+              :id="'DownloadPemButton-' + data.id"
+              v-if="data.certificate_type === CertificateType.TLSClient || data.certificate_type === CertificateType.TLSServer"
+              icon="pi pi-file-export"
+              severity="secondary"
+              outlined
+              size="small"
+              v-tooltip.top="$t('certs.downloadPem')"
+              :aria-label="$t('certs.downloadPem')"
+              @click="downloadCertificatePem(data.id)"
             />
             <Button
               icon="pi pi-ban"
@@ -655,6 +666,10 @@ const closeDeleteModal = () => {
 
 const downloadCertificate = async (certId: number) => {
   await certificateStore.downloadCertificate(certId)
+}
+
+const downloadCertificatePem = async (certId: number) => {
+  await certificateStore.downloadCertificate(certId, 'pem')
 }
 
 const deleteCertificate = async () => {

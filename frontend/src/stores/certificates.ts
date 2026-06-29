@@ -69,10 +69,10 @@ export const useCertificateStore = defineStore('certificate', {
         },
 
         // Trigger the download of a certificate by ID
-        async downloadCertificate(id: number): Promise<void> {
+        async downloadCertificate(id: number, format?: 'pem'): Promise<void> {
             try {
                 this.error = null;
-                await downloadCertificate(id);
+                await downloadCertificate(id, format);
             } catch (err) {
                 if (axios.isAxiosError(err)) {
                     this.error = 'Failed to download the certificate: ' + err.response?.data?.error;
