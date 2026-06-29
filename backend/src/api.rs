@@ -1022,14 +1022,14 @@ pub(crate) async fn download_ca_fullchain(
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/<id>/download?<format>")]
+#[get("/certificates/<id>/download?<download_format>")]
 /// Download a user-owned certificate. Requires authentication.
 /// Use `?format=pem` to download TLS certs as a PEM zip bundle (cert.pem, privkey.pem, chain.pem, fullchain.pem).
 pub(crate) async fn download_certificate(
     state: &State<AppState>,
     id: i64,
     authentication: Authenticated,
-    format: Option<String>,
+    download_format: Option<String>,
 ) -> Result<DownloadResponse, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
@@ -1037,8 +1037,8 @@ pub(crate) async fn download_certificate(
     let certificate = state.db.get_user_cert_by_id(id).await?;
     if certificate.user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
 
-    // PEM zip path: only for TLS certs when ?format=pem
-    if format.as_deref() == Some("pem") {
+    // PEM zip path: only for TLS certs when ?download_format=pem
+    if download_format.as_deref() == Some("pem") {
         match certificate.certificate_type {
             CertificateType::TLSClient | CertificateType::TLSServer => {
                 let (leaf, pkey_opt, chain) = crate::certs::import::parse_pkcs12(
