@@ -297,7 +297,7 @@ impl VaulTLSDB {
     /// If filter_revoked is Some, only certificates that are (not) revoked are returned
     pub(crate) async fn get_user_certs(&self, user_id: Option<i64>, ca_id: Option<i64>, filter_revoked: Option<bool>) -> Result<Vec<Certificate>> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut query = String::from("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at FROM user_certificates WHERE 1=1");
+            let mut query = String::from("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id FROM user_certificates WHERE 1=1");
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
             if let Some(id) = user_id {
@@ -330,7 +330,7 @@ impl VaulTLSDB {
     /// Returns the id of the user the certificate belongs to and the cert data
     pub(crate) async fn get_user_cert_by_id(&self, id: i64) -> Result<Certificate> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at FROM user_certificates WHERE id = ?1")?;
+            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id FROM user_certificates WHERE id = ?1")?;
 
             let cert = stmt.query_row(rusqlite::params_from_iter([id]), Certificate::from_row)?;
 
@@ -1135,6 +1135,41 @@ impl VaulTLSDB {
             conn.execute("DELETE FROM acme_client_providers WHERE id = ?1", params![id])?;
             Ok::<(), anyhow::Error>(())
         })
+    }
+
+    pub(crate) async fn update_acme_client_provider(
+        &self,
+        id: i64,
+        name: String,
+        directory_url: String,
+        account_email: String,
+        eab_kid: Option<String>,
+        eab_hmac_key: Option<Vec<u8>>,
+    ) -> Result<AcmeClientProvider> {
+        let current = self.get_acme_client_provider(id).await?;
+        let reset_creds = current.directory_url != directory_url;
+        db_do!(self.pool, |conn: &Connection| {
+            match (eab_hmac_key.as_ref(), reset_creds) {
+                (Some(key), true) => conn.execute(
+                    "UPDATE acme_client_providers SET name=?1, directory_url=?2, account_email=?3, eab_kid=?4, eab_hmac_key=?5, account_credentials=NULL WHERE id=?6",
+                    params![name, directory_url, account_email, eab_kid, key, id],
+                )?,
+                (Some(key), false) => conn.execute(
+                    "UPDATE acme_client_providers SET name=?1, directory_url=?2, account_email=?3, eab_kid=?4, eab_hmac_key=?5 WHERE id=?6",
+                    params![name, directory_url, account_email, eab_kid, key, id],
+                )?,
+                (None, true) => conn.execute(
+                    "UPDATE acme_client_providers SET name=?1, directory_url=?2, account_email=?3, eab_kid=?4, account_credentials=NULL WHERE id=?5",
+                    params![name, directory_url, account_email, eab_kid, id],
+                )?,
+                (None, false) => conn.execute(
+                    "UPDATE acme_client_providers SET name=?1, directory_url=?2, account_email=?3, eab_kid=?4 WHERE id=?5",
+                    params![name, directory_url, account_email, eab_kid, id],
+                )?,
+            };
+            Ok::<(), anyhow::Error>(())
+        })?;
+        self.get_acme_client_provider(id).await
     }
 
     pub(crate) async fn insert_acme_client_order(

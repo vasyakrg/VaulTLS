@@ -87,37 +87,19 @@
               :aria-label="$t('common.download')"
               @click="downloadCA(data.id)"
             />
-            <template v-if="data.ca_type === CAType.TLS">
-              <Button
-                :id="'CRLButton-' + data.id"
-                icon="pi pi-file"
-                severity="secondary"
-                outlined
-                size="small"
-                v-tooltip.top="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
-                :aria-label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlDer') + ')'"
-                @click="downloadCRL(data.id, 'der')"
-              />
-              <Button
-                icon="pi pi-file"
-                severity="secondary"
-                outlined
-                size="small"
-                v-tooltip.top="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
-                :aria-label="$t('ca.downloadCrl') + ' (' + $t('ca.downloadCrlPem') + ')'"
-                @click="downloadCRL(data.id, 'pem')"
-              />
-            </template>
             <Button
-              v-if="data.ca_type === CAType.SSH"
-              :id="'KRLButton-' + data.id"
-              icon="pi pi-file"
+              icon="pi pi-ellipsis-v"
               severity="secondary"
               outlined
               size="small"
-              v-tooltip.top="$t('ca.downloadKrl')"
-              :aria-label="$t('ca.downloadKrl')"
-              @click="downloadCRL(data.id)"
+              v-tooltip.top="$t('ca.toggle_dropdown')"
+              :aria-label="$t('ca.toggle_dropdown')"
+              @click="(event) => { crlMenuRefs[data.id]?.toggle(event) }"
+            />
+            <Menu
+              :ref="(el) => { crlMenuRefs[data.id] = el as InstanceType<typeof Menu> | null }"
+              :model="getCrlMenuItems(data)"
+              popup
             />
             <Button
               v-if="authStore.isAdmin"
@@ -248,6 +230,7 @@ import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
 import { FilterMatchMode } from '@primevue/core/api'
+import Menu from 'primevue/menu'
 import ImportCaDialog from '@/components/dialogs/ImportCaDialog.vue'
 import BaseModal from '@/components/BaseModal.vue'
 
@@ -343,6 +326,33 @@ const downloadCA = async (caId: number) => {
 
 const downloadCRL = async (caId: number, format: string = 'der') => {
   await caStore.downloadCRL(caId, format)
+}
+
+const crlMenuRefs = ref<Record<number, InstanceType<typeof Menu> | null>>({})
+
+const getCrlMenuItems = (ca: CA) => {
+  if (ca.ca_type === CAType.TLS) {
+    return [
+      {
+        label: `${t('ca.downloadCrl')} (${t('ca.downloadCrlDer')})`,
+        icon: 'pi pi-file',
+        command: () => downloadCRL(ca.id, 'der'),
+      },
+      {
+        label: `${t('ca.downloadCrl')} (${t('ca.downloadCrlPem')})`,
+        icon: 'pi pi-file',
+        command: () => downloadCRL(ca.id, 'pem'),
+      },
+    ]
+  } else {
+    return [
+      {
+        label: t('ca.downloadKrl'),
+        icon: 'pi pi-file',
+        command: () => downloadCRL(ca.id),
+      },
+    ]
+  }
 }
 </script>
 

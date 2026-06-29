@@ -28,6 +28,15 @@
           <template #body="{ data }">
             <div class="vt-row-actions">
               <Button
+                icon="pi pi-pencil"
+                severity="secondary"
+                outlined
+                size="small"
+                v-tooltip.top="$t('le.editProvider')"
+                :aria-label="$t('le.editProvider')"
+                @click="openEditProviderModal(data)"
+              />
+              <Button
                 icon="pi pi-trash"
                 severity="danger"
                 outlined
@@ -108,11 +117,11 @@
       </DataTable>
     </div>
 
-    <!-- Add Provider Modal -->
+    <!-- Add / Edit Provider Modal -->
     <BaseModal
       v-model:visible="isAddProviderVisible"
-      :title="$t('le.addProvider')"
-      :submitLabel="store.loading ? $t('common.creating') : $t('le.createProvider')"
+      :title="editingProviderId !== null ? $t('le.editProvider') : $t('le.addProvider')"
+      :submitLabel="editingProviderId !== null ? $t('common.save') : (store.loading ? $t('common.creating') : $t('le.createProvider'))"
       submitIcon="pi pi-check"
       :submitDisabled="store.loading || !providerForm.name || !providerForm.directory_url || !providerForm.account_email"
       :loading="store.loading"
@@ -268,6 +277,7 @@ const store = useAcmeClientStore()
 // ── Add Provider ─────────────────────────────────────────────────────────────
 
 const isAddProviderVisible = ref(false)
+const editingProviderId = ref<number | null>(null)
 const providerForm = reactive({
   name: '',
   directory_url: '',
@@ -277,11 +287,30 @@ const providerForm = reactive({
 })
 
 const openAddProviderModal = () => {
+  editingProviderId.value = null
+  // Defensive reset: clears any residual data if a prior edit modal was
+  // dismissed through a path that skipped the cancel handler.
+  providerForm.name = ''
+  providerForm.directory_url = ''
+  providerForm.account_email = ''
+  providerForm.eab_kid = ''
+  providerForm.eab_hmac_key = ''
+  isAddProviderVisible.value = true
+}
+
+const openEditProviderModal = (provider: AcmeClientProvider) => {
+  editingProviderId.value = provider.id
+  providerForm.name = provider.name
+  providerForm.directory_url = provider.directory_url
+  providerForm.account_email = provider.account_email ?? ''
+  providerForm.eab_kid = provider.eab_kid ?? ''
+  providerForm.eab_hmac_key = '' // write-only; leave blank = unchanged
   isAddProviderVisible.value = true
 }
 
 const closeAddProviderModal = () => {
   isAddProviderVisible.value = false
+  editingProviderId.value = null
   providerForm.name = ''
   providerForm.directory_url = ''
   providerForm.account_email = ''
@@ -298,7 +327,11 @@ const submitAddProvider = async () => {
   if (providerForm.eab_kid) req.eab_kid = providerForm.eab_kid
   if (providerForm.eab_hmac_key) req.eab_hmac_key = providerForm.eab_hmac_key
   try {
-    await store.addProvider(req)
+    if (editingProviderId.value !== null) {
+      await store.editProvider(editingProviderId.value, req)
+    } else {
+      await store.addProvider(req)
+    }
     closeAddProviderModal()
   } catch {
     // store.error is set; stay open so user can see the error

@@ -268,7 +268,9 @@
     "statusRevoked": "Revocado",
     "showPassword": "Mostrar contraseña",
     "hidePassword": "Ocultar contraseña",
-    "copyPassword": "Copiar contraseña"
+    "copyPassword": "Copiar contraseña",
+    "downloadPem": "Descargar paquete PEM",
+    "downloadP12": "Descargar PKCS#12"
   },
   "importCert": {
     "title": "Importar certificado",
@@ -347,7 +349,8 @@
     "txtRecords": "Registros TXT",
     "checkIssue": "Comprobar y emitir",
     "dnsHint": "Añade estos registros TXT a tu zona bind9, sube el serial y ejecuta rndc reload, luego pulsa Comprobar y emitir.",
-    "copyValue": "Copiar valor"
+    "copyValue": "Copiar valor",
+    "editProvider": "Editar proveedor"
   },
   "acme": {
     "title": "Cuentas ACME",
