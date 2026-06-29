@@ -178,7 +178,7 @@ async fn validate_dns01(state: &State<AppState>, domain: &str, expected_value: &
                 return false;
             }
         };
-        let lookup_name = format!("_acme-challenge.{domain}.");
+        let lookup_name = crate::dns_check::challenge_record_name(domain);
         return match resolver.txt_lookup(&lookup_name).await {
             Ok(records) => {
                 let matched = records.answers().iter().any(|txt: &Record| {
@@ -200,7 +200,11 @@ async fn validate_dns01(state: &State<AppState>, domain: &str, expected_value: &
         };
     }
 
-    crate::dns_check::txt_record_present(domain, expected_value, Some(resolver_addr)).await
+    let found = crate::dns_check::txt_record_present(domain, expected_value, Some(resolver_addr)).await;
+    if !found {
+        error!(domain = domain, expected = expected_value, "DNS-01 TXT value mismatch or lookup failed");
+    }
+    found
 }
 
 
