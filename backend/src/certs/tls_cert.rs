@@ -266,7 +266,8 @@ impl TLSCertificateBuilder {
             ca_id: Some(ca_id),
             user_id,
             renew_method: self.renew_method,
-            revoked_at: None
+            revoked_at: None,
+            acme_provider_id: None,
         })
     }
 }

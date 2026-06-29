@@ -48,6 +48,16 @@ pub struct CreateProviderRequest {
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
+pub struct UpdateProviderRequest {
+    pub name: String,
+    pub directory_url: String,
+    pub account_email: String,
+    pub eab_kid: Option<String>,
+    /// base64url HMAC key; None = leave existing unchanged
+    pub eab_hmac_key: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct CreateOrderRequest {
     pub provider_id: i64,
     pub domain: String,

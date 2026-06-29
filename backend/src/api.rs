@@ -665,6 +665,7 @@ pub(crate) async fn import_certificate(
         renew_method,
         ca_id: Some(ca_id),
         revoked_at: None,
+        acme_provider_id: None,
         data: stored,
         password: form.password.clone().unwrap_or_default(),
     };
@@ -1021,18 +1022,76 @@ pub(crate) async fn download_ca_fullchain(
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/<id>/download")]
+#[get("/certificates/<id>/download?<format>")]
 /// Download a user-owned certificate. Requires authentication.
+/// Use `?format=pem` to download TLS certs as a PEM zip bundle (cert.pem, privkey.pem, chain.pem, fullchain.pem).
 pub(crate) async fn download_certificate(
     state: &State<AppState>,
     id: i64,
-    authentication: Authenticated
+    authentication: Authenticated,
+    format: Option<String>,
 ) -> Result<DownloadResponse, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
     }
     let certificate = state.db.get_user_cert_by_id(id).await?;
     if certificate.user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+
+    // PEM zip path: only for TLS certs when ?format=pem
+    if format.as_deref() == Some("pem") {
+        match certificate.certificate_type {
+            CertificateType::TLSClient | CertificateType::TLSServer => {
+                let (leaf, pkey_opt, chain) = crate::certs::import::parse_pkcs12(
+                    certificate.data.as_bytes(), &certificate.password,
+                ).map_err(|e| ApiError::Other(e.to_string()))?;
+
+                let cert_pem = leaf.to_pem().map_err(|e| ApiError::Other(e.to_string()))?;
+                let privkey_pem = match pkey_opt {
+                    Some(k) => k.private_key_to_pem_pkcs8().map_err(|e| ApiError::Other(e.to_string()))?,
+                    None => return Err(ApiError::Other("certificate has no private key".into())),
+                };
+                let chain_pem: Vec<u8> = chain.iter()
+                    .map(|c| c.to_pem())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| ApiError::Other(e.to_string()))?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                let mut fullchain_pem = cert_pem.clone();
+                if !chain_pem.is_empty() {
+                    fullchain_pem.extend_from_slice(&chain_pem);
+                }
+
+                use zip::ZipWriter;
+                use zip::write::SimpleFileOptions;
+                use std::io::Write;
+
+                let cursor = std::io::Cursor::new(Vec::<u8>::new());
+                let mut zip = ZipWriter::new(cursor);
+                let options = SimpleFileOptions::default();
+
+                zip.start_file("cert.pem", options).map_err(|e| ApiError::Other(e.to_string()))?;
+                zip.write_all(&cert_pem).map_err(|e| ApiError::Other(e.to_string()))?;
+                zip.start_file("privkey.pem", options).map_err(|e| ApiError::Other(e.to_string()))?;
+                zip.write_all(&privkey_pem).map_err(|e| ApiError::Other(e.to_string()))?;
+                if !chain_pem.is_empty() {
+                    zip.start_file("chain.pem", options).map_err(|e| ApiError::Other(e.to_string()))?;
+                    zip.write_all(&chain_pem).map_err(|e| ApiError::Other(e.to_string()))?;
+                }
+                zip.start_file("fullchain.pem", options).map_err(|e| ApiError::Other(e.to_string()))?;
+                zip.write_all(&fullchain_pem).map_err(|e| ApiError::Other(e.to_string()))?;
+
+                let cursor = zip.finish().map_err(|e| ApiError::Other(e.to_string()))?;
+                let zip_bytes = cursor.into_inner();
+                return Ok(DownloadResponse::new_typed(
+                    zip_bytes,
+                    &format!("{}.zip", certificate.name),
+                    ContentType::ZIP,
+                ));
+            }
+            _ => {} // SSH certs: fall through to default download
+        }
+    }
 
     let file_name = match certificate.certificate_type {
         CertificateType::TLSClient | CertificateType::TLSServer => format!("{}.p12", certificate.name),

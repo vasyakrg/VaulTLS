@@ -170,7 +170,8 @@ impl SSHCertificateBuilder {
             ca_id: Some(ca_id),
             data,
             password: self.password.unwrap_or_default(),
-            revoked_at: None
+            revoked_at: None,
+            acme_provider_id: None,
         })
     }
 
@@ -214,7 +215,8 @@ impl SSHCertificateBuilder {
             ca_id: Some(ca_id),
             data,
             password: self.password.unwrap_or_default(),
-            revoked_at: None
+            revoked_at: None,
+            acme_provider_id: None,
         })
     }
 
