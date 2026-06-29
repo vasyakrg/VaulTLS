@@ -92,11 +92,8 @@
           <Tag :severity="statusSeverity(data)" :value="statusLabel(data)" />
         </template>
       </Column>
-      <Column field="renew_method" :header="$t('overview.colRenewMethod')" sortable>
-        <template #body="{ data }">{{ CertificateRenewMethod[data.renew_method] }}</template>
-      </Column>
-      <Column field="ca_id" :header="$t('common.colCaId')" sortable>
-        <template #body="{ data }"><span :id="'CaId-' + data.id">{{ data.ca_id }}</span></template>
+      <Column field="ca_id" :header="$t('common.colCaName')" sortable>
+        <template #body="{ data }"><span :id="'CaId-' + data.id">{{ caName(data.ca_id) }}</span></template>
       </Column>
       <Column :header="$t('common.password')">
         <template #body="{ data }">
@@ -201,7 +198,9 @@
             {{ data.revoked_at ? new Date(data.revoked_at * 1000).toLocaleDateString() : 'Unknown' }}
           </template>
         </Column>
-        <Column field="ca_id" :header="$t('common.colCaId')" />
+        <Column field="ca_id" :header="$t('common.colCaName')">
+          <template #body="{ data }">{{ caName(data.ca_id) }}</template>
+        </Column>
         <Column :header="$t('common.actions')">
           <template #body="{ data }">
             <Button
@@ -483,6 +482,11 @@ const loading = computed(() => certificateStore.loading)
 const error = computed(() => certificateStore.error)
 const hasAnyOU = computed(() => Array.from(certificates.value.values()).some((cert) => cert.name.ou))
 
+const caName = (caId: number | undefined): string => {
+  if (caId === undefined || caId === null) return ''
+  return caStore.cas.get(caId)?.name.cn ?? String(caId)
+}
+
 // modals state
 const isDeleteModalVisible = ref(false)
 const isGenerateModalVisible = ref(false)
@@ -602,6 +606,7 @@ watch(passwordRule, (newVal) => {
 // lifecycle
 onMounted(async () => {
   await certificateStore.fetchCertificates()
+  await caStore.fetchCAs()
   if (authStore.isAdmin) {
     await userStore.fetchUsers()
   }
@@ -805,7 +810,7 @@ const removeUsageField = (index: number) => {
 .vt-row-actions {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .vt-password-cell {

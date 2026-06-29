@@ -24,6 +24,7 @@
     "colCreatedOn": "Created on",
     "colValidUntil": "Valid until",
     "colCaId": "CA ID",
+    "colCaName": "CA Name",
     "enterValidityPeriod": "Enter validity period",
     "or": "or",
     "hostname": "hostname",

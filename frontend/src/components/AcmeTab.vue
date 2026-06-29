@@ -805,6 +805,10 @@ const deleteAccount = async () => {
   gap: 10px;
 }
 
+.vt-switch-field > :deep(.p-toggleswitch) {
+  flex-shrink: 0;
+}
+
 .vt-tag-list {
   display: flex;
   flex-wrap: wrap;

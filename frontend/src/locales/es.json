@@ -24,6 +24,7 @@
     "colCreatedOn": "Creado el",
     "colValidUntil": "Válido hasta",
     "colCaId": "ID de CA",
+    "colCaName": "Nombre de CA",
     "enterValidityPeriod": "Introduzca el periodo de validez",
     "or": "o",
     "hostname": "nombre de host",
