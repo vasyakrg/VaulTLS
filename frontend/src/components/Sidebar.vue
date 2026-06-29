@@ -157,6 +157,9 @@ const items = computed(() => [
   ...(auth.isAdmin && settingsStore.settings?.acme.enabled ? [
     { name: 'acme', to: '/acme', icon: 'pi pi-bolt', label: 'sidebar.acme' },
   ] : []),
+  ...(auth.isAdmin ? [
+    { name: 'letsencrypt', to: '/letsencrypt', icon: 'pi pi-verified', label: 'sidebar.letsencrypt' },
+  ] : []),
   { name: 'settings', to: '/settings', icon: 'pi pi-cog', label: 'sidebar.settings' },
 ])
 </script>

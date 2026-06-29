@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, trace};
 use tracing_subscriber::EnvFilter;
 use crate::acme::admin::*;
+use crate::acme_client::routes::*;
 use crate::api::*;
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
@@ -33,6 +34,8 @@ pub mod constants;
 mod api;
 mod notification;
 mod acme;
+mod acme_client;
+pub(crate) mod dns_check;
 
 type ApiError = data::error::ApiError;
 
@@ -56,6 +59,11 @@ fn scalar_js() -> Option<(ContentType, Vec<u8>)> {
 }
 
 pub async fn create_rocket() -> Rocket<Build> {
+    // instant-acme's HTTP client uses rustls ClientConfig::builder(), which needs a
+    // process-wide CryptoProvider when multiple rustls backends are compiled in
+    // (aws-lc-rs + ring both present). Install aws-lc-rs as the default once.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let mut filter = EnvFilter::try_from_default_env().unwrap_or_default();
 
 
@@ -231,7 +239,14 @@ pub async fn create_rocket() -> Rocket<Build> {
                 create_service_account,
                 list_service_accounts,
                 revoke_service_account,
-                delete_service_account
+                delete_service_account,
+                get_acme_client_providers,
+                create_acme_client_provider,
+                delete_acme_client_provider,
+                get_acme_client_orders,
+                create_acme_client_order,
+                issue_acme_client_order,
+                delete_acme_client_order
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -303,7 +318,14 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_service_account,
                 list_service_accounts,
                 revoke_service_account,
-                delete_service_account
+                delete_service_account,
+                get_acme_client_providers,
+                create_acme_client_provider,
+                delete_acme_client_provider,
+                get_acme_client_orders,
+                create_acme_client_order,
+                issue_acme_client_order,
+                delete_acme_client_order
             ],
         )
         .mount(
@@ -346,8 +368,30 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_service_account,
                 list_service_accounts,
                 revoke_service_account,
-                delete_service_account
+                delete_service_account,
+                get_acme_client_providers,
+                create_acme_client_provider,
+                delete_acme_client_provider,
+                get_acme_client_orders,
+                create_acme_client_order,
+                issue_acme_client_order,
+                delete_acme_client_order
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])
+}
+
+#[cfg(test)]
+mod tests {
+    /// Verify the rustls CryptoProvider install is idempotent and leaves
+    /// a default installed. Called in a single-threaded context so there is
+    /// no cross-test flakiness — install_default() is a no-op if already set.
+    #[test]
+    fn rustls_crypto_provider_installs() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "rustls default CryptoProvider should be set after install_default()"
+        );
+    }
 }

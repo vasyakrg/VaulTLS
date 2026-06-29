@@ -93,7 +93,7 @@
         </template>
       </Column>
       <Column field="ca_id" :header="$t('common.colCaName')" sortable>
-        <template #body="{ data }"><span :id="'CaId-' + data.id">{{ caName(data.ca_id) }}</span></template>
+        <template #body="{ data }"><span :id="'CaId-' + data.id">{{ caName(data) }}</span></template>
       </Column>
       <Column :header="$t('common.password')">
         <template #body="{ data }">
@@ -199,7 +199,7 @@
           </template>
         </Column>
         <Column field="ca_id" :header="$t('common.colCaName')">
-          <template #body="{ data }">{{ caName(data.ca_id) }}</template>
+          <template #body="{ data }">{{ caName(data) }}</template>
         </Column>
         <Column :header="$t('common.actions')">
           <template #body="{ data }">
@@ -430,6 +430,7 @@ import { useUserStore } from '@/stores/users.ts'
 import { useSettingsStore } from '@/stores/settings.ts'
 import { PasswordRule } from '@/types/Settings.ts'
 import { useCAStore } from '@/stores/cas.ts'
+import { useAcmeClientStore } from '@/stores/acmeClient'
 import { CAType } from '@/types/CA.ts'
 import { ValidityUnit } from '@/types/ValidityUnit.ts'
 import { useI18n } from 'vue-i18n'
@@ -455,6 +456,7 @@ const authStore = useAuthStore()
 const userStore = useUserStore()
 const settingStore = useSettingsStore()
 const caStore = useCAStore()
+const acmeClientStore = useAcmeClientStore()
 
 // local state
 const showImport = ref(false)
@@ -482,9 +484,13 @@ const loading = computed(() => certificateStore.loading)
 const error = computed(() => certificateStore.error)
 const hasAnyOU = computed(() => Array.from(certificates.value.values()).some((cert) => cert.name.ou))
 
-const caName = (caId: number | undefined): string => {
-  if (caId === undefined || caId === null) return ''
-  return caStore.cas.get(caId)?.name.cn ?? String(caId)
+const caName = (cert: Certificate): string => {
+  if (cert.acme_provider_id != null) {
+    const p = acmeClientStore.providers.find(x => x.id === cert.acme_provider_id)
+    return p ? p.name : `ACME #${cert.acme_provider_id}`
+  }
+  if (cert.ca_id == null) return ''
+  return caStore.cas.get(cert.ca_id)?.name.cn ?? String(cert.ca_id)
 }
 
 // modals state
@@ -608,6 +614,7 @@ onMounted(async () => {
   await certificateStore.fetchCertificates()
   await caStore.fetchCAs()
   if (authStore.isAdmin) {
+    await acmeClientStore.fetchProviders()
     await userStore.fetchUsers()
   }
 })

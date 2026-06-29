@@ -11,6 +11,7 @@ import SettingsTab from '@/components/SettingsTab.vue';
 import UserTab from "@/components/UserTab.vue";
 import CATab from "@/components/CATab.vue";
 import AcmeTab from '@/components/AcmeTab.vue';
+import AcmeClientTab from '@/components/AcmeClientTab.vue';
 
 const router = createRouter({
     history: createWebHistory(),
@@ -53,6 +54,11 @@ const router = createRouter({
                     path: 'acme',
                     name: 'ACME',
                     component: AcmeTab,
+                },
+                {
+                    path: 'letsencrypt',
+                    name: 'LetsEncrypt',
+                    component: AcmeClientTab,
                 },
                 {
                     path: 'settings',

@@ -263,7 +263,7 @@ impl TLSCertificateBuilder {
             certificate_type,
             data: CertData::Pkcs12(pkcs12.to_der()?),
             password: self.pkcs12_password,
-            ca_id,
+            ca_id: Some(ca_id),
             user_id,
             renew_method: self.renew_method,
             revoked_at: None

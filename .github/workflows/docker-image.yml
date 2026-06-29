@@ -68,3 +68,49 @@ jobs:
           tags: ${{ env.TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  notify:
+    name: Notify
+    needs: build
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Send notification
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF: ${{ github.ref_name }}
+          MAX_CHAT_ID: ${{ secrets.MAX_CHAT_ID }}
+          MAX_BOT_TOKEN: ${{ secrets.MAX_BOT_TOKEN }}
+        run: |
+          SHORT_SHA="$(echo "$GIT_SHA" | cut -c1-7)"
+
+          case "$BUILD_RESULT" in
+            success)
+              ICON="✅"
+              TITLE="VaulTLS — сборка успешна"
+              BODY="Все компоненты собраны и отправлены в реестры"
+              ;;
+            cancelled)
+              ICON="⚪"
+              TITLE="VaulTLS — сборка отменена"
+              BODY="Сборка была отменена"
+              ;;
+            *)
+              ICON="❌"
+              TITLE="VaulTLS — ошибка сборки"
+              BODY="Некоторые компоненты не собрались. Проверьте логи CI"
+              ;;
+          esac
+
+          curl -s -X POST \
+            "https://platform-api.max.ru/messages?chat_id=${MAX_CHAT_ID}" \
+            -H "Authorization: ${MAX_BOT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(cat <<EOF
+          {
+            "text": "$ICON **$TITLE**\n\n$BODY\n\nКоммит: \`$SHORT_SHA\`\nВетка: \`$GIT_REF\`",
+            "format": "markdown"
+          }
+          EOF
+          )"

@@ -167,7 +167,7 @@ impl SSHCertificateBuilder {
             certificate_type: CertificateType::SSHClient,
             user_id,
             renew_method: self.renew_method,
-            ca_id,
+            ca_id: Some(ca_id),
             data,
             password: self.password.unwrap_or_default(),
             revoked_at: None
@@ -211,7 +211,7 @@ impl SSHCertificateBuilder {
             certificate_type: CertificateType::SSHServer,
             user_id,
             renew_method: self.renew_method,
-            ca_id,
+            ca_id: Some(ca_id),
             data,
             password: self.password.unwrap_or_default(),
             revoked_at: None

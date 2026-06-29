@@ -16,6 +16,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use tracing::{debug, info, trace, warn};
 use crate::acme::types::{AcmeAccount, AcmeIdentifier, AdminAcmeOrder, AcmeOrderRow};
+use crate::acme_client::types::{AcmeClientOrder, AcmeClientProvider, TxtRecord};
 use crate::auth::password_auth::Password;
 use crate::certs::common::{Certificate, CA};
 
@@ -1076,6 +1077,190 @@ impl VaulTLSDB {
             Ok(())
         })
     }
+
+    pub(crate) async fn insert_acme_client_provider(
+        &self,
+        name: String,
+        directory_url: String,
+        account_email: String,
+        eab_kid: Option<String>,
+        eab_hmac_key: Option<Vec<u8>>,
+    ) -> Result<AcmeClientProvider> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        let id = db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO acme_client_providers (name, directory_url, account_email, eab_kid, eab_hmac_key, created_on) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![name, directory_url, account_email, eab_kid, eab_hmac_key, now],
+            )?;
+            Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
+        })?;
+        self.get_acme_client_provider(id).await
+    }
+
+    pub(crate) async fn get_acme_client_provider(&self, id: i64) -> Result<AcmeClientProvider> {
+        db_do!(self.pool, |conn: &Connection| {
+            Ok(conn.query_row(
+                "SELECT id, name, directory_url, account_email, eab_kid, eab_hmac_key, account_credentials, created_on \
+                 FROM acme_client_providers WHERE id = ?1",
+                params![id],
+                acme_client_provider_from_row,
+            )?)
+        })
+    }
+
+    pub(crate) async fn get_all_acme_client_providers(&self) -> Result<Vec<AcmeClientProvider>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, directory_url, account_email, eab_kid, eab_hmac_key, account_credentials, created_on \
+                 FROM acme_client_providers ORDER BY id ASC",
+            )?;
+            let rows = stmt.query([])?;
+            Ok(rows.mapped(acme_client_provider_from_row).collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub(crate) async fn update_acme_client_provider_credentials(&self, id: i64, account_credentials: String) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "UPDATE acme_client_providers SET account_credentials = ?1 WHERE id = ?2",
+                params![account_credentials, id],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+
+    pub(crate) async fn delete_acme_client_provider(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM acme_client_providers WHERE id = ?1", params![id])?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+
+    pub(crate) async fn insert_acme_client_order(
+        &self,
+        provider_id: i64,
+        domain: String,
+        include_wildcard: bool,
+        order_url: Option<String>,
+        txt_records: &[TxtRecord],
+        expires_at: Option<i64>,
+    ) -> Result<AcmeClientOrder> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        let txt_json = serde_json::to_string(txt_records)?;
+        let id = db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO acme_client_orders (provider_id, domain, include_wildcard, status, order_url, txt_records, created_on, expires_at) \
+                 VALUES (?1, ?2, ?3, 'pending_dns', ?4, ?5, ?6, ?7)",
+                params![provider_id, domain, include_wildcard, order_url, txt_json, now, expires_at],
+            )?;
+            Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
+        })?;
+        self.get_acme_client_order(id).await
+    }
+
+    pub(crate) async fn get_acme_client_order(&self, id: i64) -> Result<AcmeClientOrder> {
+        db_do!(self.pool, |conn: &Connection| {
+            Ok(conn.query_row(
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at \
+                 FROM acme_client_orders WHERE id = ?1",
+                params![id],
+                acme_client_order_from_row,
+            )?)
+        })
+    }
+
+    pub(crate) async fn get_all_acme_client_orders(&self) -> Result<Vec<AcmeClientOrder>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at \
+                 FROM acme_client_orders ORDER BY id DESC",
+            )?;
+            let rows = stmt.query([])?;
+            Ok(rows.mapped(acme_client_order_from_row).collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub(crate) async fn update_acme_client_order_status(
+        &self,
+        id: i64,
+        status: &str,
+        cert_id: Option<i64>,
+        error: Option<String>,
+    ) -> Result<()> {
+        let status = status.to_string();
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "UPDATE acme_client_orders SET status = ?1, cert_id = COALESCE(?2, cert_id), error = ?3 WHERE id = ?4",
+                params![status, cert_id, error, id],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+
+    pub(crate) async fn delete_acme_client_order(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM acme_client_orders WHERE id = ?1", params![id])?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+
+    pub(crate) async fn insert_acme_client_certificate(
+        &self,
+        name: crate::data::objects::Name,
+        pkcs12_der: Vec<u8>,
+        password: String,
+        valid_until: i64,
+        user_id: i64,
+        provider_id: i64,
+    ) -> Result<i64> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        let id = db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, data, password, type, renew_method, ca_id, user_id, acme_provider_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9)",
+                params![
+                    name, now, valid_until, pkcs12_der, password,
+                    crate::data::enums::CertificateType::TLSServer as u8,
+                    crate::data::enums::CertificateRenewMethod::Notify as u8,
+                    user_id, provider_id
+                ],
+            )?;
+            Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
+        })?;
+        Ok(id)
+    }
+}
+
+fn acme_client_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientProvider> {
+    Ok(AcmeClientProvider {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        directory_url: row.get(2)?,
+        account_email: row.get(3)?,
+        eab_kid: row.get(4)?,
+        eab_hmac_key: row.get(5)?,
+        account_credentials: row.get(6)?,
+        created_on: row.get(7)?,
+    })
+}
+
+fn acme_client_order_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientOrder> {
+    let txt_json: String = row.get(6)?;
+    let txt_records: Vec<TxtRecord> = serde_json::from_str(&txt_json).unwrap_or_default();
+    Ok(AcmeClientOrder {
+        id: row.get(0)?,
+        provider_id: row.get(1)?,
+        domain: row.get(2)?,
+        include_wildcard: row.get::<_, i64>(3)? != 0,
+        status: row.get(4)?,
+        order_url: row.get(5)?,
+        txt_records,
+        cert_id: row.get(7)?,
+        error: row.get(8)?,
+        created_on: row.get(9)?,
+        expires_at: row.get(10)?,
+    })
 }
 
 fn acme_account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeAccount> {
@@ -1128,6 +1313,131 @@ fn service_account_from_row(row: &rusqlite::Row) -> rusqlite::Result<ServiceAcco
         last_used_at: row.get(7)?,
         revoked: row.get::<_, i64>(8)? != 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_db() -> VaulTLSDB {
+        VaulTLSDB::new_in_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn acme_client_provider_crud() {
+        let db = mem_db().await;
+        let p = db.insert_acme_client_provider(
+            "Test CA".into(), "https://acme.example/dir".into(), "a@b.c".into(), None, None,
+        ).await.unwrap();
+        assert!(p.id > 0);
+        db.update_acme_client_provider_credentials(p.id, "{\"k\":1}".into()).await.unwrap();
+        let got = db.get_acme_client_provider(p.id).await.unwrap();
+        assert_eq!(got.account_credentials.as_deref(), Some("{\"k\":1}"));
+        db.delete_acme_client_provider(p.id).await.unwrap();
+        // presets (2) remain
+        let all = db.get_all_acme_client_providers().await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn migration_13_creates_acme_client_tables_and_le_presets() {
+        let db = mem_db().await;
+        let providers = db.get_all_acme_client_providers().await.unwrap();
+        assert_eq!(providers.len(), 2);
+        assert!(providers.iter().any(|p| p.directory_url.contains("acme-v02.api.letsencrypt.org")));
+        assert!(providers.iter().any(|p| p.directory_url.contains("acme-staging-v02.api.letsencrypt.org")));
+        let orders = db.get_all_acme_client_orders().await.unwrap();
+        assert_eq!(orders.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn acme_client_order_crud() {
+        let db = mem_db().await;
+        let p = db.insert_acme_client_provider(
+            "CA".into(), "https://acme.example/dir".into(), "".into(), None, None,
+        ).await.unwrap();
+        let txt = vec![TxtRecord { name: "_acme-challenge.example.com".into(), value: "v1".into() }];
+        let o = db.insert_acme_client_order(
+            p.id, "example.com".into(), true, Some("https://acme.example/order/1".into()), &txt, Some(123),
+        ).await.unwrap();
+        assert_eq!(o.status, "pending_dns");
+        assert_eq!(o.txt_records.len(), 1);
+        assert!(o.include_wildcard);
+        // cert_id=None: FK(cert_id→user_certificates) is enforced; None tests COALESCE "don't wipe" path
+        db.update_acme_client_order_status(o.id, "valid", None, None).await.unwrap();
+        let got = db.get_acme_client_order(o.id).await.unwrap();
+        assert_eq!(got.status, "valid");
+        assert_eq!(got.cert_id, None);
+        assert_eq!(db.get_all_acme_client_orders().await.unwrap().len(), 1);
+        db.delete_acme_client_order(o.id).await.unwrap();
+        assert_eq!(db.get_all_acme_client_orders().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn insert_acme_client_certificate_stores_external_cert() {
+        let db = mem_db().await;
+        // a user is required (FK user_id -> users)
+        let user = db.insert_user(User {
+            id: -1,
+            name: "admin".into(),
+            email: "a@b.c".into(),
+            password_hash: None,
+            oidc_id: None,
+            role: UserRole::Admin,
+        }).await.unwrap();
+        // provider seed id=1 exists from migration 13
+        let id = db.insert_acme_client_certificate(
+            crate::data::objects::Name::from("example.com"),
+            vec![1, 2, 3, 4], "".into(), 9_999_999_999_000, user.id, 1,
+        ).await.unwrap();
+        assert!(id > 0);
+
+        // Verify renew_method stored correctly
+        let pool = db.pool.clone();
+        let stored_renew_method: u8 = tokio::task::spawn_blocking(move || {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT renew_method FROM user_certificates WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+        }).await.unwrap().unwrap();
+        assert_eq!(stored_renew_method, crate::data::enums::CertificateRenewMethod::Notify as u8);
+    }
+
+    /// RED before fix: Certificate::from_row would Err(InvalidColumnType) on NULL ca_id.
+    /// GREEN after fix: ca_id: Option<i64> maps NULL → None without error.
+    #[tokio::test]
+    async fn le_cert_null_ca_id_readable_via_get_user_certs() {
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1,
+            name: "le-user".into(),
+            email: "le@example.com".into(),
+            password_hash: None,
+            oidc_id: None,
+            role: UserRole::Admin,
+        }).await.unwrap();
+        // provider seed id=1 exists from migration 13 (Let's Encrypt prod)
+        let cert_id = db.insert_acme_client_certificate(
+            crate::data::objects::Name::from("le.example.com"),
+            vec![0x30, 0x82, 0x01, 0x00], // minimal PKCS#12-ish placeholder bytes
+            "".into(),
+            9_999_999_999_000,
+            user.id,
+            1,
+        ).await.unwrap();
+        assert!(cert_id > 0);
+
+        // Before fix: this call would return Err because from_row fails on NULL ca_id.
+        // After fix: returns Ok with ca_id == None for the LE cert.
+        let certs = db.get_user_certs(None, None, Some(false)).await
+            .expect("get_user_certs must not error on LE cert with NULL ca_id");
+
+        let le_cert = certs.iter().find(|c| c.id == cert_id)
+            .expect("LE cert must appear in listing");
+        assert_eq!(le_cert.ca_id, None, "LE cert ca_id must be None (was stored as NULL)");
+    }
 }
 
 #[cfg(test)]
