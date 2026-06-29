@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use instant_acme::{
     Account, AccountCredentials, ChallengeType, ExternalAccountKey, Identifier, NewAccount,
-    NewOrder,
+    NewOrder, RetryPolicy,
 };
 
 use crate::acme_client::types::{AcmeClientProvider, TxtRecord};
@@ -112,6 +112,80 @@ pub(crate) async fn create_order(
         txt_records,
         account_credentials: new_creds,
         expires_at: None,
+    })
+}
+
+pub(crate) struct IssuedCert {
+    pub certificate_pem: String,
+    pub private_key_pem: String,
+}
+
+/// Phase 2 of the manual dns-01 flow: verify TXT records are visible, signal readiness to the
+/// ACME server, wait for validation, finalise the order, and return the issued certificate.
+///
+/// **Precheck before set_ready** — if any TXT record is not yet resolvable, the function returns
+/// `Err` immediately without contacting the ACME server, preserving rate-limits.
+pub(crate) async fn issue_order(
+    provider: &AcmeClientProvider,
+    order_url: &str,
+    domain: &str,
+    txt_records: &[TxtRecord],
+) -> Result<IssuedCert> {
+    // 1. DNS precheck — every TXT record must be visible before we tell the ACME server anything.
+    for rec in txt_records {
+        if !crate::dns_check::txt_record_present(domain, &rec.value, None).await {
+            return Err(anyhow!(
+                "TXT record for _acme-challenge.{domain} not yet visible in DNS \
+                 (expected value: {}). Check your bind9 zone and try again later.",
+                rec.value
+            ));
+        }
+    }
+
+    // 2. Restore account and order.
+    let (account, _) = account_for(provider).await?;
+    let mut order = account
+        .order(order_url.to_string())
+        .await
+        .map_err(|e| anyhow!("failed to fetch ACME order: {e}"))?;
+
+    // 3. set_ready on each dns-01 challenge.
+    //    Authorizations<'_> borrows `order` mutably; drop it before calling poll_ready.
+    {
+        let mut authorizations = order.authorizations();
+        while let Some(result) = authorizations.next().await {
+            let mut authz =
+                result.map_err(|e| anyhow!("failed to fetch authorization: {e}"))?;
+            if let Some(mut challenge) = authz.challenge(ChallengeType::Dns01) {
+                challenge
+                    .set_ready()
+                    .await
+                    .map_err(|e| anyhow!("set_ready failed: {e}"))?;
+            }
+        }
+    } // authorizations dropped here — `order` is usable again
+
+    // 4. Poll for challenge validation.
+    order
+        .poll_ready(&RetryPolicy::default())
+        .await
+        .map_err(|e| anyhow!("poll_ready failed: {e}"))?;
+
+    // 5. Finalize: instant-acme generates the CSR internally and returns the private key PEM.
+    let private_key_pem = order
+        .finalize()
+        .await
+        .map_err(|e| anyhow!("order finalize failed: {e}"))?;
+
+    // 6. Poll until the certificate chain is issued; returns PEM chain.
+    let certificate_pem = order
+        .poll_certificate(&RetryPolicy::default())
+        .await
+        .map_err(|e| anyhow!("poll_certificate failed: {e}"))?;
+
+    Ok(IssuedCert {
+        certificate_pem,
+        private_key_pem,
     })
 }
 
