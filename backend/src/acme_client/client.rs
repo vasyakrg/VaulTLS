@@ -120,6 +120,48 @@ pub(crate) struct IssuedCert {
     pub private_key_pem: String,
 }
 
+pub(crate) struct PackedCert {
+    pub pkcs12_der: Vec<u8>,
+    /// Unix milliseconds from the leaf certificate's notAfter.
+    pub valid_until: i64,
+}
+
+pub(crate) fn pack_issued_certificate(
+    certificate_pem: &str,
+    private_key_pem: &str,
+    password: &str,
+) -> Result<PackedCert> {
+    use crate::certs::import::{parse_pem_bundle, parse_private_key};
+    use openssl::asn1::Asn1Time;
+
+    let mut certs = parse_pem_bundle(certificate_pem.as_bytes())?;
+    if certs.is_empty() {
+        return Err(anyhow!("certificate PEM bundle is empty"));
+    }
+    let leaf = certs.remove(0);
+    let chain = certs; // remaining certs form the CA chain
+
+    let key = parse_private_key(private_key_pem.as_bytes())?;
+
+    let mut ca_stack = openssl::stack::Stack::new()?;
+    for c in &chain {
+        ca_stack.push(c.clone())?;
+    }
+    let p12 = openssl::pkcs12::Pkcs12::builder()
+        .name("letsencrypt")
+        .ca(ca_stack)
+        .cert(&leaf)
+        .pkey(&key)
+        .build2(password)?;
+    let pkcs12_der = p12.to_der()?;
+
+    let epoch = Asn1Time::from_unix(0)?;
+    let diff = epoch.diff(leaf.not_after())?;
+    let valid_until = ((diff.days as i64) * 86_400 + diff.secs as i64) * 1_000;
+
+    Ok(PackedCert { pkcs12_der, valid_until })
+}
+
 /// Phase 2 of the manual dns-01 flow: verify TXT records are visible, signal readiness to the
 /// ACME server, wait for validation, finalise the order, and return the issued certificate.
 ///
@@ -200,16 +242,49 @@ pub(crate) fn order_identifiers(domain: &str, include_wildcard: bool) -> Vec<Str
 
 #[cfg(test)]
 mod tests {
-    use super::order_identifiers;
+    use super::*;
+
     #[test]
     fn single_domain() {
         assert_eq!(order_identifiers("example.com", false), vec!["example.com".to_string()]);
     }
+
     #[test]
     fn domain_with_wildcard() {
         assert_eq!(
             order_identifiers("example.com", true),
             vec!["example.com".to_string(), "*.example.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn pack_issued_certificate_roundtrip() {
+        use crate::certs::import::tests_support::self_signed_ca;
+        use openssl::pkcs12::Pkcs12;
+
+        let (x509, key) = self_signed_ca("test.example.com");
+        let cert_pem = String::from_utf8(x509.to_pem().unwrap()).unwrap();
+        let key_pem = String::from_utf8(key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+
+        let packed = pack_issued_certificate(&cert_pem, &key_pem, "").unwrap();
+
+        // PKCS#12 blob must be non-empty
+        assert!(!packed.pkcs12_der.is_empty());
+
+        // Parse back and verify the cert is present
+        let parsed = Pkcs12::from_der(&packed.pkcs12_der).unwrap().parse2("").unwrap();
+        assert!(parsed.cert.is_some(), "parsed PKCS#12 must contain a certificate");
+
+        // valid_until must be in the future and within ~400 days (self_signed_ca sets 365 days)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let days_400_ms: i64 = 400 * 86_400 * 1_000;
+        assert!(packed.valid_until > now_ms, "valid_until must be in the future");
+        assert!(
+            packed.valid_until < now_ms + days_400_ms,
+            "valid_until must be within 400 days"
         );
     }
 }
