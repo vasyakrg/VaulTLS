@@ -1222,7 +1222,7 @@ impl VaulTLSDB {
                 params![
                     name, now, valid_until, pkcs12_der, password,
                     crate::data::enums::CertificateType::TLSServer as u8,
-                    crate::data::enums::CertificateRenewMethod::None as u8,
+                    crate::data::enums::CertificateRenewMethod::Notify as u8,
                     user_id, provider_id
                 ],
             )?;
@@ -1391,6 +1391,18 @@ mod tests {
             vec![1, 2, 3, 4], "".into(), 9_999_999_999_000, user.id, 1,
         ).await.unwrap();
         assert!(id > 0);
+
+        // Read renew_method directly — Certificate::from_row can't handle NULL ca_id for LE certs
+        let pool = db.pool.clone();
+        let stored_renew_method: u8 = tokio::task::spawn_blocking(move || {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT renew_method FROM user_certificates WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+        }).await.unwrap().unwrap();
+        assert_eq!(stored_renew_method, crate::data::enums::CertificateRenewMethod::Notify as u8);
     }
 }
 
