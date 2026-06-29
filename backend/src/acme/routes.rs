@@ -612,7 +612,7 @@ pub(crate) async fn finalize_order(
         certificate_type: CertificateType::TLSServer,
         user_id,
         renew_method: CertificateRenewMethod::None,
-        ca_id: ca.id,
+        ca_id: Some(ca.id),
         revoked_at: None,
         data: CertData::Pem(chain_pem),
         password: String::new(),

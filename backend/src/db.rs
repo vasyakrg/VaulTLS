@@ -1392,7 +1392,7 @@ mod tests {
         ).await.unwrap();
         assert!(id > 0);
 
-        // Read renew_method directly — Certificate::from_row can't handle NULL ca_id for LE certs
+        // Verify renew_method stored correctly
         let pool = db.pool.clone();
         let stored_renew_method: u8 = tokio::task::spawn_blocking(move || {
             let conn = pool.get().unwrap();
@@ -1403,6 +1403,40 @@ mod tests {
             )
         }).await.unwrap().unwrap();
         assert_eq!(stored_renew_method, crate::data::enums::CertificateRenewMethod::Notify as u8);
+    }
+
+    /// RED before fix: Certificate::from_row would Err(InvalidColumnType) on NULL ca_id.
+    /// GREEN after fix: ca_id: Option<i64> maps NULL → None without error.
+    #[tokio::test]
+    async fn le_cert_null_ca_id_readable_via_get_user_certs() {
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1,
+            name: "le-user".into(),
+            email: "le@example.com".into(),
+            password_hash: None,
+            oidc_id: None,
+            role: UserRole::Admin,
+        }).await.unwrap();
+        // provider seed id=1 exists from migration 13 (Let's Encrypt prod)
+        let cert_id = db.insert_acme_client_certificate(
+            crate::data::objects::Name::from("le.example.com"),
+            vec![0x30, 0x82, 0x01, 0x00], // minimal PKCS#12-ish placeholder bytes
+            "".into(),
+            9_999_999_999_000,
+            user.id,
+            1,
+        ).await.unwrap();
+        assert!(cert_id > 0);
+
+        // Before fix: this call would return Err because from_row fails on NULL ca_id.
+        // After fix: returns Ok with ca_id == None for the LE cert.
+        let certs = db.get_user_certs(None, None, Some(false)).await
+            .expect("get_user_certs must not error on LE cert with NULL ca_id");
+
+        let le_cert = certs.iter().find(|c| c.id == cert_id)
+            .expect("LE cert must appear in listing");
+        assert_eq!(le_cert.ca_id, None, "LE cert ca_id must be None (was stored as NULL)");
     }
 }
 

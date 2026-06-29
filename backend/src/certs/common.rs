@@ -17,7 +17,7 @@ pub struct Certificate {
     pub certificate_type: CertificateType,
     pub user_id: i64,
     pub renew_method: CertificateRenewMethod,
-    pub ca_id: i64,
+    pub ca_id: Option<i64>,
     pub revoked_at: Option<i64>,
     #[serde(skip)]
     pub data: CertData,

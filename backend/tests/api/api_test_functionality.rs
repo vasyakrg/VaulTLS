@@ -160,7 +160,7 @@ async fn test_create_client_certificate() -> Result<()> {
     assert_eq!(cert.certificate_type, CertificateType::TLSClient);
     assert_eq!(cert.user_id, 1);
     assert_eq!(cert.renew_method , CertificateRenewMethod::Renew);
-    assert_eq!(cert.ca_id, 1);
+    assert_eq!(cert.ca_id, Some(1));
     Ok(())
 }
 
@@ -398,10 +398,10 @@ async fn test_create_certificate_with_second_ca() -> Result<()> {
     let client = VaulTLSClient::new_authenticated().await;
     client.create_second_ca().await?;
     let certificate = client.create_client_cert(None, None, None).await?;
-    assert_eq!(certificate.ca_id, 2);
+    assert_eq!(certificate.ca_id, Some(2));
 
     let certificate = client.create_client_cert(None, None, Some(1)).await?;
-    assert_eq!(certificate.ca_id, 1);
+    assert_eq!(certificate.ca_id, Some(1));
 
     Ok(())
 }
@@ -484,7 +484,7 @@ async fn test_create_ssh_client_certificate() -> Result<()> {
     assert_eq!(cert.certificate_type, CertificateType::SSHClient);
     assert_eq!(cert.user_id, 1);
     assert_eq!(cert.renew_method , CertificateRenewMethod::Notify);
-    assert_eq!(cert.ca_id, 2);
+    assert_eq!(cert.ca_id, Some(2));
     Ok(())
 }
 

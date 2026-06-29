@@ -663,7 +663,7 @@ pub(crate) async fn import_certificate(
         certificate_type: cert_type,
         user_id: form.user_id,
         renew_method,
-        ca_id,
+        ca_id: Some(ca_id),
         revoked_at: None,
         data: stored,
         password: form.password.clone().unwrap_or_default(),
@@ -1129,7 +1129,8 @@ pub(crate) async fn revoke_certificate(
     let cert = state.db.get_user_cert_by_id(id).await?;
     if cert.user_id != authentication._claims.id && authentication._claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
 
-    let mut ca = state.db.get_ca_by_id(cert.ca_id).await.map_err(|_| ApiError::NotFound(None))?;
+    let ca_id = cert.ca_id.ok_or_else(|| ApiError::BadRequest("ACME certificates cannot be revoked via an internal CA".into()))?;
+    let mut ca = state.db.get_ca_by_id(ca_id).await.map_err(|_| ApiError::NotFound(None))?;
     if !ca.has_private_key() {
         return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
     }
