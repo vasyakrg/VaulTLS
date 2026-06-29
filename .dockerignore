@@ -1,1 +1,20 @@
+# Rust build artifacts (built inside the image via cache mounts)
 backend/target
+
+# Frontend deps/artifacts (installed/built inside the image)
+frontend/node_modules
+frontend/dist
+
+# VCS / tooling / docs not needed in the build context
+.git
+.github
+.claude
+.superpowers
+docs
+helm-chart
+tests
+api-client
+*.md
+.env
+.env.example
+docker-compose.yml

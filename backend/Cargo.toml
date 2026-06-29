@@ -12,7 +12,9 @@ name = "vaultls"
 path = "src/lib.rs"
 
 [profile.release]
-incremental = true
+# incremental compilation is pointless for one-shot CI/Docker builds and only
+# bloats target/; rely on cargo defaults (codegen-units=16, opt-level=3, lto=off).
+incremental = false
 
 [features]
 test-mode = []
