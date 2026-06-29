@@ -20,6 +20,17 @@
         <i :class="item.icon" />
         <span v-if="!collapsed">{{ $t(item.label) }}</span>
       </RouterLink>
+
+      <a
+        :href="apiDocsUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="vt-nav-item"
+        v-tooltip.right="collapsed ? $t('sidebar.apiDocs') : ''"
+      >
+        <i class="pi pi-book" />
+        <span v-if="!collapsed">{{ $t('sidebar.apiDocs') }}</span>
+      </a>
     </nav>
 
     <div class="vt-foot">
@@ -117,6 +128,8 @@ const setupStore = useSetupStore()
 const themeStore = useThemeStore()
 const router = useRouter()
 const { locale } = useI18n()
+
+const apiDocsUrl = `${window.location.origin}/api/`
 
 const themes = ['light', 'dark', 'auto'] as const
 const themeIcons = { light: 'pi pi-sun', dark: 'pi pi-moon', auto: 'pi pi-desktop' } as const

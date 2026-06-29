@@ -35,6 +35,7 @@
     "users": "Usuarios",
     "acme": "ACME",
     "settings": "Configuración",
+    "apiDocs": "Documentación API",
     "logout": "Cerrar sesión",
     "lightMode": "Modo claro",
     "darkMode": "Modo oscuro",
