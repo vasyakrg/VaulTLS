@@ -81,13 +81,13 @@
                 @click="openNewOrderModal(data)"
               />
               <Button
-                v-if="data.status === 'pending_dns' || data.status === 'ready'"
-                icon="pi pi-list"
-                severity="secondary"
+                v-if="data.status === 'pending_dns' || data.status === 'ready' || data.status === 'failed'"
+                :icon="data.status === 'failed' ? 'pi pi-replay' : 'pi pi-list'"
+                :severity="data.status === 'failed' ? 'warn' : 'secondary'"
                 outlined
                 size="small"
-                v-tooltip.top="$t('le.showTxt')"
-                :aria-label="$t('le.showTxt')"
+                v-tooltip.top="data.status === 'failed' ? $t('le.retry') : $t('le.showTxt')"
+                :aria-label="data.status === 'failed' ? $t('le.retry') : $t('le.showTxt')"
                 @click="openExistingTxtModal(data)"
               />
               <Button
@@ -370,6 +370,7 @@ const currentOrderId = ref<number | null>(null)
 const currentTxtRecords = ref<TxtRecord[]>([])
 
 const openExistingTxtModal = (order: AcmeClientOrder) => {
+  store.error = null
   currentOrderId.value = order.id
   currentTxtRecords.value = order.txt_records ?? []
   isTxtVisible.value = true

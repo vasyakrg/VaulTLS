@@ -326,6 +326,7 @@
     "orders": "Pedidos de certificados",
     "newCert": "Nuevo certificado",
     "renew": "Renovar",
+    "retry": "Reintentar emisión",
     "showTxt": "Ver registros TXT",
     "deleteOrder": "Eliminar pedido",
     "deleteOrderTitle": "Eliminar pedido",

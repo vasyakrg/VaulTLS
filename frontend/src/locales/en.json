@@ -334,6 +334,7 @@
     "orders": "Certificate Orders",
     "newCert": "New Certificate",
     "renew": "Renew",
+    "retry": "Retry Issuance",
     "showTxt": "Show TXT Records",
     "deleteOrder": "Delete Order",
     "deleteOrderTitle": "Delete Order",
