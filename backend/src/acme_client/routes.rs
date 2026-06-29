@@ -101,13 +101,21 @@ pub async fn issue_acme_client_order(
     let result = client::issue_order(&provider, &order_url, &order.domain, &order.txt_records).await;
     match result {
         Ok(issued) => {
-            let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")
-                .map_err(|e| ApiError::Other(e.to_string()))?;
-            let cert_id = state.db.insert_acme_client_certificate(
-                crate::data::objects::Name::from(order.domain.as_str()),
-                packed.pkcs12_der, "".into(), packed.valid_until, auth._claims.id, provider.id,
-            ).await?;
-            state.db.update_acme_client_order_status(id, "valid", Some(cert_id), None).await?;
+            let inner = async {
+                let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                let cert_id = state.db.insert_acme_client_certificate(
+                    crate::data::objects::Name::from(order.domain.as_str()),
+                    packed.pkcs12_der, "".into(), packed.valid_until, auth._claims.id, provider.id,
+                ).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                state.db.update_acme_client_order_status(id, "valid", Some(cert_id), None).await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                Ok::<_, anyhow::Error>(())
+            }.await;
+            if let Err(e) = inner {
+                state.db.update_acme_client_order_status(id, "failed", None, Some(e.to_string())).await?;
+                return Err(ApiError::Other(e.to_string()));
+            }
         }
         Err(e) => {
             state.db.update_acme_client_order_status(id, "failed", None, Some(e.to_string())).await?;
