@@ -94,7 +94,11 @@ pub async fn issue_acme_client_order(
     id: i64,
 ) -> Result<Json<AcmeClientOrder>, ApiError> {
     let order = state.db.get_acme_client_order(id).await?;
-    if order.status != "pending_dns" && order.status != "ready" {
+    // Allow issuance from pending_dns/ready and retry from a previous `failed`
+    // attempt (a failed DNS pre-check is transient — the ACME order URL stays
+    // valid for ~7 days, so the user can re-run once the TXT records propagate).
+    // Block only `valid` (already issued) and `expired` (order URL no longer usable).
+    if order.status != "pending_dns" && order.status != "ready" && order.status != "failed" {
         return Err(ApiError::BadRequest(format!(
             "order {} is not awaiting issuance (status: {})", id, order.status
         )));
