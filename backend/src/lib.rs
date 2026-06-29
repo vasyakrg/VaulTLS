@@ -33,6 +33,7 @@ pub mod constants;
 mod api;
 mod notification;
 mod acme;
+mod acme_client;
 
 type ApiError = data::error::ApiError;
 
