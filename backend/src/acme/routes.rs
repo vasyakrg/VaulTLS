@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
@@ -50,25 +49,6 @@ fn doh_client(state: &State<AppState>) -> reqwest::Client {
         .danger_accept_invalid_certs(state.settings.get_acme_accept_invalid_certs())
         .build()
         .expect("Failed to build DoH client")
-}
-
-fn build_udp_resolver(addr: &str) -> Result<hickory_resolver::TokioResolver, String> {
-    use hickory_resolver::config::{NameServerConfig, ResolverConfig};
-    use hickory_resolver::Resolver;
-    use std::net::IpAddr;
-
-    if addr.is_empty() {
-        return Ok(Resolver::builder_tokio().unwrap().build().unwrap());
-    }
-
-    let socket_addr: SocketAddr = addr.parse()
-        .or_else(|_| addr.parse::<IpAddr>().map(|ip| SocketAddr::new(ip, 53)))
-        .map_err(|_| format!("Invalid DNS resolver address: {addr}"))?;
-    let mut connection_config = ConnectionConfig::udp();
-    connection_config.port = socket_addr.port();
-    let ns = NameServerConfig::new(socket_addr.ip(), false, vec![connection_config]);
-    let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
-    Ok(Resolver::builder_with_config(config, TokioRuntimeProvider::default()).build().unwrap())
 }
 
 fn build_dot_resolver(addr: &str) -> Result<hickory_resolver::TokioResolver, String> {
@@ -190,40 +170,37 @@ async fn validate_dns01(state: &State<AppState>, domain: &str, expected_value: &
         return validate_dns01_doh(state, domain, expected_value, resolver_addr).await;
     }
 
-    let resolver_result = if let Some(addr) = resolver_addr.strip_prefix("tls://") {
-        build_dot_resolver(addr)
-    } else {
-        build_udp_resolver(resolver_addr)
-    };
-
-    let resolver = match resolver_result {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to build DNS resolver: {e}");
-            return false;
-        }
-    };
-
-    let lookup_name = format!("_acme-challenge.{domain}.");
-    match resolver.txt_lookup(&lookup_name).await {
-        Ok(records) => {
-            let matched = records.answers().iter().any(|txt: &Record | {
-                let record_text: String = txt.data.to_string();
-                record_text == expected_value
-            });
-            if !matched {
-                let found: Vec<String> = records.answers().iter().map(|txt: &Record | {
-                    txt.to_string()
-                }).collect();
-                error!(domain=domain, expected=expected_value, found=?found, "DNS-01 TXT value mismatch");
+    if let Some(addr) = resolver_addr.strip_prefix("tls://") {
+        let resolver = match build_dot_resolver(addr) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to build DNS resolver: {e}");
+                return false;
             }
-            matched
-        }
-        Err(e) => {
-            error!(domain=domain, error=%e, "DNS-01 TXT lookup failed");
-            false
-        }
+        };
+        let lookup_name = format!("_acme-challenge.{domain}.");
+        return match resolver.txt_lookup(&lookup_name).await {
+            Ok(records) => {
+                let matched = records.answers().iter().any(|txt: &Record| {
+                    let record_text: String = txt.data.to_string();
+                    record_text == expected_value
+                });
+                if !matched {
+                    let found: Vec<String> = records.answers().iter().map(|txt: &Record| {
+                        txt.to_string()
+                    }).collect();
+                    error!(domain=domain, expected=expected_value, found=?found, "DNS-01 TXT value mismatch");
+                }
+                matched
+            }
+            Err(e) => {
+                error!(domain=domain, error=%e, "DNS-01 TXT lookup failed");
+                false
+            }
+        };
     }
+
+    crate::dns_check::txt_record_present(domain, expected_value, Some(resolver_addr)).await
 }
 
 

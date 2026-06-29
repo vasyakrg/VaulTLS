@@ -34,6 +34,7 @@ mod api;
 mod notification;
 mod acme;
 mod acme_client;
+pub(crate) mod dns_check;
 
 type ApiError = data::error::ApiError;
 
