@@ -66,7 +66,7 @@
           </template>
         </Column>
         <Column :header="$t('le.colCreated')">
-          <template #body="{ data }">{{ new Date(data.created_on * 1000).toLocaleDateString() }}</template>
+          <template #body="{ data }">{{ data.created_on ? new Date(data.created_on * 1000).toLocaleDateString() : '—' }}</template>
         </Column>
         <Column :header="$t('common.actions')">
           <template #body="{ data }">
@@ -142,7 +142,7 @@
         </div>
         <div class="vt-field">
           <label>{{ $t('le.eabHmacKey') }}</label>
-          <InputText v-model="providerForm.eab_hmac_key" :placeholder="$t('le.eabOptional')" />
+          <Password v-model="providerForm.eab_hmac_key" :placeholder="$t('le.eabOptional')" :feedback="false" toggleMask class="vt-password-field" />
         </div>
       </div>
     </BaseModal>
@@ -256,6 +256,7 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
+import Password from 'primevue/password'
 import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import BaseModal from '@/components/BaseModal.vue'
@@ -370,7 +371,7 @@ const currentTxtRecords = ref<TxtRecord[]>([])
 
 const openExistingTxtModal = (order: AcmeClientOrder) => {
   currentOrderId.value = order.id
-  currentTxtRecords.value = order.txt_records
+  currentTxtRecords.value = order.txt_records ?? []
   isTxtVisible.value = true
 }
 
@@ -590,5 +591,9 @@ onMounted(async () => {
 
 .vt-monospace {
   font-family: monospace;
+}
+
+.vt-password-field {
+  width: 100%;
 }
 </style>
