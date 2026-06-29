@@ -16,6 +16,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use tracing::{debug, info, trace, warn};
 use crate::acme::types::{AcmeAccount, AcmeIdentifier, AdminAcmeOrder, AcmeOrderRow};
+use crate::acme_client::types::AcmeClientProvider;
 use crate::auth::password_auth::Password;
 use crate::certs::common::{Certificate, CA};
 
@@ -1076,6 +1077,78 @@ impl VaulTLSDB {
             Ok(())
         })
     }
+
+    pub(crate) async fn insert_acme_client_provider(
+        &self,
+        name: String,
+        directory_url: String,
+        account_email: String,
+        eab_kid: Option<String>,
+        eab_hmac_key: Option<Vec<u8>>,
+    ) -> Result<AcmeClientProvider> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        let id = db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO acme_client_providers (name, directory_url, account_email, eab_kid, eab_hmac_key, created_on) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![name, directory_url, account_email, eab_kid, eab_hmac_key, now],
+            )?;
+            Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
+        })?;
+        self.get_acme_client_provider(id).await
+    }
+
+    pub(crate) async fn get_acme_client_provider(&self, id: i64) -> Result<AcmeClientProvider> {
+        db_do!(self.pool, |conn: &Connection| {
+            Ok(conn.query_row(
+                "SELECT id, name, directory_url, account_email, eab_kid, eab_hmac_key, account_credentials, created_on \
+                 FROM acme_client_providers WHERE id = ?1",
+                params![id],
+                acme_client_provider_from_row,
+            )?)
+        })
+    }
+
+    pub(crate) async fn get_all_acme_client_providers(&self) -> Result<Vec<AcmeClientProvider>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, directory_url, account_email, eab_kid, eab_hmac_key, account_credentials, created_on \
+                 FROM acme_client_providers ORDER BY id ASC",
+            )?;
+            let rows = stmt.query([])?;
+            Ok(rows.mapped(acme_client_provider_from_row).collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub(crate) async fn update_acme_client_provider_credentials(&self, id: i64, account_credentials: String) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "UPDATE acme_client_providers SET account_credentials = ?1 WHERE id = ?2",
+                params![account_credentials, id],
+            )?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+
+    pub(crate) async fn delete_acme_client_provider(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM acme_client_providers WHERE id = ?1", params![id])?;
+            Ok::<(), anyhow::Error>(())
+        })
+    }
+}
+
+fn acme_client_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientProvider> {
+    Ok(AcmeClientProvider {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        directory_url: row.get(2)?,
+        account_email: row.get(3)?,
+        eab_kid: row.get(4)?,
+        eab_hmac_key: row.get(5)?,
+        account_credentials: row.get(6)?,
+        created_on: row.get(7)?,
+    })
 }
 
 fn acme_account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeAccount> {
@@ -1128,6 +1201,31 @@ fn service_account_from_row(row: &rusqlite::Row) -> rusqlite::Result<ServiceAcco
         last_used_at: row.get(7)?,
         revoked: row.get::<_, i64>(8)? != 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_db() -> VaulTLSDB {
+        VaulTLSDB::new_in_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn acme_client_provider_crud() {
+        let db = mem_db().await;
+        let p = db.insert_acme_client_provider(
+            "Test CA".into(), "https://acme.example/dir".into(), "a@b.c".into(), None, None,
+        ).await.unwrap();
+        assert!(p.id > 0);
+        db.update_acme_client_provider_credentials(p.id, "{\"k\":1}".into()).await.unwrap();
+        let got = db.get_acme_client_provider(p.id).await.unwrap();
+        assert_eq!(got.account_credentials.as_deref(), Some("{\"k\":1}"));
+        db.delete_acme_client_provider(p.id).await.unwrap();
+        // presets (2) remain
+        let all = db.get_all_acme_client_providers().await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
 }
 
 #[cfg(test)]
