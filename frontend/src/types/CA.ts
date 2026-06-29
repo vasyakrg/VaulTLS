@@ -13,6 +13,7 @@ export interface CA {
     valid_until: number;                  // Expiration date of the CA (UNIX timestamp in ms)
     ca_type: CAType;                      // CA type
     is_imported?: boolean;                // Whether the CA was imported externally
+    has_private_key?: boolean;            // Whether the CA holds a usable private key (can issue/revoke/CRL)
 }
 
 export interface CARequirements {

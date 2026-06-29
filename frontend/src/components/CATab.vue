@@ -88,6 +88,7 @@
               @click="downloadCA(data.id)"
             />
             <Button
+              v-if="data.has_private_key"
               icon="pi pi-ellipsis-v"
               severity="secondary"
               outlined
@@ -97,6 +98,7 @@
               @click="(event) => { crlMenuRefs[data.id]?.toggle(event) }"
             />
             <Menu
+              v-if="data.has_private_key"
               :ref="(el) => { crlMenuRefs[data.id] = el as InstanceType<typeof Menu> | null }"
               :model="getCrlMenuItems(data)"
               popup

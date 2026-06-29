@@ -11,6 +11,14 @@ where
     s.serialize_bool(password_hash.is_some())
 }
 
+/// Serializes a private-key byte buffer as a boolean (true when a key is present).
+pub fn serialize_has_private_key<S>(key: &[u8], s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_bool(!key.is_empty())
+}
+
 /// Get secret
 pub fn get_secret(name: &str) -> anyhow::Result<String> {
     if let Ok(env_var) = env::var(name) {

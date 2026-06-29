@@ -72,7 +72,7 @@ pub struct CA {
     pub ca_type: CAType,
     #[serde(skip)]
     pub cert: Vec<u8>,
-    #[serde(skip)]
+    #[serde(rename = "has_private_key", serialize_with = "crate::helper::serialize_has_private_key", skip_deserializing)]
     pub key: Vec<u8>,
     #[serde(skip)]
     pub crl_number: i64,

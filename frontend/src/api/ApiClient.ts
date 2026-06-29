@@ -64,6 +64,17 @@ class ApiClient {
             link.remove();
             URL.revokeObjectURL(blobUrl);
         } catch (error) {
+            // On error the server returns JSON, but responseType was 'blob',
+            // so the error body is a Blob. Parse it back to JSON so callers
+            // (stores) can read `err.response.data.error` instead of `undefined`.
+            if (axios.isAxiosError(error) && error.response?.data instanceof Blob) {
+                try {
+                    const text = await error.response.data.text();
+                    error.response.data = JSON.parse(text);
+                } catch {
+                    // leave the original error untouched if it isn't JSON
+                }
+            }
             console.error(`GET ${url} download failed:`, error);
             throw error;
         }
