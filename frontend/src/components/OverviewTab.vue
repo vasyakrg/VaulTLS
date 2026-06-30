@@ -545,8 +545,9 @@ const availableCAs = computed(() => {
     [CertificateType.SSHServer]: [CAType.SSH],
   }
   const allowedType = allowedCATypes[certReq.cert_type]
-  if (!allowedType) return cas
-  return cas.filter((ca) => allowedType.includes(ca.ca_type)).sort((a, b) => b.id - a.id)
+  const signable = cas.filter((ca) => ca.has_private_key)
+  if (!allowedType) return signable
+  return signable.filter((ca) => allowedType.includes(ca.ca_type)).sort((a, b) => b.id - a.id)
 })
 
 // select options computed
