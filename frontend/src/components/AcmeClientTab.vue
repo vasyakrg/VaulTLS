@@ -523,6 +523,8 @@ onMounted(async () => {
   border-radius: 6px;
   margin-bottom: 12px;
   font-size: 13px;
+  white-space: pre-line;
+  word-break: break-all;
 }
 
 .vt-section {

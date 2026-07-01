@@ -1,11 +1,7 @@
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use hickory_resolver::config::ConnectionConfig;
-use hickory_resolver::net::runtime::TokioRuntimeProvider;
-use hickory_resolver::proto::rr::Record;
 use rand_core::Rng;
 use tracing::{error, info, warn};
 use rocket::{get, head, post, routes, State};
@@ -43,168 +39,10 @@ fn challenge_http_client() -> &'static reqwest::Client {
     })
 }
 
-fn doh_client(state: &State<AppState>) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .danger_accept_invalid_certs(state.settings.get_acme_accept_invalid_certs())
-        .build()
-        .expect("Failed to build DoH client")
-}
-
-fn build_dot_resolver(addr: &str) -> Result<hickory_resolver::TokioResolver, String> {
-    use hickory_resolver::config::{NameServerConfig, ResolverConfig};
-    use hickory_resolver::{Resolver, TlsConfig};
-    use std::net::IpAddr;
-
-    let (addr_part, tls_name_opt) = match addr.find('#') {
-        Some(idx) => (&addr[..idx], Some(addr[idx + 1..].to_string())),
-        None => (addr, None),
-    };
-
-    let (ip_str, port) = if let Some(colon) = addr_part.rfind(':') {
-        let port_str = &addr_part[colon + 1..];
-        match port_str.parse::<u16>() {
-            Ok(p) => (&addr_part[..colon], p),
-            Err(_) => (addr_part, 853u16),
-        }
-    } else {
-        (addr_part, 853u16)
-    };
-
-    let ip: IpAddr = ip_str.parse()
-        .map_err(|_| format!("Invalid DoT IP address: {ip_str}"))?;
-    let skip_verify = tls_name_opt.is_none();
-    let tls_name = tls_name_opt.unwrap_or_else(|| ip_str.to_string());
-    let mut connection_config = ConnectionConfig::tls(Arc::from(tls_name));
-    connection_config.port = port;
-    let ns = NameServerConfig::new(ip, false, vec![connection_config]);
-    let config = ResolverConfig::from_parts(None, vec![], vec![ns]);
-    let mut builder = Resolver::builder_with_config(config, TokioRuntimeProvider::default());
-    if skip_verify {
-        let mut tls_cfg = TlsConfig::new()
-            .map_err(|e| format!("Failed to create TLS config: {e}"))?;
-        tls_cfg.insecure_skip_verify();
-        builder = builder.with_tls_config(tls_cfg.config);
-    }
-    Ok(builder.build().unwrap())
-}
-
-async fn validate_dns01_doh(state: &State<AppState>, domain: &str, expected_value: &str, url: &str) -> bool {
-    use hickory_resolver::proto::op::{Message, Query};
-    use hickory_resolver::proto::rr::{Name, RData, RecordType};
-
-    let lookup_name = format!("_acme-challenge.{}.", domain);
-    let name = match Name::from_ascii(&lookup_name) {
-        Ok(n) => n,
-        Err(e) => {
-            error!("Invalid DNS name for DoH query: {e}");
-            return false;
-        }
-    };
-
-    let mut query = Query::new();
-    query.set_name(name);
-    query.set_query_type(RecordType::TXT);
-
-    let mut message = Message::query();
-    message.metadata.recursion_desired = true;
-    message.add_query(query);
-
-    let wire_bytes = match message.to_vec() {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Failed to encode DNS query for DoH: {e}");
-            return false;
-        }
-    };
-
-    let client = doh_client(state);
-    let resp = match client
-        .post(url)
-        .header("Content-Type", "application/dns-message")
-        .header("Accept", "application/dns-message")
-        .body(wire_bytes)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            error!("DoH request to {url} failed: {e}");
-            return false;
-        }
-    };
-
-    if !resp.status().is_success() {
-        error!("DoH endpoint {url} returned status {}", resp.status());
-        return false;
-    }
-
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Failed to read DoH response body: {e}");
-            return false;
-        }
-    };
-
-    let response = match Message::from_vec(&bytes) {
-        Ok(m) => m,
-        Err(e) => {
-            error!("Failed to parse DoH response: {e}");
-            return false;
-        }
-    };
-
-    response.answers.iter().any(|record: &Record | {
-        if let RData::TXT(ref txt) = record.data {
-            let record_text: String = txt.to_string();
-            record_text == expected_value
-        } else {
-            false
-        }
-    })
-}
 
 async fn validate_dns01(state: &State<AppState>, domain: &str, expected_value: &str, resolver_addr: &str) -> bool {
-    if resolver_addr.starts_with("https://") {
-        return validate_dns01_doh(state, domain, expected_value, resolver_addr).await;
-    }
-
-    if let Some(addr) = resolver_addr.strip_prefix("tls://") {
-        let resolver = match build_dot_resolver(addr) {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to build DNS resolver: {e}");
-                return false;
-            }
-        };
-        let lookup_name = crate::dns_check::challenge_record_name(domain);
-        return match resolver.txt_lookup(&lookup_name).await {
-            Ok(records) => {
-                let matched = records.answers().iter().any(|txt: &Record| {
-                    let record_text: String = txt.data.to_string();
-                    record_text == expected_value
-                });
-                if !matched {
-                    let found: Vec<String> = records.answers().iter().map(|txt: &Record| {
-                        txt.to_string()
-                    }).collect();
-                    error!(domain=domain, expected=expected_value, found=?found, "DNS-01 TXT value mismatch");
-                }
-                matched
-            }
-            Err(e) => {
-                error!(domain=domain, error=%e, "DNS-01 TXT lookup failed");
-                false
-            }
-        };
-    }
-
-    let found = crate::dns_check::txt_record_present(domain, expected_value, Some(resolver_addr)).await;
-    if !found {
-        error!(domain = domain, expected = expected_value, "DNS-01 TXT value mismatch or lookup failed");
-    }
-    found
+    let accept_invalid_certs = state.settings.get_acme_accept_invalid_certs();
+    crate::dns_check::txt_record_present_via(domain, expected_value, resolver_addr, accept_invalid_certs).await
 }
 
 

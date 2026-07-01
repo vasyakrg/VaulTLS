@@ -136,7 +136,12 @@ pub async fn issue_acme_client_order(
     let order_url = order.order_url.clone()
         .ok_or_else(|| ApiError::BadRequest("order has no URL".into()))?;
 
-    let result = client::issue_order(&provider, &order_url, &order.domain, &order.txt_records).await;
+    let resolver_addr = state.settings.get_acme_dns_resolver();
+    let accept_invalid_certs = state.settings.get_acme_accept_invalid_certs();
+    let result = client::issue_order(
+        &provider, &order_url, &order.domain, &order.txt_records,
+        &resolver_addr, accept_invalid_certs,
+    ).await;
     match result {
         Ok(issued) => {
             let inner = async {

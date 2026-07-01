@@ -172,16 +172,43 @@ pub(crate) async fn issue_order(
     order_url: &str,
     domain: &str,
     txt_records: &[TxtRecord],
+    resolver_addr: &str,
+    accept_invalid_certs: bool,
 ) -> Result<IssuedCert> {
     // 1. DNS precheck — every TXT record must be visible before we tell the ACME server anything.
-    for rec in txt_records {
-        if !crate::dns_check::txt_record_present(domain, &rec.value, None).await {
-            return Err(anyhow!(
-                "TXT record for _acme-challenge.{domain} not yet visible in DNS \
-                 (expected value: {}). Check your bind9 zone and try again later.",
-                rec.value
-            ));
-        }
+    //    Uses the admin-configured resolver (VAULTLS_ACME_DNS_RESOLVER) so the pre-check queries the
+    //    same nameserver as the ACME server-side validation, not the container's system resolver.
+    //    On mismatch we surface exactly what the resolver currently returns so the user can compare
+    //    the published records against the expected values without leaving the modal.
+    let found = crate::dns_check::lookup_txt_values(domain, resolver_addr, accept_invalid_certs)
+        .await
+        .map_err(|e| anyhow!(
+            "DNS lookup for _acme-challenge.{domain} failed: {e}. Check your bind9 zone / resolver and try again."
+        ))?;
+
+    let missing: Vec<&str> = txt_records
+        .iter()
+        .map(|r| r.value.as_str())
+        .filter(|v| !found.iter().any(|f| f == v))
+        .collect();
+
+    if !missing.is_empty() {
+        let expected_block = txt_records
+            .iter()
+            .map(|r| format!("  • {}", r.value))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let found_block = if found.is_empty() {
+            "  (none — no TXT records published at this name)".to_string()
+        } else {
+            found.iter().map(|v| format!("  • {v}")).collect::<Vec<_>>().join("\n")
+        };
+        return Err(anyhow!(
+            "TXT records for _acme-challenge.{domain} are not visible in DNS yet.\n\
+             Expected:\n{expected_block}\n\
+             Currently published:\n{found_block}\n\
+             Add the missing records to your bind9 zone, bump the serial, run rndc reload, then retry."
+        ));
     }
 
     // 2. Restore account and order.
