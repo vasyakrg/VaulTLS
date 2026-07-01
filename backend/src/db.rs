@@ -1284,9 +1284,6 @@ impl VaulTLSDB {
         Ok(())
     }
 
-    // Reserved for a follow-up task (renewal-source lookup / duplicate-renewal guard);
-    // exercised today by `acme_client_renewal_helpers`.
-    #[allow(dead_code)]
     pub(crate) async fn get_acme_client_order_by_cert_id(&self, cert_id: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
@@ -1301,9 +1298,6 @@ impl VaulTLSDB {
         })
     }
 
-    // Reserved for a follow-up task (guards against starting a second renewal while one
-    // is already in flight); exercised today by `acme_client_renewal_helpers`.
-    #[allow(dead_code)]
     pub(crate) async fn get_active_renewal_order_for_cert(&self, cert_id: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(

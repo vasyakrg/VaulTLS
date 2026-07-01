@@ -179,8 +179,9 @@ pub async fn create_rocket() -> Rocket<Build> {
         mailer: mailer.clone()
     };
 
+    let watcher_settings = app_state.settings.clone();
     tokio::spawn(async move {
-        watch_expiry(db.clone(), mailer.clone()).await;
+        watch_expiry(db.clone(), mailer.clone(), watcher_settings).await;
     });
 
     trace!("App State: {:?}", app_state);
