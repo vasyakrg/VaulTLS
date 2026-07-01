@@ -86,6 +86,10 @@ spec:
             - name: VAULTLS_ACCOUNT_EMAIL
               value: {{ .Values.config.acme.accountEmail | quote }}
             {{- end }}
+            {{- if .Values.config.acme.dnsResolver }}
+            - name: VAULTLS_ACME_DNS_RESOLVER
+              value: {{ .Values.config.acme.dnsResolver | quote }}
+            {{- end }}
             {{- if .Values.secrets.accountPassword }}
             - name: VAULTLS_ACCOUNT_PASSWORD
               valueFrom:

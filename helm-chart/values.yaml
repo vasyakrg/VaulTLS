@@ -30,6 +30,13 @@ config:
   acme:
     enabled: false
     accountEmail: ""
+    # -- DNS resolver used for dns-01 TXT pre-checks (VAULTLS_ACME_DNS_RESOLVER).
+    # Empty = the pod's system resolver (cluster CoreDNS), which usually canNOT see
+    # public authoritative records and fails with "no records found". For dns-01 the
+    # challenge records must be publicly resolvable, so point this at a public recursive
+    # resolver or your authoritative NS. Forms: "1.1.1.1", "1.1.1.1:53",
+    # "tls://1.1.1.1#one.one.one.one" (DoT), "https://cloudflare-dns.com/dns-query" (DoH).
+    dnsResolver: ""
 
 # Secrets. With the default approach the chart renders a Secret from these values.
 # WARNING: do NOT put real values here — this file is committed. Override real secrets
