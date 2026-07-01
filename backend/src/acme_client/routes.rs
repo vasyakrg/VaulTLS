@@ -110,7 +110,7 @@ pub async fn create_acme_client_order(
     }
     let order = state.db.insert_acme_client_order(
         provider.id, req.domain.clone(), req.include_wildcard,
-        Some(created.order_url), &created.txt_records, created.expires_at, None,
+        Some(created.order_url), &created.txt_records, created.expires_at, req.renews_cert_id,
     ).await?;
     Ok(Json(CreateOrderResponse { order_id: order.id, txt_records: order.txt_records }))
 }

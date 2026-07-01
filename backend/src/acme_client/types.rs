@@ -63,6 +63,8 @@ pub struct CreateOrderRequest {
     pub provider_id: i64,
     pub domain: String,
     pub include_wildcard: bool,
+    #[serde(default)]
+    pub renews_cert_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

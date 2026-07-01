@@ -403,10 +403,12 @@ const orderForm = reactive<{
   provider_id: number | undefined
   domain: string
   include_wildcard: boolean
+  renews_cert_id: number | null
 }>({
   provider_id: undefined,
   domain: '',
   include_wildcard: false,
+  renews_cert_id: null,
 })
 
 const openNewOrderModal = (renewFrom?: AcmeClientOrder) => {
@@ -414,10 +416,12 @@ const openNewOrderModal = (renewFrom?: AcmeClientOrder) => {
     orderForm.provider_id = renewFrom.provider_id
     orderForm.domain = renewFrom.domain
     orderForm.include_wildcard = renewFrom.include_wildcard
+    orderForm.renews_cert_id = renewFrom.cert_id ?? null
   } else {
     orderForm.provider_id = undefined
     orderForm.domain = ''
     orderForm.include_wildcard = false
+    orderForm.renews_cert_id = null
   }
   isNewOrderVisible.value = true
 }
@@ -427,6 +431,7 @@ const closeNewOrderModal = () => {
   orderForm.provider_id = undefined
   orderForm.domain = ''
   orderForm.include_wildcard = false
+  orderForm.renews_cert_id = null
 }
 
 // ── TXT Records ───────────────────────────────────────────────────────────────
@@ -481,6 +486,7 @@ const submitNewOrder = async () => {
       provider_id: orderForm.provider_id,
       domain: orderForm.domain,
       include_wildcard: orderForm.include_wildcard,
+      renews_cert_id: orderForm.renews_cert_id,
     })
     closeNewOrderModal()
     currentOrderId.value = response.order_id
