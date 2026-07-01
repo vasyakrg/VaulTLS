@@ -178,30 +178,19 @@ pub(crate) async fn issue_order(
     // 1. DNS precheck — every TXT record must be visible before we tell the ACME server anything.
     //    Uses the admin-configured resolver (VAULTLS_ACME_DNS_RESOLVER) so the pre-check queries the
     //    same nameserver as the ACME server-side validation, not the container's system resolver.
-    //    On mismatch we surface exactly what the resolver currently returns so the user can compare
-    //    the published records against the expected values without leaving the modal.
-    let found = crate::dns_check::lookup_txt_values(domain, resolver_addr, accept_invalid_certs)
-        .await
-        .map_err(|e| anyhow!(
-            "DNS lookup for _acme-challenge.{domain} failed: {e}. Check your bind9 zone / resolver and try again."
-        ))?;
-
-    let missing: Vec<&str> = txt_records
-        .iter()
-        .map(|r| r.value.as_str())
-        .filter(|v| !found.iter().any(|f| f == v))
-        .collect();
-
-    if !missing.is_empty() {
-        let expected_block = txt_records
+    //    Defense-in-depth: the frontend already gates on a successful check, but never trust it.
+    let precheck = check_txt_records(domain, txt_records, resolver_addr, accept_invalid_certs).await?;
+    if !precheck.ok {
+        let expected_block = precheck
+            .expected
             .iter()
-            .map(|r| format!("  • {}", r.value))
+            .map(|v| format!("  • {v}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let found_block = if found.is_empty() {
+        let found_block = if precheck.found.is_empty() {
             "  (none — no TXT records published at this name)".to_string()
         } else {
-            found.iter().map(|v| format!("  • {v}")).collect::<Vec<_>>().join("\n")
+            precheck.found.iter().map(|v| format!("  • {v}")).collect::<Vec<_>>().join("\n")
         };
         return Err(anyhow!(
             "TXT records for _acme-challenge.{domain} are not visible in DNS yet.\n\
@@ -313,6 +302,37 @@ async fn order_validation_error(order: &mut Order, domain: &str, status: OrderSt
          An order that has gone invalid cannot be revived: wait for the TXT record TTL to expire, \
          delete this order, then create a fresh one and retry."
     )
+}
+
+/// Outcome of a resolver-only TXT visibility check. `ok` is true when every expected
+/// record is currently published.
+pub(crate) struct DnsCheckOutcome {
+    pub ok: bool,
+    pub expected: Vec<String>,
+    pub found: Vec<String>,
+    // Not read by `issue_order` today (it recomputes the diff for display), but part of the
+    // outcome's public shape for future consumers (e.g. a standalone DNS-check endpoint).
+    #[allow(dead_code)]
+    pub missing: Vec<String>,
+}
+
+/// Resolve the `_acme-challenge.<domain>` TXT records via the configured resolver and compare
+/// them to `txt_records`. Never contacts the ACME server. Returns `Err` only if the DNS lookup
+/// itself fails (network / NXDOMAIN / bad resolver address).
+pub(crate) async fn check_txt_records(
+    domain: &str,
+    txt_records: &[TxtRecord],
+    resolver_addr: &str,
+    accept_invalid_certs: bool,
+) -> Result<DnsCheckOutcome> {
+    let found = crate::dns_check::lookup_txt_values(domain, resolver_addr, accept_invalid_certs)
+        .await
+        .map_err(|e| anyhow!(
+            "DNS lookup for _acme-challenge.{domain} failed: {e}. Check your bind9 zone / resolver and try again."
+        ))?;
+    let missing = missing_txt_values(txt_records, &found);
+    let expected = txt_records.iter().map(|r| r.value.clone()).collect();
+    Ok(DnsCheckOutcome { ok: missing.is_empty(), expected, found, missing })
 }
 
 /// Returns the subset of `expected` TXT values that are NOT present among `found`,
