@@ -1,8 +1,9 @@
 //! Prometheus text-exposition metrics, computed on scrape.
-//!
-//! Not yet wired to an HTTP route or DB queries (see follow-up tasks), so the
-//! public surface is intentionally unused for now.
-#![allow(dead_code)]
+
+use rocket::{get, State};
+use rocket::http::ContentType;
+use crate::data::objects::AppState;
+use crate::data::enums::{CertificateType, CAType};
 
 pub(crate) struct CertMetric {
     pub id: i64,
@@ -142,6 +143,73 @@ fn check_metrics_token(configured: Option<&str>, auth_header: Option<&str>) -> b
 
 pub(crate) struct MetricsAuth;
 
+fn cert_type_str(t: CertificateType) -> &'static str {
+    match t {
+        CertificateType::TLSClient => "tls_client",
+        CertificateType::TLSServer => "tls_server",
+        CertificateType::SSHClient => "ssh_client",
+        CertificateType::SSHServer => "ssh_server",
+    }
+}
+
+fn ca_type_str(t: CAType) -> &'static str {
+    match t {
+        CAType::TLS => "tls",
+        CAType::SSH => "ssh",
+    }
+}
+
+#[get("/metrics")]
+pub(crate) async fn metrics(state: &State<AppState>, _auth: MetricsAuth) -> Result<(ContentType, String), rocket::http::Status> {
+    let certs_db = state.db.get_user_certs(None, None, None).await
+        .map_err(|_| rocket::http::Status::InternalServerError)?;
+    let cas_db = state.db.get_all_ca().await
+        .map_err(|_| rocket::http::Status::InternalServerError)?;
+    let orders_db = state.db.get_all_acme_client_orders().await
+        .map_err(|_| rocket::http::Status::InternalServerError)?;
+    let providers = state.db.get_all_acme_client_providers().await
+        .map_err(|_| rocket::http::Status::InternalServerError)?;
+
+    // issuer lookups
+    let provider_name = |pid: i64| providers.iter().find(|p| p.id == pid).map(|p| p.name.clone());
+    let ca_cn = |cid: i64| cas_db.iter().find(|c| c.id == cid).map(|c| c.name.cn.clone());
+
+    let certs: Vec<CertMetric> = certs_db.iter().map(|c| {
+        let issuer = if let Some(pid) = c.acme_provider_id {
+            format!("acme:{}", provider_name(pid).unwrap_or_else(|| pid.to_string()))
+        } else if let Some(cid) = c.ca_id {
+            format!("ca:{}", ca_cn(cid).unwrap_or_else(|| cid.to_string()))
+        } else {
+            "imported".to_string()
+        };
+        CertMetric {
+            id: c.id,
+            cn: c.name.cn.clone(),
+            cert_type: cert_type_str(c.certificate_type),
+            issuer,
+            expiry_seconds: c.valid_until / 1000,
+            revoked: c.revoked_at.is_some(),
+        }
+    }).collect();
+
+    let cas: Vec<CaMetric> = cas_db.iter().map(|c| CaMetric {
+        id: c.id,
+        cn: c.name.cn.clone(),
+        ca_type: ca_type_str(c.ca_type),
+        expiry_seconds: c.valid_until / 1000,
+    }).collect();
+
+    let orders: Vec<AcmeOrderMetric> = orders_db.iter().map(|o| AcmeOrderMetric {
+        id: o.id,
+        domain: o.domain.clone(),
+        status: o.status.clone(),
+        created_seconds: o.created_on / 1000,
+    }).collect();
+
+    let body = render_metrics(crate::constants::VAULTLS_VERSION, &certs, &cas, &orders);
+    Ok((ContentType::new("text", "plain").with_params(("version", "0.0.4")), body))
+}
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for MetricsAuth {
     type Error = ();
@@ -210,5 +278,17 @@ mod tests {
         assert!(!check_metrics_token(Some("secret"), Some("Bearer wrong")));
         assert!(!check_metrics_token(Some("secret"), None));
         assert!(!check_metrics_token(Some("secret"), Some("secret"))); // missing "Bearer "
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_serves_exposition() {
+        // No VAULTLS_METRICS_TOKEN set in test → open endpoint.
+        let rocket = crate::create_test_rocket().await;
+        let client = rocket::local::asynchronous::Client::tracked(rocket).await.unwrap();
+        let resp = client.get("/metrics").dispatch().await;
+        assert_eq!(resp.status(), rocket::http::Status::Ok);
+        let body = resp.into_string().await.unwrap();
+        assert!(body.contains("vaultls_build_info"));
+        assert!(body.contains("# TYPE vaultls_certificates_total gauge"));
     }
 }

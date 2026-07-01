@@ -256,6 +256,7 @@ pub async fn create_rocket() -> Rocket<Build> {
         .mount("/api/acme", acme::protocol_routes())
         .attach(acme::NonceFairing)
         .mount("/api", routes![scalar_ui, scalar_js])
+        .mount("/", routes![crate::metrics::metrics])
         .attach(AdHoc::config::<Settings>())
 }
 
@@ -387,6 +388,7 @@ pub async fn create_test_rocket() -> Rocket<Build> {
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])
+        .mount("/", routes![crate::metrics::metrics])
 }
 
 #[cfg(test)]
