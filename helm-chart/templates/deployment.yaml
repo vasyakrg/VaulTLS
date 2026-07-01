@@ -87,15 +87,20 @@ spec:
             - name: VAULTLS_ACME_ENABLED
               value: "true"
             {{- end }}
-            {{- if .Values.config.acme.accountEmail }}
-            - name: VAULTLS_ACCOUNT_EMAIL
-              value: {{ .Values.config.acme.accountEmail | quote }}
-            {{- end }}
             {{- if .Values.config.acme.dnsResolver }}
             - name: VAULTLS_ACME_DNS_RESOLVER
               value: {{ .Values.config.acme.dnsResolver | quote }}
             {{- end }}
-            {{- if .Values.secrets.accountPassword }}
+            {{- /* One-shot admin password reset: set BOTH secrets.accountEmail and
+                   secrets.accountPassword to reset that user's password on next start,
+                   then the pod exits(0). Leave them empty for normal operation — the
+                   admin is created via the web setup (/server/setup). */}}
+            {{- if and .Values.secrets.accountEmail .Values.secrets.accountPassword }}
+            - name: VAULTLS_ACCOUNT_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: account-email
             - name: VAULTLS_ACCOUNT_PASSWORD
               valueFrom:
                 secretKeyRef:

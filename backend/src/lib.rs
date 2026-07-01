@@ -8,7 +8,7 @@ use rocket_okapi::openapi_get_routes;
 use rocket::http::ContentType;
 use rocket::response::content::RawHtml;
 use tokio::sync::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use crate::acme::admin::*;
 use crate::acme_client::routes::*;
@@ -124,12 +124,26 @@ pub async fn create_rocket() -> Rocket<Build> {
     info!("Database initialized");
 
     if let Ok(email) = env::var("VAULTLS_ACCOUNT_EMAIL") && let Ok(password) = get_secret("VAULTLS_ACCOUNT_PASSWORD") {
-        info!("Setting password for user {} and exiting", email);
-        let user = db.get_user_by_email(email.clone()).await.expect("Failed to find user");
-        let password_hash = Password::new_double_hash(&password).expect("Failed to hash password");
-        db.set_user_password(user.id, password_hash).await.expect("Failed to set password");
-        info!("Password for user {} successfully set. Exiting.", email);
-        std::process::exit(0);
+        // One-shot password reset: set the password for an existing user and exit. Intended for a
+        // manual `docker run`, NOT a long-running Deployment. If the user does not exist, do NOT
+        // panic — that would crashloop the whole app under Kubernetes. Log and start normally.
+        match db.get_user_by_email(email.clone()).await {
+            Ok(user) => {
+                info!("Setting password for user {} and exiting", email);
+                let password_hash = Password::new_double_hash(&password).expect("Failed to hash password");
+                db.set_user_password(user.id, password_hash).await.expect("Failed to set password");
+                info!("Password for user {} successfully set. Exiting.", email);
+                std::process::exit(0);
+            }
+            Err(e) => {
+                warn!(
+                    "VAULTLS_ACCOUNT_EMAIL is set to '{}' but no such user exists ({e}); \
+                     skipping password reset and starting normally. \
+                     (Create the admin via the web setup at /server/setup.)",
+                    email
+                );
+            }
+        }
     }
 
     let oidc_settings = settings.get_oidc();
