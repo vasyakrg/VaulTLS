@@ -1275,10 +1275,13 @@ impl VaulTLSDB {
     ) -> Result<()> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
         db_do!(self.pool, |conn: &Connection| {
-            conn.execute(
+            let affected = conn.execute(
                 "UPDATE user_certificates SET data = ?1, valid_until = ?2, created_on = ?3 WHERE id = ?4",
                 params![pkcs12_der, valid_until, now, cert_id],
             )?;
+            if affected != 1 {
+                return Err(anyhow::anyhow!("renew target certificate {cert_id} not found"));
+            }
             Ok::<(), anyhow::Error>(())
         })?;
         Ok(())
@@ -1298,13 +1301,13 @@ impl VaulTLSDB {
         })
     }
 
-    pub(crate) async fn get_active_renewal_order_for_cert(&self, cert_id: i64) -> Result<Option<AcmeClientOrder>> {
+    pub(crate) async fn get_active_renewal_order_for_cert(&self, cert_id: i64, now_ms: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
                 "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
-                 FROM acme_client_orders WHERE renews_cert_id = ?1 AND status IN ('pending_dns','ready') ORDER BY id DESC LIMIT 1",
+                 FROM acme_client_orders WHERE renews_cert_id = ?1 AND status IN ('pending_dns','ready') AND (expires_at IS NULL OR expires_at > ?2) ORDER BY id DESC LIMIT 1",
             )?;
-            let mut rows = stmt.query(params![cert_id])?;
+            let mut rows = stmt.query(params![cert_id, now_ms])?;
             match rows.next()? {
                 Some(row) => Ok(Some(acme_client_order_from_row(row)?)),
                 None => Ok(None),
@@ -1486,12 +1489,12 @@ mod tests {
         assert_eq!(found.map(|o| o.id), Some(src.id));
 
         // No active renewal order yet.
-        assert!(db.get_active_renewal_order_for_cert(cert_id).await.unwrap().is_none());
+        assert!(db.get_active_renewal_order_for_cert(cert_id, 1).await.unwrap().is_none());
         // Create a renewal order (pending_dns) and confirm the guard sees it.
         let ren = db.insert_acme_client_order(
             provider.id, "example.com".into(), false, Some("https://o/2".into()), &[], None, Some(cert_id),
         ).await.unwrap();
-        assert_eq!(db.get_active_renewal_order_for_cert(cert_id).await.unwrap().map(|o| o.id), Some(ren.id));
+        assert_eq!(db.get_active_renewal_order_for_cert(cert_id, 1).await.unwrap().map(|o| o.id), Some(ren.id));
 
         // In-place update keeps the id, bumps valid_until.
         db.update_acme_client_certificate_in_place(cert_id, vec![9, 9], 5_000).await.unwrap();

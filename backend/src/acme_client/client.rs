@@ -110,6 +110,7 @@ pub(crate) async fn create_order(
         let challenge = authz
             .challenge(ChallengeType::Dns01)
             .ok_or_else(|| anyhow!("dns-01 challenge not offered for this authorization"))?;
+        // key_authorization() returns KeyAuthorization (owned), not Result — no ? needed.
         let value = challenge.key_authorization().dns_value();
         txt_records.push(TxtRecord {
             name: format!("_acme-challenge.{base_domain}"),

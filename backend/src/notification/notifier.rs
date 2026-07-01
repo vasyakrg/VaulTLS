@@ -157,7 +157,8 @@ async fn handle_acme_renewal(
     mailer_mutex: Arc<Mutex<Option<Mailer>>>,
 ) -> Result<(), anyhow::Error> {
     // Dedup guard: don't create a second renewal order while one is still in flight.
-    if db.get_active_renewal_order_for_cert(cert.id).await?.is_some() {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if db.get_active_renewal_order_for_cert(cert.id, now_ms).await?.is_some() {
         return Ok(());
     }
 

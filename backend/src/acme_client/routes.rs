@@ -102,6 +102,15 @@ pub async fn create_acme_client_order(
     req: Json<CreateOrderRequest>,
 ) -> Result<Json<CreateOrderResponse>, ApiError> {
     let provider = state.db.get_acme_client_provider(req.provider_id).await?;
+    if let Some(renew_id) = req.renews_cert_id {
+        let target = state.db.get_user_cert_by_id(renew_id).await
+            .map_err(|_| ApiError::BadRequest("renews_cert_id refers to an unknown certificate".into()))?;
+        if target.acme_provider_id != Some(provider.id) {
+            return Err(ApiError::BadRequest(
+                "renews_cert_id must reference an ACME certificate issued by the same provider".into(),
+            ));
+        }
+    }
     let created = client::create_order(&provider, &req.domain, req.include_wildcard)
         .await
         .map_err(|e| ApiError::Other(e.to_string()))?;
