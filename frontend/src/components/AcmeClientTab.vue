@@ -207,6 +207,7 @@
     >
       <div class="vt-form">
         <p class="vt-hint">{{ $t('le.dnsHint') }}</p>
+        <p class="vt-note"><i class="pi pi-info-circle" /> {{ $t('le.dnsTiming') }}</p>
         <div v-if="store.error" class="vt-error">{{ store.error }}</div>
         <div v-for="rec in currentTxtRecords" :key="rec.name" class="vt-field">
           <label class="vt-monospace vt-small">{{ rec.name }}</label>
@@ -615,6 +616,22 @@ onMounted(async () => {
   font-size: 13px;
   color: var(--vt-muted);
   margin: 0;
+}
+
+.vt-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--vt-muted);
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--vt-muted) 10%, transparent);
+  border-left: 3px solid var(--vt-accent, #a78bfa);
+}
+
+.vt-note .pi {
+  margin-right: 6px;
+  opacity: 0.85;
 }
 
 .vt-muted {

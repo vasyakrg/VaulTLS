@@ -350,6 +350,7 @@
     "txtRecords": "Registros TXT",
     "checkIssue": "Comprobar y emitir",
     "dnsHint": "Añade estos registros TXT a tu zona bind9, sube el serial y ejecuta rndc reload, luego pulsa Comprobar y emitir.",
+    "dnsTiming": "La CA comprueba el DNS solo en el momento en que pulsas Comprobar y emitir, no cuando se creó el pedido (un pedido pendiente sigue válido ~7 días, así que crearlo ayer no es problema). Asegúrate primero de que ambos registros estén publicados y sean resolubles públicamente. Si ya consultaste este nombre antes de añadir los registros, una respuesta negativa en caché (NXDOMAIN) puede persistir hasta el TTL de caché negativa del SOA de tu zona (a menudo hasta 1 hora): espera a que expire y vuelve a intentarlo. Un pedido fallido no se puede reutilizar: elimínalo y crea uno nuevo.",
     "copyValue": "Copiar valor",
     "editProvider": "Editar proveedor"
   },

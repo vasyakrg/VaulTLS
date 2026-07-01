@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use instant_acme::{
     Account, AccountCredentials, ChallengeType, ExternalAccountKey, Identifier, NewAccount,
-    NewOrder, RetryPolicy,
+    NewOrder, Order, OrderStatus, RetryPolicy,
 };
 
 use crate::acme_client::types::{AcmeClientProvider, TxtRecord};
@@ -218,6 +218,13 @@ pub(crate) async fn issue_order(
         .await
         .map_err(|e| anyhow!("failed to fetch ACME order: {e}"))?;
 
+    // An order that already failed validation on a previous attempt is permanently `invalid`.
+    // Calling set_ready again would error confusingly — surface the real reason instead and tell
+    // the user to create a fresh order.
+    if order.state().status == OrderStatus::Invalid {
+        return Err(order_validation_error(&mut order, domain, OrderStatus::Invalid).await);
+    }
+
     // 3. set_ready on each dns-01 challenge.
     //    Authorizations<'_> borrows `order` mutably; drop it before calling poll_ready.
     {
@@ -234,11 +241,18 @@ pub(crate) async fn issue_order(
         }
     } // authorizations dropped here — `order` is usable again
 
-    // 4. Poll for challenge validation.
-    order
+    // 4. Poll for challenge validation. `poll_ready` returns the terminal OrderStatus and does
+    //    NOT error when the order goes `invalid` — the CA rejected the challenge. We must inspect
+    //    the status ourselves and surface the CA's per-challenge error, otherwise the user only
+    //    sees a downstream `orderNotReady` from finalize().
+    let status = order
         .poll_ready(&RetryPolicy::default())
         .await
         .map_err(|e| anyhow!("poll_ready failed: {e}"))?;
+
+    if status != OrderStatus::Ready {
+        return Err(order_validation_error(&mut order, domain, status).await);
+    }
 
     // 5. Finalize: instant-acme generates the CSR internally and returns the private key PEM.
     let private_key_pem = order
@@ -256,6 +270,49 @@ pub(crate) async fn issue_order(
         certificate_pem,
         private_key_pem,
     })
+}
+
+/// Build a descriptive error when an order fails to reach `Ready`. Fetches each authorization
+/// and extracts the CA-provided per-challenge `error` (RFC 8555 Problem detail) so the user sees
+/// *why* the CA rejected the challenge instead of a generic `orderNotReady`.
+async fn order_validation_error(order: &mut Order, domain: &str, status: OrderStatus) -> anyhow::Error {
+    let mut reasons: Vec<String> = Vec::new();
+    let mut authorizations = order.authorizations();
+    while let Some(result) = authorizations.next().await {
+        let authz = match result {
+            Ok(a) => a,
+            Err(e) => {
+                reasons.push(format!("failed to fetch authorization: {e}"));
+                continue;
+            }
+        };
+        let ident = authz.identifier().to_string();
+        for ch in &authz.challenges {
+            if let Some(err) = &ch.error {
+                let detail = err
+                    .detail
+                    .clone()
+                    .or_else(|| err.r#type.clone())
+                    .unwrap_or_else(|| "no detail provided".into());
+                reasons.push(format!("{ident} [{:?}]: {detail}", ch.r#type));
+            }
+        }
+    }
+
+    let joined = if reasons.is_empty() {
+        "the ACME server did not provide a specific reason".to_string()
+    } else {
+        reasons.join("; ")
+    };
+
+    anyhow!(
+        "ACME server rejected validation for {domain} (order status: {status:?}).\n\
+         Reason(s): {joined}.\n\
+         The CA runs its OWN DNS lookup of the _acme-challenge TXT records — this failure means \
+         the CA's resolver could not see them (propagation delay or a cached negative answer). \
+         An order that has gone invalid cannot be revived: wait for the TXT record TTL to expire, \
+         delete this order, then create a fresh one and retry."
+    )
 }
 
 pub(crate) fn order_identifiers(domain: &str, include_wildcard: bool) -> Vec<String> {
