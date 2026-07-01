@@ -215,6 +215,9 @@
           <br />
           {{ $t('le.dnsMissingSome') }} {{ dnsResult.missing.join(', ') }}
         </div>
+        <div v-else-if="dnsResult && dnsResult.error" class="vt-error">
+          <i class="pi pi-exclamation-triangle" /> {{ dnsResult.error }}
+        </div>
         <div v-for="rec in currentTxtRecords" :key="rec.name" class="vt-field">
           <label class="vt-monospace vt-small">{{ rec.name }}</label>
           <div class="vt-input-group">
