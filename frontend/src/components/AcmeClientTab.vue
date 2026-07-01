@@ -450,6 +450,7 @@ const runDnsCheck = async () => {
     dnsOk.value = r.ok
   } catch {
     dnsOk.value = false
+    dnsResult.value = null
   } finally {
     dnsChecking.value = false
   }
