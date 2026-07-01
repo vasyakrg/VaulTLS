@@ -44,3 +44,11 @@ export interface CreateOrderRequest {
   domain: string
   include_wildcard: boolean
 }
+
+export interface DnsCheckResult {
+  ok: boolean
+  expected: string[]
+  found: string[]
+  missing: string[]
+  error: string | null
+}

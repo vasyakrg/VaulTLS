@@ -6,6 +6,7 @@ import type {
     CreateOrderResponse,
     CreateProviderRequest,
     CreateOrderRequest,
+    DnsCheckResult,
 } from '@/types/AcmeClient.ts'
 import * as api from '@/api/acmeClient.ts'
 
@@ -139,6 +140,21 @@ export const useAcmeClientStore = defineStore('acmeClient', {
                 throw err
             } finally {
                 this.loading = false
+            }
+        },
+
+        async checkDns(id: number): Promise<DnsCheckResult> {
+            this.error = null
+            try {
+                return await api.checkDns(id)
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to check DNS: ' + (err.response?.data?.error ?? 'Unknown error')
+                } else {
+                    this.error = 'Failed to check DNS'
+                }
+                console.error(err)
+                throw err
             }
         },
 
