@@ -22,6 +22,11 @@ spec:
         checksum/backup-config: {{ include (print $.Template.BasePath "/configmap-backup.yaml") . | sha256sum }}
         checksum/backup-secret: {{ include (print $.Template.BasePath "/secret-backup.yaml") . | sha256sum }}
         {{- end }}
+        {{- if .Values.config.metrics.scrapeAnnotations.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "80"
+        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -96,6 +101,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "vaultls.secretName" . }}
                   key: account-password
+            {{- end }}
+            {{- if .Values.secrets.metricsToken }}
+            - name: VAULTLS_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: metrics-token
             {{- end }}
           volumeMounts:
             - name: data

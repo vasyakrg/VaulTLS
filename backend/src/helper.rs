@@ -19,6 +19,11 @@ where
     s.serialize_bool(!key.is_empty())
 }
 
+pub(crate) fn now_seconds() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
 /// Get secret
 pub fn get_secret(name: &str) -> anyhow::Result<String> {
     if let Ok(env_var) = env::var(name) {

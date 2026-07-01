@@ -37,6 +37,10 @@ config:
     # resolver or your authoritative NS. Forms: "1.1.1.1", "1.1.1.1:53",
     # "tls://1.1.1.1#one.one.one.one" (DoT), "https://cloudflare-dns.com/dns-query" (DoH).
     dnsResolver: ""
+  metrics:
+    # -- Pod annotations for Prometheus scraping (set enabled=false to omit).
+    scrapeAnnotations:
+      enabled: true
 
 # Secrets. With the default approach the chart renders a Secret from these values.
 # WARNING: do NOT put real values here — this file is committed. Override real secrets
@@ -52,6 +56,8 @@ secrets:
   # -- Optionally pre-set account email/password (VAULTLS_ACCOUNT_EMAIL / _PASSWORD).
   accountEmail: ""
   accountPassword: ""
+  # -- Bearer token for /metrics (VAULTLS_METRICS_TOKEN). Empty = endpoint is unauthenticated.
+  metricsToken: ""
   # -- Use an existing Secret instead of generating one from the values above.
   #    The referenced Secret must contain the same keys (see templates/secret.yaml).
   existingSecret: ""
