@@ -69,8 +69,8 @@
         </div>
       </template>
 
-      <Column v-if="authStore.isAdmin" field="user_id" :header="$t('overview.colUser')" sortable>
-        <template #body="{ data }">{{ userStore.idToName(data.user_id) }}</template>
+      <Column field="id" :header="$t('common.colId')" sortable>
+        <template #body="{ data }"><span :id="'CertId-' + data.id">{{ data.id }}</span></template>
       </Column>
       <Column field="name.cn" :header="$t('common.colName')" sortable>
         <template #body="{ data }">{{ data.name.cn }}</template>
@@ -95,34 +95,8 @@
       <Column field="ca_id" :header="$t('common.colCaName')" sortable>
         <template #body="{ data }"><span :id="'CaId-' + data.id">{{ caName(data) }}</span></template>
       </Column>
-      <Column :header="$t('common.password')">
-        <template #body="{ data }">
-          <div class="vt-password-cell">
-            <input
-              type="text"
-              :id="'PasswordInput-' + data.id"
-              :value="shownCerts.has(data.id) ? (data.password || '') : '•••••••••'"
-              readonly
-              class="vt-password-input"
-              :placeholder="shownCerts.has(data.id) ? $t('overview.generateModal.blank') : undefined"
-            />
-            <button
-              :id="'PasswordButton-' + data.id"
-              class="vt-icon-btn"
-              :title="shownCerts.has(data.id) ? $t('certs.hidePassword') : $t('certs.showPassword')"
-              @click="togglePasswordShown(data)"
-            >
-              <i :class="shownCerts.has(data.id) ? 'pi pi-eye-slash' : 'pi pi-eye'" />
-            </button>
-            <button
-              class="vt-icon-btn"
-              :title="$t('certs.copyPassword')"
-              @click="copyPasswordtoClipboard(data)"
-            >
-              <i :class="copiedCerts.has(data.id) ? 'pi pi-check' : 'pi pi-copy'" />
-            </button>
-          </div>
-        </template>
+      <Column v-if="authStore.isAdmin" field="user_id" :header="$t('overview.colUser')" sortable>
+        <template #body="{ data }">{{ userStore.idToName(data.user_id) }}</template>
       </Column>
       <Column :header="$t('common.actions')">
         <template #body="{ data }">
@@ -471,8 +445,6 @@ const acmeClientStore = useAcmeClientStore()
 
 // local state
 const showImport = ref(false)
-const shownCerts = ref(new Set<number>())
-const copiedCerts = ref(new Set<number>())
 const hideAcmeCerts = ref(localStorage.getItem('hideAcmeCerts') === 'true')
 watch(hideAcmeCerts, (val) => localStorage.setItem('hideAcmeCerts', String(val)))
 const typeFilter = ref<CertificateType | null>(null)
@@ -695,30 +667,6 @@ const revokeCertificate = async () => {
     const certId = certToRevoke.value.id
     await certificateStore.revokeCertificate(certId)
     closeRevokeModal()
-  }
-}
-
-const togglePasswordShown = async (cert: Certificate) => {
-  if (!cert.password) {
-    await certificateStore.fetchCertificatePassword(cert.id)
-  }
-  if (shownCerts.value.has(cert.id)) {
-    shownCerts.value.delete(cert.id)
-  } else {
-    shownCerts.value.add(cert.id)
-  }
-}
-
-const copyPasswordtoClipboard = async (cert: Certificate) => {
-  if (!cert.password) {
-    await certificateStore.fetchCertificatePassword(cert.id)
-  }
-  try {
-    await navigator.clipboard.writeText(cert.password)
-    copiedCerts.value.add(cert.id)
-    setTimeout(() => copiedCerts.value.delete(cert.id), 1500)
-  } catch (err) {
-    console.error('Failed to copy to clipboard: ', err)
   }
 }
 

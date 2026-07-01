@@ -18,6 +18,7 @@
     "hideOu": "Ocultar campo OU",
     "addOu": "Agregar OU (Grupo)",
     "ouGroup": "OU (Grupo)",
+    "colId": "ID",
     "colName": "Nombre",
     "colGroup": "Grupo",
     "colType": "Tipo",
