@@ -32,6 +32,7 @@ mod helper;
 mod auth;
 pub mod constants;
 mod api;
+mod metrics;
 mod notification;
 mod acme;
 mod acme_client;
