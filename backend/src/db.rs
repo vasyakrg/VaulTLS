@@ -1180,14 +1180,15 @@ impl VaulTLSDB {
         order_url: Option<String>,
         txt_records: &[TxtRecord],
         expires_at: Option<i64>,
+        renews_cert_id: Option<i64>,
     ) -> Result<AcmeClientOrder> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
         let txt_json = serde_json::to_string(txt_records)?;
         let id = db_do!(self.pool, |conn: &Connection| {
             conn.execute(
-                "INSERT INTO acme_client_orders (provider_id, domain, include_wildcard, status, order_url, txt_records, created_on, expires_at) \
-                 VALUES (?1, ?2, ?3, 'pending_dns', ?4, ?5, ?6, ?7)",
-                params![provider_id, domain, include_wildcard, order_url, txt_json, now, expires_at],
+                "INSERT INTO acme_client_orders (provider_id, domain, include_wildcard, status, order_url, txt_records, created_on, expires_at, renews_cert_id) \
+                 VALUES (?1, ?2, ?3, 'pending_dns', ?4, ?5, ?6, ?7, ?8)",
+                params![provider_id, domain, include_wildcard, order_url, txt_json, now, expires_at, renews_cert_id],
             )?;
             Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
         })?;
@@ -1197,7 +1198,7 @@ impl VaulTLSDB {
     pub(crate) async fn get_acme_client_order(&self, id: i64) -> Result<AcmeClientOrder> {
         db_do!(self.pool, |conn: &Connection| {
             Ok(conn.query_row(
-                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at \
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
                  FROM acme_client_orders WHERE id = ?1",
                 params![id],
                 acme_client_order_from_row,
@@ -1208,7 +1209,7 @@ impl VaulTLSDB {
     pub(crate) async fn get_all_acme_client_orders(&self) -> Result<Vec<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at \
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
                  FROM acme_client_orders ORDER BY id DESC",
             )?;
             let rows = stmt.query([])?;
@@ -1295,6 +1296,7 @@ fn acme_client_order_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeC
         error: row.get(8)?,
         created_on: row.get(9)?,
         expires_at: row.get(10)?,
+        renews_cert_id: row.get(11)?,
     })
 }
 
@@ -1393,7 +1395,7 @@ mod tests {
         ).await.unwrap();
         let txt = vec![TxtRecord { name: "_acme-challenge.example.com".into(), value: "v1".into() }];
         let o = db.insert_acme_client_order(
-            p.id, "example.com".into(), true, Some("https://acme.example/order/1".into()), &txt, Some(123),
+            p.id, "example.com".into(), true, Some("https://acme.example/order/1".into()), &txt, Some(123), None,
         ).await.unwrap();
         assert_eq!(o.status, "pending_dns");
         assert_eq!(o.txt_records.len(), 1);

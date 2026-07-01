@@ -34,6 +34,7 @@ pub struct AcmeClientOrder {
     pub error: Option<String>,
     pub created_on: i64,
     pub expires_at: Option<i64>,
+    pub renews_cert_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
