@@ -125,6 +125,39 @@ pub(crate) fn render_metrics(
     s
 }
 
+use rocket::request::{FromRequest, Outcome, Request};
+use rocket::http::Status;
+
+/// Pure token gate. `configured` = trimmed env value (None or empty = open).
+fn check_metrics_token(configured: Option<&str>, auth_header: Option<&str>) -> bool {
+    match configured {
+        None => true,
+        Some(t) if t.is_empty() => true,
+        Some(t) => auth_header
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map(|got| got == t)
+            .unwrap_or(false),
+    }
+}
+
+pub(crate) struct MetricsAuth;
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for MetricsAuth {
+    type Error = ();
+
+    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let configured = std::env::var("VAULTLS_METRICS_TOKEN").ok();
+        let configured_trimmed = configured.as_deref().map(str::trim);
+        let header = req.headers().get_one("Authorization");
+        if check_metrics_token(configured_trimmed, header) {
+            Outcome::Success(MetricsAuth)
+        } else {
+            Outcome::Error((Status::Unauthorized, ()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +198,17 @@ mod tests {
         let out = render_metrics("v0", &certs, &[], &[]);
         assert!(!out.contains("vaultls_certificate_expiry_timestamp_seconds{id=\"1\""));
         assert!(out.contains("vaultls_certificates_revoked_total 1"));
+    }
+
+    #[test]
+    fn token_check_logic() {
+        // unset/empty → always allow
+        assert!(check_metrics_token(None, None));
+        assert!(check_metrics_token(Some(""), Some("anything")));
+        // set → require exact bearer
+        assert!(check_metrics_token(Some("secret"), Some("Bearer secret")));
+        assert!(!check_metrics_token(Some("secret"), Some("Bearer wrong")));
+        assert!(!check_metrics_token(Some("secret"), None));
+        assert!(!check_metrics_token(Some("secret"), Some("secret"))); // missing "Bearer "
     }
 }
