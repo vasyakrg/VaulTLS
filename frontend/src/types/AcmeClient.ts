@@ -43,6 +43,7 @@ export interface CreateOrderRequest {
   provider_id: number
   domain: string
   include_wildcard: boolean
+  renews_cert_id?: number | null
 }
 
 export interface DnsCheckResult {

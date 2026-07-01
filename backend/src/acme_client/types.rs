@@ -34,6 +34,7 @@ pub struct AcmeClientOrder {
     pub error: Option<String>,
     pub created_on: i64,
     pub expires_at: Option<i64>,
+    pub renews_cert_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -62,6 +63,8 @@ pub struct CreateOrderRequest {
     pub provider_id: i64,
     pub domain: String,
     pub include_wildcard: bool,
+    #[serde(default)]
+    pub renews_cert_id: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

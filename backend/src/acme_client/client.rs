@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use instant_acme::{
-    Account, AccountCredentials, ChallengeType, ExternalAccountKey, Identifier, NewAccount,
-    NewOrder, Order, OrderStatus, RetryPolicy,
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, ExternalAccountKey,
+    Identifier, NewAccount, NewOrder, Order, OrderStatus, RetryPolicy,
 };
 
 use crate::acme_client::types::{AcmeClientProvider, TxtRecord};
@@ -62,6 +62,13 @@ async fn account_for(provider: &AcmeClientProvider) -> Result<(Account, Option<S
     Ok((account, Some(creds_json)))
 }
 
+/// True only when an authorization still requires the dns-01 challenge to be completed.
+/// A `Valid` authorization (reused by the CA within its ~30-day window) needs no TXT record
+/// and no `set_ready` call.
+fn authz_needs_dns_challenge(status: AuthorizationStatus) -> bool {
+    matches!(status, AuthorizationStatus::Pending)
+}
+
 /// Phase 1 of the manual dns-01 flow: register/restore the ACME account, create an order, and
 /// collect the TXT challenge values.
 ///
@@ -95,6 +102,11 @@ pub(crate) async fn create_order(
     let mut authorizations = order.authorizations();
     while let Some(result) = authorizations.next().await {
         let mut authz = result.map_err(|e| anyhow!("failed to fetch authorization: {e}"))?;
+        // Skip authorizations the CA already considers valid — no challenge/TXT needed (LE reuses
+        // a valid authorization for ~30 days). Renewals within that window need no DNS step.
+        if !authz_needs_dns_challenge(authz.status) {
+            continue;
+        }
         let challenge = authz
             .challenge(ChallengeType::Dns01)
             .ok_or_else(|| anyhow!("dns-01 challenge not offered for this authorization"))?;
@@ -221,6 +233,11 @@ pub(crate) async fn issue_order(
         while let Some(result) = authorizations.next().await {
             let mut authz =
                 result.map_err(|e| anyhow!("failed to fetch authorization: {e}"))?;
+            // Only signal readiness for authorizations that are still pending; a valid
+            // authorization has no outstanding challenge and set_ready would error.
+            if !authz_needs_dns_challenge(authz.status) {
+                continue;
+            }
             if let Some(mut challenge) = authz.challenge(ChallengeType::Dns01) {
                 challenge
                     .set_ready()
@@ -387,6 +404,15 @@ mod tests {
             missing_txt_values(&expected, &[]),
             vec!["aaa".to_string(), "bbb".to_string()]
         );
+    }
+
+    #[test]
+    fn only_pending_authz_needs_dns_challenge() {
+        use instant_acme::AuthorizationStatus::*;
+        assert!(authz_needs_dns_challenge(Pending));
+        assert!(!authz_needs_dns_challenge(Valid));
+        assert!(!authz_needs_dns_challenge(Invalid));
+        assert!(!authz_needs_dns_challenge(Deactivated));
     }
 
     #[test]

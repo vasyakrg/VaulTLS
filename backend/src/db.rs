@@ -1180,14 +1180,15 @@ impl VaulTLSDB {
         order_url: Option<String>,
         txt_records: &[TxtRecord],
         expires_at: Option<i64>,
+        renews_cert_id: Option<i64>,
     ) -> Result<AcmeClientOrder> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
         let txt_json = serde_json::to_string(txt_records)?;
         let id = db_do!(self.pool, |conn: &Connection| {
             conn.execute(
-                "INSERT INTO acme_client_orders (provider_id, domain, include_wildcard, status, order_url, txt_records, created_on, expires_at) \
-                 VALUES (?1, ?2, ?3, 'pending_dns', ?4, ?5, ?6, ?7)",
-                params![provider_id, domain, include_wildcard, order_url, txt_json, now, expires_at],
+                "INSERT INTO acme_client_orders (provider_id, domain, include_wildcard, status, order_url, txt_records, created_on, expires_at, renews_cert_id) \
+                 VALUES (?1, ?2, ?3, 'pending_dns', ?4, ?5, ?6, ?7, ?8)",
+                params![provider_id, domain, include_wildcard, order_url, txt_json, now, expires_at, renews_cert_id],
             )?;
             Ok::<i64, anyhow::Error>(conn.last_insert_rowid())
         })?;
@@ -1197,7 +1198,7 @@ impl VaulTLSDB {
     pub(crate) async fn get_acme_client_order(&self, id: i64) -> Result<AcmeClientOrder> {
         db_do!(self.pool, |conn: &Connection| {
             Ok(conn.query_row(
-                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at \
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
                  FROM acme_client_orders WHERE id = ?1",
                 params![id],
                 acme_client_order_from_row,
@@ -1208,7 +1209,7 @@ impl VaulTLSDB {
     pub(crate) async fn get_all_acme_client_orders(&self) -> Result<Vec<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at \
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
                  FROM acme_client_orders ORDER BY id DESC",
             )?;
             let rows = stmt.query([])?;
@@ -1265,6 +1266,54 @@ impl VaulTLSDB {
         })?;
         Ok(id)
     }
+
+    pub(crate) async fn update_acme_client_certificate_in_place(
+        &self,
+        cert_id: i64,
+        pkcs12_der: Vec<u8>,
+        valid_until: i64,
+    ) -> Result<()> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        db_do!(self.pool, |conn: &Connection| {
+            let affected = conn.execute(
+                "UPDATE user_certificates SET data = ?1, valid_until = ?2, created_on = ?3 WHERE id = ?4",
+                params![pkcs12_der, valid_until, now, cert_id],
+            )?;
+            if affected != 1 {
+                return Err(anyhow::anyhow!("renew target certificate {cert_id} not found"));
+            }
+            Ok::<(), anyhow::Error>(())
+        })?;
+        Ok(())
+    }
+
+    pub(crate) async fn get_acme_client_order_by_cert_id(&self, cert_id: i64) -> Result<Option<AcmeClientOrder>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
+                 FROM acme_client_orders WHERE cert_id = ?1 ORDER BY id DESC LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![cert_id])?;
+            match rows.next()? {
+                Some(row) => Ok(Some(acme_client_order_from_row(row)?)),
+                None => Ok(None),
+            }
+        })
+    }
+
+    pub(crate) async fn get_active_renewal_order_for_cert(&self, cert_id: i64, now_ms: i64) -> Result<Option<AcmeClientOrder>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
+                 FROM acme_client_orders WHERE renews_cert_id = ?1 AND status IN ('pending_dns','ready') AND (expires_at IS NULL OR expires_at > ?2) ORDER BY id DESC LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![cert_id, now_ms])?;
+            match rows.next()? {
+                Some(row) => Ok(Some(acme_client_order_from_row(row)?)),
+                None => Ok(None),
+            }
+        })
+    }
 }
 
 fn acme_client_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientProvider> {
@@ -1295,6 +1344,7 @@ fn acme_client_order_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeC
         error: row.get(8)?,
         created_on: row.get(9)?,
         expires_at: row.get(10)?,
+        renews_cert_id: row.get(11)?,
     })
 }
 
@@ -1393,7 +1443,7 @@ mod tests {
         ).await.unwrap();
         let txt = vec![TxtRecord { name: "_acme-challenge.example.com".into(), value: "v1".into() }];
         let o = db.insert_acme_client_order(
-            p.id, "example.com".into(), true, Some("https://acme.example/order/1".into()), &txt, Some(123),
+            p.id, "example.com".into(), true, Some("https://acme.example/order/1".into()), &txt, Some(123), None,
         ).await.unwrap();
         assert_eq!(o.status, "pending_dns");
         assert_eq!(o.txt_records.len(), 1);
@@ -1406,6 +1456,51 @@ mod tests {
         assert_eq!(db.get_all_acme_client_orders().await.unwrap().len(), 1);
         db.delete_acme_client_order(o.id).await.unwrap();
         assert_eq!(db.get_all_acme_client_orders().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn acme_client_renewal_helpers() {
+        let db = mem_db().await;
+        // FK: user_certificates.user_id -> users(id); acme_client_orders.cert_id -> user_certificates(id).
+        let user = db.insert_user(User {
+            id: -1,
+            name: "admin".into(),
+            email: "a@b.c".into(),
+            password_hash: None,
+            oidc_id: None,
+            role: UserRole::Admin,
+        }).await.unwrap();
+        let provider = db.insert_acme_client_provider(
+            "le".into(), "https://example/dir".into(), "a@b.c".into(), None, None,
+        ).await.unwrap();
+
+        // Insert a cert row to renew in place.
+        let cert_id = db.insert_acme_client_certificate(
+            crate::data::objects::Name::from("example.com"),
+            vec![1, 2, 3], "".into(), 1_000, user.id, provider.id,
+        ).await.unwrap();
+
+        // Source order that produced this cert.
+        let src = db.insert_acme_client_order(
+            provider.id, "example.com".into(), false, Some("https://o/1".into()), &[], None, None,
+        ).await.unwrap();
+        db.update_acme_client_order_status(src.id, "valid", Some(cert_id), None).await.unwrap();
+        let found = db.get_acme_client_order_by_cert_id(cert_id).await.unwrap();
+        assert_eq!(found.map(|o| o.id), Some(src.id));
+
+        // No active renewal order yet.
+        assert!(db.get_active_renewal_order_for_cert(cert_id, 1).await.unwrap().is_none());
+        // Create a renewal order (pending_dns) and confirm the guard sees it.
+        let ren = db.insert_acme_client_order(
+            provider.id, "example.com".into(), false, Some("https://o/2".into()), &[], None, Some(cert_id),
+        ).await.unwrap();
+        assert_eq!(db.get_active_renewal_order_for_cert(cert_id, 1).await.unwrap().map(|o| o.id), Some(ren.id));
+
+        // In-place update keeps the id, bumps valid_until.
+        db.update_acme_client_certificate_in_place(cert_id, vec![9, 9], 5_000).await.unwrap();
+        let certs = db.get_user_certs(None, None, None).await.unwrap();
+        let c = certs.iter().find(|c| c.id == cert_id).unwrap();
+        assert_eq!(c.valid_until, 5_000);
     }
 
     #[tokio::test]

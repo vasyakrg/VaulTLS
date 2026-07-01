@@ -102,6 +102,15 @@ pub async fn create_acme_client_order(
     req: Json<CreateOrderRequest>,
 ) -> Result<Json<CreateOrderResponse>, ApiError> {
     let provider = state.db.get_acme_client_provider(req.provider_id).await?;
+    if let Some(renew_id) = req.renews_cert_id {
+        let target = state.db.get_user_cert_by_id(renew_id).await
+            .map_err(|_| ApiError::BadRequest("renews_cert_id refers to an unknown certificate".into()))?;
+        if target.acme_provider_id != Some(provider.id) {
+            return Err(ApiError::BadRequest(
+                "renews_cert_id must reference an ACME certificate issued by the same provider".into(),
+            ));
+        }
+    }
     let created = client::create_order(&provider, &req.domain, req.include_wildcard)
         .await
         .map_err(|e| ApiError::Other(e.to_string()))?;
@@ -110,7 +119,7 @@ pub async fn create_acme_client_order(
     }
     let order = state.db.insert_acme_client_order(
         provider.id, req.domain.clone(), req.include_wildcard,
-        Some(created.order_url), &created.txt_records, created.expires_at,
+        Some(created.order_url), &created.txt_records, created.expires_at, req.renews_cert_id,
     ).await?;
     Ok(Json(CreateOrderResponse { order_id: order.id, txt_records: order.txt_records }))
 }
@@ -147,18 +156,25 @@ pub async fn issue_acme_client_order(
             let inner = async {
                 let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                let cert_name = if order.include_wildcard {
-                    crate::data::objects::Name::from(
-                        format!("{}, *.{}", order.domain, order.domain).as_str()
-                    )
+                let result_cert_id = if let Some(renew_id) = order.renews_cert_id {
+                    // Renewal: update the existing certificate in place (same id).
+                    state.db.update_acme_client_certificate_in_place(renew_id, packed.pkcs12_der, packed.valid_until)
+                        .await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    renew_id
                 } else {
-                    crate::data::objects::Name::from(order.domain.as_str())
+                    let cert_name = if order.include_wildcard {
+                        crate::data::objects::Name::from(
+                            format!("{}, *.{}", order.domain, order.domain).as_str()
+                        )
+                    } else {
+                        crate::data::objects::Name::from(order.domain.as_str())
+                    };
+                    state.db.insert_acme_client_certificate(
+                        cert_name,
+                        packed.pkcs12_der, "".into(), packed.valid_until, auth._claims.id, provider.id,
+                    ).await.map_err(|e| anyhow::anyhow!(e.to_string()))?
                 };
-                let cert_id = state.db.insert_acme_client_certificate(
-                    cert_name,
-                    packed.pkcs12_der, "".into(), packed.valid_until, auth._claims.id, provider.id,
-                ).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                state.db.update_acme_client_order_status(id, "valid", Some(cert_id), None).await
+                state.db.update_acme_client_order_status(id, "valid", Some(result_cert_id), None).await
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 Ok::<_, anyhow::Error>(())
             }.await;
