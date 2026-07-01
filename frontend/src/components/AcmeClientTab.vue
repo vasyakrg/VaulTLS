@@ -197,17 +197,27 @@
     <BaseModal
       v-model:visible="isTxtVisible"
       :title="$t('le.txtRecords')"
-      :submitLabel="store.loading ? $t('common.creating') : $t('le.checkIssue')"
-      submitIcon="pi pi-check"
-      :submitDisabled="store.loading"
-      :loading="store.loading"
-      @submit="checkAndIssue"
       @cancel="closeTxtModal"
       width="620px"
     >
       <div class="vt-form">
         <p class="vt-hint">{{ $t('le.dnsHint') }}</p>
+        <p class="vt-note"><i class="pi pi-info-circle" /> {{ $t('le.dnsTiming') }}</p>
         <div v-if="store.error" class="vt-error">{{ store.error }}</div>
+        <div v-if="dnsResult && dnsResult.ok" class="vt-success">
+          <i class="pi pi-check-circle" /> {{ $t('le.dnsOk') }}
+        </div>
+        <div v-else-if="dnsResult && !dnsResult.error" class="vt-error">
+          <template v-if="dnsResult.found.length">
+            {{ $t('le.dnsPublished') }} {{ dnsResult.found.join(', ') }}
+          </template>
+          <template v-else>{{ $t('le.dnsFoundNone') }}</template>
+          <br />
+          {{ $t('le.dnsMissingSome') }} {{ dnsResult.missing.join(', ') }}
+        </div>
+        <div v-else-if="dnsResult && dnsResult.error" class="vt-error">
+          <i class="pi pi-exclamation-triangle" /> {{ dnsResult.error }}
+        </div>
         <div v-for="rec in currentTxtRecords" :key="rec.name" class="vt-field">
           <label class="vt-monospace vt-small">{{ rec.name }}</label>
           <div class="vt-input-group">
@@ -223,6 +233,29 @@
           </div>
         </div>
       </div>
+      <template #footer>
+        <Button
+          :label="$t('common.cancel')"
+          severity="secondary"
+          text
+          @click="closeTxtModal"
+        />
+        <Button
+          :label="dnsChecking ? $t('le.dnsChecking') : $t('le.checkDns')"
+          icon="pi pi-search"
+          severity="secondary"
+          outlined
+          :loading="dnsChecking"
+          @click="runDnsCheck"
+        />
+        <Button
+          :label="store.loading ? $t('common.creating') : $t('le.startIssue')"
+          icon="pi pi-check"
+          :disabled="!dnsOk || store.loading"
+          :loading="store.loading"
+          @click="checkAndIssue"
+        />
+      </template>
     </BaseModal>
 
     <!-- Delete Provider Confirmation Modal -->
@@ -259,7 +292,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import Tooltip from 'primevue/tooltip'
 import { useAcmeClientStore } from '@/stores/acmeClient'
-import type { AcmeClientProvider, AcmeClientOrder, TxtRecord, CreateProviderRequest } from '@/types/AcmeClient'
+import type { AcmeClientProvider, AcmeClientOrder, TxtRecord, CreateProviderRequest, DnsCheckResult } from '@/types/AcmeClient'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Tag from 'primevue/tag'
@@ -401,8 +434,33 @@ const closeNewOrderModal = () => {
 const isTxtVisible = ref(false)
 const currentOrderId = ref<number | null>(null)
 const currentTxtRecords = ref<TxtRecord[]>([])
+const dnsChecking = ref(false)
+const dnsOk = ref(false)
+const dnsResult = ref<DnsCheckResult | null>(null)
+
+const resetDnsGate = () => {
+  dnsChecking.value = false
+  dnsOk.value = false
+  dnsResult.value = null
+}
+
+const runDnsCheck = async () => {
+  if (currentOrderId.value === null) return
+  dnsChecking.value = true
+  try {
+    const r = await store.checkDns(currentOrderId.value)
+    dnsResult.value = r
+    dnsOk.value = r.ok
+  } catch {
+    dnsOk.value = false
+    dnsResult.value = null
+  } finally {
+    dnsChecking.value = false
+  }
+}
 
 const openExistingTxtModal = (order: AcmeClientOrder) => {
+  resetDnsGate()
   store.error = null
   currentOrderId.value = order.id
   currentTxtRecords.value = order.txt_records ?? []
@@ -410,6 +468,7 @@ const openExistingTxtModal = (order: AcmeClientOrder) => {
 }
 
 const closeTxtModal = () => {
+  resetDnsGate()
   isTxtVisible.value = false
   currentOrderId.value = null
   currentTxtRecords.value = []
@@ -426,6 +485,7 @@ const submitNewOrder = async () => {
     closeNewOrderModal()
     currentOrderId.value = response.order_id
     currentTxtRecords.value = response.txt_records
+    resetDnsGate()
     isTxtVisible.value = true
   } catch {
     // store.error is set; wizard stays open
@@ -527,6 +587,19 @@ onMounted(async () => {
   word-break: break-all;
 }
 
+.vt-success {
+  background: color-mix(in srgb, #22c55e 22%, transparent);
+  color: #eafff1;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.vt-success .pi {
+  margin-right: 6px;
+}
+
 .vt-section {
   margin-bottom: 12px;
 }
@@ -615,6 +688,22 @@ onMounted(async () => {
   font-size: 13px;
   color: var(--vt-muted);
   margin: 0;
+}
+
+.vt-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--vt-muted);
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--vt-muted) 10%, transparent);
+  border-left: 3px solid var(--vt-accent, #a78bfa);
+}
+
+.vt-note .pi {
+  margin-right: 6px;
+  opacity: 0.85;
 }
 
 .vt-muted {

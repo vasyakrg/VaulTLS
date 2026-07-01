@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use instant_acme::{
     Account, AccountCredentials, ChallengeType, ExternalAccountKey, Identifier, NewAccount,
-    NewOrder, RetryPolicy,
+    NewOrder, Order, OrderStatus, RetryPolicy,
 };
 
 use crate::acme_client::types::{AcmeClientProvider, TxtRecord};
@@ -178,30 +178,19 @@ pub(crate) async fn issue_order(
     // 1. DNS precheck — every TXT record must be visible before we tell the ACME server anything.
     //    Uses the admin-configured resolver (VAULTLS_ACME_DNS_RESOLVER) so the pre-check queries the
     //    same nameserver as the ACME server-side validation, not the container's system resolver.
-    //    On mismatch we surface exactly what the resolver currently returns so the user can compare
-    //    the published records against the expected values without leaving the modal.
-    let found = crate::dns_check::lookup_txt_values(domain, resolver_addr, accept_invalid_certs)
-        .await
-        .map_err(|e| anyhow!(
-            "DNS lookup for _acme-challenge.{domain} failed: {e}. Check your bind9 zone / resolver and try again."
-        ))?;
-
-    let missing: Vec<&str> = txt_records
-        .iter()
-        .map(|r| r.value.as_str())
-        .filter(|v| !found.iter().any(|f| f == v))
-        .collect();
-
-    if !missing.is_empty() {
-        let expected_block = txt_records
+    //    Defense-in-depth: the frontend already gates on a successful check, but never trust it.
+    let precheck = check_txt_records(domain, txt_records, resolver_addr, accept_invalid_certs).await?;
+    if !precheck.ok {
+        let expected_block = precheck
+            .expected
             .iter()
-            .map(|r| format!("  • {}", r.value))
+            .map(|v| format!("  • {v}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let found_block = if found.is_empty() {
+        let found_block = if precheck.found.is_empty() {
             "  (none — no TXT records published at this name)".to_string()
         } else {
-            found.iter().map(|v| format!("  • {v}")).collect::<Vec<_>>().join("\n")
+            precheck.found.iter().map(|v| format!("  • {v}")).collect::<Vec<_>>().join("\n")
         };
         return Err(anyhow!(
             "TXT records for _acme-challenge.{domain} are not visible in DNS yet.\n\
@@ -217,6 +206,13 @@ pub(crate) async fn issue_order(
         .order(order_url.to_string())
         .await
         .map_err(|e| anyhow!("failed to fetch ACME order: {e}"))?;
+
+    // An order that already failed validation on a previous attempt is permanently `invalid`.
+    // Calling set_ready again would error confusingly — surface the real reason instead and tell
+    // the user to create a fresh order.
+    if order.state().status == OrderStatus::Invalid {
+        return Err(order_validation_error(&mut order, domain, OrderStatus::Invalid).await);
+    }
 
     // 3. set_ready on each dns-01 challenge.
     //    Authorizations<'_> borrows `order` mutably; drop it before calling poll_ready.
@@ -234,11 +230,18 @@ pub(crate) async fn issue_order(
         }
     } // authorizations dropped here — `order` is usable again
 
-    // 4. Poll for challenge validation.
-    order
+    // 4. Poll for challenge validation. `poll_ready` returns the terminal OrderStatus and does
+    //    NOT error when the order goes `invalid` — the CA rejected the challenge. We must inspect
+    //    the status ourselves and surface the CA's per-challenge error, otherwise the user only
+    //    sees a downstream `orderNotReady` from finalize().
+    let status = order
         .poll_ready(&RetryPolicy::default())
         .await
         .map_err(|e| anyhow!("poll_ready failed: {e}"))?;
+
+    if status != OrderStatus::Ready {
+        return Err(order_validation_error(&mut order, domain, status).await);
+    }
 
     // 5. Finalize: instant-acme generates the CSR internally and returns the private key PEM.
     let private_key_pem = order
@@ -256,6 +259,87 @@ pub(crate) async fn issue_order(
         certificate_pem,
         private_key_pem,
     })
+}
+
+/// Build a descriptive error when an order fails to reach `Ready`. Fetches each authorization
+/// and extracts the CA-provided per-challenge `error` (RFC 8555 Problem detail) so the user sees
+/// *why* the CA rejected the challenge instead of a generic `orderNotReady`.
+async fn order_validation_error(order: &mut Order, domain: &str, status: OrderStatus) -> anyhow::Error {
+    let mut reasons: Vec<String> = Vec::new();
+    let mut authorizations = order.authorizations();
+    while let Some(result) = authorizations.next().await {
+        let authz = match result {
+            Ok(a) => a,
+            Err(e) => {
+                reasons.push(format!("failed to fetch authorization: {e}"));
+                continue;
+            }
+        };
+        let ident = authz.identifier().to_string();
+        for ch in &authz.challenges {
+            if let Some(err) = &ch.error {
+                let detail = err
+                    .detail
+                    .clone()
+                    .or_else(|| err.r#type.clone())
+                    .unwrap_or_else(|| "no detail provided".into());
+                reasons.push(format!("{ident} [{:?}]: {detail}", ch.r#type));
+            }
+        }
+    }
+
+    let joined = if reasons.is_empty() {
+        "the ACME server did not provide a specific reason".to_string()
+    } else {
+        reasons.join("; ")
+    };
+
+    anyhow!(
+        "ACME server rejected validation for {domain} (order status: {status:?}).\n\
+         Reason(s): {joined}.\n\
+         The CA runs its OWN DNS lookup of the _acme-challenge TXT records — this failure means \
+         the CA's resolver could not see them (propagation delay or a cached negative answer). \
+         An order that has gone invalid cannot be revived: wait for the TXT record TTL to expire, \
+         delete this order, then create a fresh one and retry."
+    )
+}
+
+/// Outcome of a resolver-only TXT visibility check. `ok` is true when every expected
+/// record is currently published.
+pub(crate) struct DnsCheckOutcome {
+    pub ok: bool,
+    pub expected: Vec<String>,
+    pub found: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// Resolve the `_acme-challenge.<domain>` TXT records via the configured resolver and compare
+/// them to `txt_records`. Never contacts the ACME server. Returns `Err` only if the DNS lookup
+/// itself fails (network / NXDOMAIN / bad resolver address).
+pub(crate) async fn check_txt_records(
+    domain: &str,
+    txt_records: &[TxtRecord],
+    resolver_addr: &str,
+    accept_invalid_certs: bool,
+) -> Result<DnsCheckOutcome> {
+    let found = crate::dns_check::lookup_txt_values(domain, resolver_addr, accept_invalid_certs)
+        .await
+        .map_err(|e| anyhow!(
+            "DNS lookup for _acme-challenge.{domain} failed: {e}. Check your bind9 zone / resolver and try again."
+        ))?;
+    let missing = missing_txt_values(txt_records, &found);
+    let expected = txt_records.iter().map(|r| r.value.clone()).collect();
+    Ok(DnsCheckOutcome { ok: missing.is_empty(), expected, found, missing })
+}
+
+/// Returns the subset of `expected` TXT values that are NOT present among `found`,
+/// preserving the order of `expected`. Pure comparison — no network.
+pub(crate) fn missing_txt_values(expected: &[TxtRecord], found: &[String]) -> Vec<String> {
+    expected
+        .iter()
+        .map(|r| r.value.clone())
+        .filter(|v| !found.iter().any(|f| f == v))
+        .collect()
 }
 
 pub(crate) fn order_identifiers(domain: &str, include_wildcard: bool) -> Vec<String> {
@@ -281,6 +365,27 @@ mod tests {
         assert_eq!(
             order_identifiers("example.com", true),
             vec!["example.com".to_string(), "*.example.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_txt_values_reports_only_absent() {
+        let expected = vec![
+            TxtRecord { name: "_acme-challenge.example.com".into(), value: "aaa".into() },
+            TxtRecord { name: "_acme-challenge.example.com".into(), value: "bbb".into() },
+        ];
+        // Only "aaa" is published.
+        let found = vec!["aaa".to_string(), "zzz".to_string()];
+        assert_eq!(missing_txt_values(&expected, &found), vec!["bbb".to_string()]);
+
+        // All published → nothing missing.
+        let found_all = vec!["bbb".to_string(), "aaa".to_string()];
+        assert!(missing_txt_values(&expected, &found_all).is_empty());
+
+        // None published → both missing, in expected order.
+        assert_eq!(
+            missing_txt_values(&expected, &[]),
+            vec!["aaa".to_string(), "bbb".to_string()]
         );
     }
 

@@ -247,6 +247,7 @@ pub async fn create_rocket() -> Rocket<Build> {
                 get_acme_client_orders,
                 create_acme_client_order,
                 issue_acme_client_order,
+                check_acme_client_order_dns,
                 delete_acme_client_order
             ],
         )
@@ -327,6 +328,7 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 get_acme_client_orders,
                 create_acme_client_order,
                 issue_acme_client_order,
+                check_acme_client_order_dns,
                 delete_acme_client_order
             ],
         )
@@ -378,6 +380,7 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 get_acme_client_orders,
                 create_acme_client_order,
                 issue_acme_client_order,
+                check_acme_client_order_dns,
                 delete_acme_client_order
             ],
         )

@@ -5,6 +5,7 @@ import type {
     CreateOrderResponse,
     CreateProviderRequest,
     CreateOrderRequest,
+    DnsCheckResult,
 } from '@/types/AcmeClient.ts'
 
 export const fetchProviders = async (): Promise<AcmeClientProvider[]> =>
@@ -27,6 +28,9 @@ export const createOrder = async (req: CreateOrderRequest): Promise<CreateOrderR
 
 export const issueOrder = async (id: number): Promise<AcmeClientOrder> =>
     ApiClient.post<AcmeClientOrder>(`/acme-client/orders/${id}/issue`, {})
+
+export const checkDns = async (id: number): Promise<DnsCheckResult> =>
+    ApiClient.post<DnsCheckResult>(`/acme-client/orders/${id}/check-dns`, {})
 
 export const deleteOrder = async (id: number): Promise<void> =>
     ApiClient.delete<void>(`/acme-client/orders/${id}`)

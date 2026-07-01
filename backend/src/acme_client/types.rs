@@ -70,6 +70,15 @@ pub struct CreateOrderResponse {
     pub txt_records: Vec<TxtRecord>,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct DnsCheckResponse {
+    pub ok: bool,
+    pub expected: Vec<String>,
+    pub found: Vec<String>,
+    pub missing: Vec<String>,
+    pub error: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
