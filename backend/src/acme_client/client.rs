@@ -315,6 +315,16 @@ async fn order_validation_error(order: &mut Order, domain: &str, status: OrderSt
     )
 }
 
+/// Returns the subset of `expected` TXT values that are NOT present among `found`,
+/// preserving the order of `expected`. Pure comparison — no network.
+pub(crate) fn missing_txt_values(expected: &[TxtRecord], found: &[String]) -> Vec<String> {
+    expected
+        .iter()
+        .map(|r| r.value.clone())
+        .filter(|v| !found.iter().any(|f| f == v))
+        .collect()
+}
+
 pub(crate) fn order_identifiers(domain: &str, include_wildcard: bool) -> Vec<String> {
     let base = domain.trim().trim_end_matches('.').to_string();
     if include_wildcard {
@@ -338,6 +348,27 @@ mod tests {
         assert_eq!(
             order_identifiers("example.com", true),
             vec!["example.com".to_string(), "*.example.com".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_txt_values_reports_only_absent() {
+        let expected = vec![
+            TxtRecord { name: "_acme-challenge.example.com".into(), value: "aaa".into() },
+            TxtRecord { name: "_acme-challenge.example.com".into(), value: "bbb".into() },
+        ];
+        // Only "aaa" is published.
+        let found = vec!["aaa".to_string(), "zzz".to_string()];
+        assert_eq!(missing_txt_values(&expected, &found), vec!["bbb".to_string()]);
+
+        // All published → nothing missing.
+        let found_all = vec!["bbb".to_string(), "aaa".to_string()];
+        assert!(missing_txt_values(&expected, &found_all).is_empty());
+
+        // None published → both missing, in expected order.
+        assert_eq!(
+            missing_txt_values(&expected, &[]),
+            vec!["aaa".to_string(), "bbb".to_string()]
         );
     }
 
