@@ -311,13 +311,29 @@ async fn order_validation_error(order: &mut Order, domain: &str, status: OrderSt
         reasons.join("; ")
     };
 
-    anyhow!(
-        "ACME server rejected validation for {domain} (order status: {status:?}).\n\
-         Reason(s): {joined}.\n\
-         The CA runs its OWN DNS lookup of the _acme-challenge TXT records — this failure means \
+    // Pick guidance that matches the actual failure class. A CAA rejection is a DNS *policy*
+    // problem (the domain's CAA records forbid this CA), NOT a TXT propagation problem — the
+    // generic "wait for TXT TTL" advice would send the user down the wrong path.
+    let is_caa = reasons.iter().any(|r| r.to_ascii_lowercase().contains("caa"));
+
+    let guidance = if is_caa {
+        "The CA checked the domain's CAA records and they do not authorize it to issue this \
+         certificate. This is a DNS policy problem, not a propagation delay: retrying will not \
+         help until the zone is fixed. Add a CAA record authorizing this CA (for a non-wildcard \
+         cert that is an `issue` record; for a wildcard, an `issuewild` record — `issuewild`, \
+         when present, overrides `issue` for wildcards), wait for the CAA record TTL to expire, \
+         then delete this order and create a fresh one."
+    } else {
+        "The CA runs its OWN DNS lookup of the _acme-challenge TXT records — this failure means \
          the CA's resolver could not see them (propagation delay or a cached negative answer). \
          An order that has gone invalid cannot be revived: wait for the TXT record TTL to expire, \
          delete this order, then create a fresh one and retry."
+    };
+
+    anyhow!(
+        "ACME server rejected validation for {domain} (order status: {status:?}).\n\
+         Reason(s): {joined}.\n\
+         {guidance}"
     )
 }
 
