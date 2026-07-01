@@ -38,8 +38,6 @@ config:
     # "tls://1.1.1.1#one.one.one.one" (DoT), "https://cloudflare-dns.com/dns-query" (DoH).
     dnsResolver: ""
   metrics:
-    # -- Bearer token for /metrics (VAULTLS_METRICS_TOKEN). Empty = endpoint is unauthenticated.
-    token: ""
     # -- Pod annotations for Prometheus scraping (set enabled=false to omit).
     scrapeAnnotations:
       enabled: true
@@ -58,6 +56,8 @@ secrets:
   # -- Optionally pre-set account email/password (VAULTLS_ACCOUNT_EMAIL / _PASSWORD).
   accountEmail: ""
   accountPassword: ""
+  # -- Bearer token for /metrics (VAULTLS_METRICS_TOKEN). Empty = endpoint is unauthenticated.
+  metricsToken: ""
   # -- Use an existing Secret instead of generating one from the values above.
   #    The referenced Secret must contain the same keys (see templates/secret.yaml).
   existingSecret: ""

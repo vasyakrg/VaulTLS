@@ -25,7 +25,7 @@ spec:
         {{- if .Values.config.metrics.scrapeAnnotations.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
-        prometheus.io/port: {{ .Values.service.port | quote }}
+        prometheus.io/port: "80"
         {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
@@ -102,9 +102,12 @@ spec:
                   name: {{ include "vaultls.secretName" . }}
                   key: account-password
             {{- end }}
-            {{- if .Values.config.metrics.token }}
+            {{- if .Values.secrets.metricsToken }}
             - name: VAULTLS_METRICS_TOKEN
-              value: {{ .Values.config.metrics.token | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: metrics-token
             {{- end }}
           volumeMounts:
             - name: data

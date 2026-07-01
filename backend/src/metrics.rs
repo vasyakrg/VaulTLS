@@ -129,6 +129,18 @@ pub(crate) fn render_metrics(
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::http::Status;
 
+/// Length-checked constant-time byte comparison (avoids early-exit timing on the token).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Pure token gate. `configured` = trimmed env value (None or empty = open).
 fn check_metrics_token(configured: Option<&str>, auth_header: Option<&str>) -> bool {
     match configured {
@@ -136,7 +148,7 @@ fn check_metrics_token(configured: Option<&str>, auth_header: Option<&str>) -> b
         Some(t) if t.is_empty() => true,
         Some(t) => auth_header
             .and_then(|h| h.strip_prefix("Bearer "))
-            .map(|got| got == t)
+            .map(|got| constant_time_eq(got.as_bytes(), t.as_bytes()))
             .unwrap_or(false),
     }
 }
