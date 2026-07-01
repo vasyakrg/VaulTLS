@@ -310,9 +310,6 @@ pub(crate) struct DnsCheckOutcome {
     pub ok: bool,
     pub expected: Vec<String>,
     pub found: Vec<String>,
-    // Not read by `issue_order` today (it recomputes the diff for display), but part of the
-    // outcome's public shape for future consumers (e.g. a standalone DNS-check endpoint).
-    #[allow(dead_code)]
     pub missing: Vec<String>,
 }
 

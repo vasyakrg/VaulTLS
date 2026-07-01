@@ -3,7 +3,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rocket::{delete, get, post, put, State};
 use rocket::serde::json::Json;
 use rocket_okapi::openapi;
-use crate::acme_client::types::{AcmeClientOrder, AcmeClientProvider, CreateOrderRequest, CreateOrderResponse, CreateProviderRequest, UpdateProviderRequest};
+use crate::acme_client::types::{AcmeClientOrder, AcmeClientProvider, CreateOrderRequest, CreateOrderResponse, CreateProviderRequest, DnsCheckResponse, UpdateProviderRequest};
 use crate::acme_client::client;
 use crate::auth::session_auth::AuthenticatedPrivileged;
 use crate::data::error::ApiError;
@@ -173,6 +173,38 @@ pub async fn issue_acme_client_order(
         }
     }
     Ok(Json(state.db.get_acme_client_order(id).await?))
+}
+
+#[openapi(tag = "ACME Client")]
+#[post("/acme-client/orders/<id>/check-dns")]
+pub async fn check_acme_client_order_dns(
+    state: &State<AppState>,
+    _auth: AuthenticatedPrivileged,
+    id: i64,
+) -> Result<Json<DnsCheckResponse>, ApiError> {
+    let order = state.db.get_acme_client_order(id).await?;
+    let resolver_addr = state.settings.get_acme_dns_resolver();
+    let accept_invalid_certs = state.settings.get_acme_accept_invalid_certs();
+
+    // Resolver-only visibility check. Never contacts the CA and never mutates order status.
+    match client::check_txt_records(&order.domain, &order.txt_records, &resolver_addr, accept_invalid_certs).await {
+        Ok(outcome) => Ok(Json(DnsCheckResponse {
+            ok: outcome.ok,
+            expected: outcome.expected,
+            found: outcome.found,
+            missing: outcome.missing,
+            error: None,
+        })),
+        // A lookup failure is surfaced in-band (200 + error) so the UI can render the reason
+        // in the modal instead of showing a generic 500.
+        Err(e) => Ok(Json(DnsCheckResponse {
+            ok: false,
+            expected: order.txt_records.iter().map(|r| r.value.clone()).collect(),
+            found: vec![],
+            missing: order.txt_records.iter().map(|r| r.value.clone()).collect(),
+            error: Some(e.to_string()),
+        })),
+    }
 }
 
 #[openapi(tag = "ACME Client")]
