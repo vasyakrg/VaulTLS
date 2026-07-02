@@ -14,13 +14,15 @@ data:
     set -eu
 
     echo "==> backup sidecar starting"
-    echo "==> installing restic + sqlite"
-    apk add --no-cache restic sqlite tzdata >/dev/null
+    echo "==> installing restic + sqlcipher"
+    # sqlcipher CLI reads the SQLCipher-encrypted DB; sqlite provides sqlite3 for the plaintext fallback.
+    apk add --no-cache restic sqlcipher sqlite tzdata >/dev/null
 
     mkdir -p /run/backup
 
     # crond runs jobs with a minimal environment, so persist the backup env for backup.sh to source.
-    printenv | grep -E '^(S3_|AWS_|RESTIC_|KEEP_)' \
+    # VAULTLS_DB_SECRET is included so backup.sh can unlock the encrypted database.
+    printenv | grep -E '^(S3_|AWS_|RESTIC_|KEEP_|VAULTLS_DB_SECRET)' \
       | sed 's/^\([^=]*\)=\(.*\)$/export \1="\2"/' > /run/backup/backup.env
 
     mkdir -p /etc/crontabs
@@ -59,19 +61,43 @@ data:
 
     echo "==> creating consistent SQLite snapshots"
     found_db=0
-    for db in $(find "$DATA_DIR" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null); do
+    for db in $(find "$DATA_DIR" -type f \( -name '*.db' -o -name '*.db3' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null); do
       found_db=1
       rel="${db#$DATA_DIR/}"
       dest="$STAGE/$rel"
       mkdir -p "$(dirname "$dest")"
-      echo "    sqlite .backup: $rel"
-      sqlite3 "$db" ".backup '$dest'"
+      if [ -n "${VAULTLS_DB_SECRET:-}" ]; then
+        # SQLCipher-encrypted DB. The CLI .backup dot-command is rejected for encrypted DBs, so we
+        # take a consistent snapshot with sqlcipher_export() into a fresh encrypted copy (same key) —
+        # the same mechanism VaulTLS itself uses. SQL is piped via the printf builtin (not argv), so
+        # the key never appears in `ps`. .bail on makes a bad key / any error exit non-zero.
+        # cipher_compatibility=4 pins SQLCipher 4 defaults (rusqlite bundles v4), independent of how
+        # the alpine sqlcipher package was compiled, so the snapshot restores cleanly into VaulTLS.
+        # Escape single quotes for the SQL string literals.
+        echo "    sqlcipher_export: $rel"
+        esc_key=$(printf '%s' "$VAULTLS_DB_SECRET" | sed "s/'/''/g")
+        # sqlcipher_export() does NOT carry over PRAGMA user_version (it lives in the DB header, not a
+        # table), so we read it from the source and re-apply it to the snapshot — otherwise VaulTLS'
+        # migration runner sees version 0 and re-runs every migration on an already-migrated schema
+        # ("duplicate column name"). This mirrors what VaulTLS itself does in db.rs after export.
+        db_uv=$(printf ".bail on\nPRAGMA key = '%s';\nPRAGMA cipher_compatibility = 4;\nPRAGMA user_version;\n" "$esc_key" | sqlcipher "$db" | tr -cd '0-9')
+        db_uv="${db_uv:-0}"
+        # cipher_compatibility=4 reads the existing (v4) main DB; cipher_default_compatibility=4 must be
+        # set BEFORE ATTACH so the new snapshot is also written in v4 format — a schema-prefixed
+        # "PRAGMA bk.cipher_compatibility" does not affect a freshly attached DB and would produce a
+        # snapshot in the alpine build's default format that VaulTLS' bundled SQLCipher cannot decrypt.
+        printf ".bail on\nPRAGMA key = '%s';\nPRAGMA cipher_compatibility = 4;\nPRAGMA cipher_default_compatibility = 4;\nATTACH DATABASE '%s' AS bk KEY '%s';\nSELECT sqlcipher_export('bk');\nPRAGMA bk.user_version = %s;\nDETACH DATABASE bk;\n" "$esc_key" "$dest" "$esc_key" "$db_uv" | sqlcipher "$db"
+      else
+        echo "    sqlite .backup: $rel"
+        sqlite3 "$db" ".backup '$dest'"
+      fi
     done
     [ "$found_db" -eq 0 ] && echo "    no SQLite database found, archiving files only"
 
     echo "==> staging remaining files (certs, keys, crl, ...)"
     tar -C "$DATA_DIR" \
       --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='*.db-journal' \
+      --exclude='*.db3' --exclude='*.db3-wal' --exclude='*.db3-shm' --exclude='*.db3-journal' \
       --exclude='*.sqlite' --exclude='*.sqlite3' \
       -cf - . | tar -C "$STAGE" -xf -
 

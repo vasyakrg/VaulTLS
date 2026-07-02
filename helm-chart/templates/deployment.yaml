@@ -158,6 +158,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "vaultls.backupSecretName" . }}
                   key: restic-password
+            {{- /* SQLCipher key: lets backup.sh take a consistent .backup snapshot
+                   of the encrypted DB instead of copying the raw (possibly torn) file. */}}
+            {{- if .Values.secrets.dbSecret }}
+            - name: VAULTLS_DB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls.secretName" . }}
+                  key: db-secret
+            {{- end }}
             - name: KEEP_DAILY
               value: {{ .Values.backup.restic.keepDaily | quote }}
             - name: KEEP_WEEKLY

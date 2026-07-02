@@ -68,6 +68,7 @@
   "overview": {
     "title": "Certificados",
     "hideAcmeCerts": "Ocultar certificados ACME",
+    "noCa": "Sin CA",
     "colUser": "Usuario",
     "colRenewMethod": "Método de renovación",
     "revoke": "Revocar",

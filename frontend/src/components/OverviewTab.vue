@@ -57,6 +57,15 @@
               showClear
               class="vt-type-filter"
             />
+            <Select
+              v-model="caFilter"
+              :options="caFilterOptions"
+              optionLabel="label"
+              optionValue="value"
+              :placeholder="$t('common.colCaName')"
+              showClear
+              class="vt-type-filter"
+            />
             <label class="vt-checkbox-label">
               <input
                 v-model="hideAcmeCerts"
@@ -448,15 +457,30 @@ const showImport = ref(false)
 const hideAcmeCerts = ref(localStorage.getItem('hideAcmeCerts') === 'true')
 watch(hideAcmeCerts, (val) => localStorage.setItem('hideAcmeCerts', String(val)))
 const typeFilter = ref<CertificateType | null>(null)
+const caFilter = ref<string | null>(null)
 
 const filters = ref({ global: { value: null, matchMode: FilterMatchMode.CONTAINS } })
+
+// A certificate is ACME-issued either when VaulTLS acted as the ACME CA (OU stamped
+// 'ACME') or when it was obtained from a public ACME provider / Let's Encrypt
+// (acme_provider_id set).
+const isAcmeCert = (cert: Certificate): boolean =>
+  cert.name.ou === 'ACME' || cert.acme_provider_id != null
+
+// Stable key identifying the issuer of a certificate (internal CA vs ACME provider).
+const caKey = (cert: Certificate): string => {
+  if (cert.acme_provider_id != null) return `acme:${cert.acme_provider_id}`
+  if (cert.ca_id != null) return `ca:${cert.ca_id}`
+  return 'none'
+}
 
 // computed
 const certificates = computed(() => certificateStore.certificates)
 const filteredActiveCertificates = computed(() => {
   let all = Array.from(certificates.value.values()).filter((cert) => !cert.revoked_at)
-  if (hideAcmeCerts.value) all = all.filter((cert) => cert.name.ou != 'ACME')
+  if (hideAcmeCerts.value) all = all.filter((cert) => !isAcmeCert(cert))
   if (typeFilter.value !== null) all = all.filter((cert) => cert.certificate_type === typeFilter.value)
+  if (caFilter.value !== null) all = all.filter((cert) => caKey(cert) === caFilter.value)
   return all
 })
 const revokedCertificates = computed(() =>
@@ -531,6 +555,18 @@ const certTypeOptions = computed(() => [
 ])
 
 const typeFilterOptions = computed(() => certTypeOptions.value)
+
+// Distinct issuers present among the currently loaded certificates, for the CA filter.
+const caFilterOptions = computed(() => {
+  const seen = new Map<string, string>()
+  for (const cert of certificates.value.values()) {
+    const key = caKey(cert)
+    if (!seen.has(key)) seen.set(key, caName(cert) || t('overview.noCa'))
+  }
+  return Array.from(seen, ([value, label]) => ({ value, label })).sort((a, b) =>
+    a.label.localeCompare(b.label),
+  )
+})
 
 const userOptions = computed(() =>
   userStore.users.map((u: { id: number; name: string }) => ({ label: u.name, value: u.id })),

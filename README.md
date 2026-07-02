@@ -18,7 +18,8 @@ I also did not have an overview about the expiration of individual certificates.
 - 📨 Email notifications for certificate expiration
 - 🚀 RESTful API for automation
 - 📦 Certbot-style agent (`vaultls-agent`) that auto-distributes certificates to Debian hosts ([details](api-client/README.md))
-- 🤖 ACME CA support (Traefik, acme.sh, and other ACME clients)
+- 🤖 ACME server — VaulTLS acts as a CA for Traefik, acme.sh, Caddy, cert-manager and other ACME clients
+- 🌐 ACME client — obtain **public** certificates from Let's Encrypt & compatible CAs via dns-01, with certbot-style renewal
 - 🛠 Docker/Podman container support
 - ☸️ Kubernetes deployment via Helm chart with optional S3 backup (restic)
 - ⚡ Built with Rust (backend) and Vue.js (frontend) for performance and reliability
@@ -190,11 +191,28 @@ abort @blocked
 
 ### ACME
 
-VaulTLS can act as an ACME Certificate Authority, allowing clients like Traefik and acme.sh to automatically obtain certificates signed by your VaulTLS CA.
+VaulTLS speaks ACME (RFC 8555) in **both** directions, as two independent subsystems:
 
-Enable it with `VAULTLS_ACME_ENABLED=true` and create an account in the ACME tab of the admin UI to get EAB credentials.
+**ACME server (VaulTLS as a CA).** Clients like Traefik, acme.sh, Caddy and cert-manager
+can automatically obtain certificates signed by your VaulTLS CA. Enable it with
+`VAULTLS_ACME_ENABLED=true` and create an account in the **ACME** tab of the admin UI to
+get EAB credentials. Supports http-01 and dns-01 (including wildcards), per-account
+allowed-domain patterns, order rate limiting and a configurable validation resolver
+(`VAULTLS_ACME_DNS_RESOLVER`).
 
-See the [ACME documentation](docs/acme.md) for full setup instructions including Traefik and acme.sh examples.
+See the [ACME server documentation](docs/acme.md) for full setup instructions including
+Traefik and acme.sh examples.
+
+**ACME client (VaulTLS obtaining public certificates).** From the **Let's Encrypt** tab
+VaulTLS can obtain **public** TLS certificates from Let's Encrypt and any compatible CA
+(ZeroSSL, BuyPass via EAB) using the dns-01 challenge. Since DNS is not automated, issuance
+is a two-phase flow (publish the shown `_acme-challenge` TXT records → **Check DNS** →
+**Start issuance**); wildcards are supported. Issued certificates land in **Overview** for
+download, and renewal is certbot-style (new key, 30-day window, opt-in per certificate,
+in-place update).
+
+See the [ACME client documentation](docs/acme-client.md) for the full workflow, providers,
+renewal and troubleshooting.
 
 ## Certificate Agent (`vaultls-agent`)
 

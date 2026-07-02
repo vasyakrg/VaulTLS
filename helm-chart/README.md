@@ -66,6 +66,7 @@ kubectl -n vaultls run restic-restore --rm -it --restart=Never \
 apk add --no-cache restic
 export AWS_ACCESS_KEY_ID=<key>
 export AWS_SECRET_ACCESS_KEY=<secret>
+export AWS_DEFAULT_REGION=ru-nsk-1
 export RESTIC_PASSWORD=<restic password>
 export RESTIC_REPOSITORY="s3:https://s3.example.com/backups/vaultls"
 

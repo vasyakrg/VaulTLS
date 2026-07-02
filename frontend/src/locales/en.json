@@ -68,6 +68,7 @@
   "overview": {
     "title": "Certificates",
     "hideAcmeCerts": "Hide ACME certificates",
+    "noCa": "No CA",
     "colUser": "User",
     "colRenewMethod": "Renew Method",
     "revoke": "Revoke",
