@@ -24,7 +24,7 @@ spec:
         {{- end }}
         {{- if .Values.config.metrics.scrapeAnnotations.enabled }}
         prometheus.io/scrape: "true"
-        prometheus.io/path: "/metrics"
+        prometheus.io/path: "/api/metrics"
         prometheus.io/port: "80"
         {{- end }}
     spec:
@@ -60,6 +60,8 @@ spec:
               value: {{ .Values.config.insecure | quote }}
             - name: VAULTLS_LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: VAULTLS_PASSWORD_ENABLED
+              value: {{ .Values.config.passwordEnabled | quote }}
             {{- if .Values.secrets.dbSecret }}
             - name: VAULTLS_DB_SECRET
               valueFrom:

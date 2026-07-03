@@ -297,7 +297,7 @@ mod tests {
         // No VAULTLS_METRICS_TOKEN set in test → open endpoint.
         let rocket = crate::create_test_rocket().await;
         let client = rocket::local::asynchronous::Client::tracked(rocket).await.unwrap();
-        let resp = client.get("/metrics").dispatch().await;
+        let resp = client.get("/api/metrics").dispatch().await;
         assert_eq!(resp.status(), rocket::http::Status::Ok);
         let body = resp.into_string().await.unwrap();
         assert!(body.contains("vaultls_build_info"));

@@ -1,6 +1,6 @@
 # Observability
 
-VaulTLS exposes a Prometheus-compatible metrics endpoint at `GET /metrics`. This guide covers the metric reference, a scrape configuration, alert rules, and an Alertmanager routing example.
+VaulTLS exposes a Prometheus-compatible metrics endpoint at `GET /api/metrics`. This guide covers the metric reference, a scrape configuration, alert rules, and an Alertmanager routing example.
 
 ## Metrics reference
 
@@ -26,7 +26,7 @@ Label value conventions:
 ```yaml
 scrape_configs:
   - job_name: vaultls
-    metrics_path: /metrics
+    metrics_path: /api/metrics
     scheme: http
     # Only if VAULTLS_METRICS_TOKEN is set:
     authorization:
@@ -98,4 +98,4 @@ receivers:
 
 ## Security note
 
-If `VAULTLS_METRICS_TOKEN` is unset, `/metrics` is unauthenticated. Restrict access with a NetworkPolicy or firewall rule limiting who can reach the endpoint, or set `VAULTLS_METRICS_TOKEN` to require a bearer token on every scrape.
+If `VAULTLS_METRICS_TOKEN` is unset, `/api/metrics` is unauthenticated. Restrict access with a NetworkPolicy or firewall rule limiting who can reach the endpoint, or set `VAULTLS_METRICS_TOKEN` to require a bearer token on every scrape.

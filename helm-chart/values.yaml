@@ -22,6 +22,10 @@ config:
   insecure: false
   # -- Log level: error | warn | info | debug | trace.
   logLevel: "info"
+  # -- Enable username/password login (VAULTLS_PASSWORD_ENABLED). When false only OIDC is
+  # available. Set true to allow the local admin to sign in with a password. Combine with a
+  # one-shot reset (secrets.accountEmail + secrets.accountPassword) to (re)set that password.
+  passwordEnabled: false
   # OIDC (optional). Leave urls empty to disable.
   oidc:
     authUrl: ""
@@ -56,7 +60,7 @@ secrets:
   # -- Optionally pre-set account email/password (VAULTLS_ACCOUNT_EMAIL / _PASSWORD).
   accountEmail: ""
   accountPassword: ""
-  # -- Bearer token for /metrics (VAULTLS_METRICS_TOKEN). Empty = endpoint is unauthenticated.
+  # -- Bearer token for /api/metrics (VAULTLS_METRICS_TOKEN). Empty = endpoint is unauthenticated.
   metricsToken: ""
   # -- Use an existing Secret instead of generating one from the values above.
   #    The referenced Secret must contain the same keys (see templates/secret.yaml).
