@@ -92,6 +92,7 @@ pub(crate) async fn setup(
         password_hash,
         oidc_id: None,
         role: UserRole::Admin,
+        is_local: false,
     };
 
     state.db.insert_user(user).await?;
@@ -332,7 +333,8 @@ pub(crate) async fn get_current_user(
     state: &State<AppState>,
     authentication: Authenticated
 ) -> Result<Json<User>, ApiError> {
-    let user = state.db.get_user(authentication.claims.id).await?;
+    let mut user = state.db.get_user(authentication.claims.id).await?;
+    user.is_local = authentication.claims.is_local;
     Ok(Json(user))
 }
 
@@ -1403,7 +1405,8 @@ pub(crate) async fn create_user(
         email: payload.user_email.to_string(),
         password_hash,
         oidc_id: None,
-        role: payload.role
+        role: payload.role,
+        is_local: false,
     };
 
     user = state.db.insert_user(user).await?;

@@ -140,3 +140,11 @@ async fn ca_ops_require_local_admin() -> Result<()> {
     assert_eq!(resp.status(), Status::Forbidden);
     Ok(())
 }
+
+#[tokio::test]
+async fn me_reports_is_local_for_password_login() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // логин паролем
+    let body = client.get("/auth/me").dispatch().await.into_string().await.unwrap();
+    assert!(body.contains("\"is_local\":true"));
+    Ok(())
+}

@@ -475,6 +475,7 @@ impl VaulTLSDB {
                         password_hash: row.get(3).ok(),
                         oidc_id: row.get(4).ok(),
                         role: UserRole::try_from(role_number).unwrap(),
+                        is_local: false,
                     })
                 }
             )?)
@@ -496,6 +497,7 @@ impl VaulTLSDB {
                         password_hash: row.get(3).ok(),
                         oidc_id: row.get(4).ok(),
                         role: UserRole::try_from(role_number).map_err(|_| rusqlite::Error::QueryReturnedNoRows)?,
+                        is_local: false,
                     })
                 }
             )?)
@@ -514,7 +516,8 @@ impl VaulTLSDB {
                         email: row.get(2)?,
                         password_hash: None,
                         oidc_id: None,
-                        role: row.get(3)?
+                        role: row.get(3)?,
+                        is_local: false,
                     })
                 })
                 .collect()?)
@@ -1577,6 +1580,7 @@ mod tests {
             password_hash: None,
             oidc_id: None,
             role: UserRole::Admin,
+            is_local: false,
         }).await.unwrap();
         let provider = db.insert_acme_client_provider(
             "le".into(), "https://example/dir".into(), "a@b.c".into(), None, None,
@@ -1622,6 +1626,7 @@ mod tests {
             password_hash: None,
             oidc_id: None,
             role: UserRole::Admin,
+            is_local: false,
         }).await.unwrap();
         // provider seed id=1 exists from migration 13
         let id = db.insert_acme_client_certificate(
@@ -1655,6 +1660,7 @@ mod tests {
             password_hash: None,
             oidc_id: None,
             role: UserRole::Admin,
+            is_local: false,
         }).await.unwrap();
         // provider seed id=1 exists from migration 13 (Let's Encrypt prod)
         let cert_id = db.insert_acme_client_certificate(
@@ -1688,7 +1694,7 @@ mod tests {
     #[tokio::test]
     async fn group_crud_and_membership() {
         let db = mem_db().await;
-        let admin = db.insert_user(User { id: -1, name: "a".into(), email: "a@b.c".into(), password_hash: None, oidc_id: None, role: UserRole::Admin }).await.unwrap();
+        let admin = db.insert_user(User { id: -1, name: "a".into(), email: "a@b.c".into(), password_hash: None, oidc_id: None, role: UserRole::Admin, is_local: false }).await.unwrap();
 
         let g = db.insert_group("A".into(), Some("desc".into()), 100).await.unwrap();
         assert!(g.id > 0);
@@ -1728,8 +1734,8 @@ mod tests {
             is_imported: false,
         }).await.unwrap();
 
-        let owner = db.insert_user(User { id: -1, name: "o".into(), email: "o@x.c".into(), password_hash: None, oidc_id: None, role: UserRole::User }).await.unwrap();
-        let viewer = db.insert_user(User { id: -1, name: "v".into(), email: "v@x.c".into(), password_hash: None, oidc_id: None, role: UserRole::User }).await.unwrap();
+        let owner = db.insert_user(User { id: -1, name: "o".into(), email: "o@x.c".into(), password_hash: None, oidc_id: None, role: UserRole::User, is_local: false }).await.unwrap();
+        let viewer = db.insert_user(User { id: -1, name: "v".into(), email: "v@x.c".into(), password_hash: None, oidc_id: None, role: UserRole::User, is_local: false }).await.unwrap();
 
         let cert = db.insert_user_cert(Certificate {
             id: -1,

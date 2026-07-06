@@ -31,7 +31,10 @@ pub struct User {
     pub password_hash: Option<Password>,
     #[serde(skip)]
     pub oidc_id: Option<String>,
-    pub role: UserRole
+    pub role: UserRole,
+    #[serde(default, skip_deserializing)]
+    #[schemars(skip)]
+    pub is_local: bool,
 }
 
 impl fmt::Debug for User {
