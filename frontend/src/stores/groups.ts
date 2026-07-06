@@ -22,22 +22,56 @@ export const useGroupStore = defineStore('group', {
             }
         },
         async fetchGroup(id: number): Promise<GroupDetail | null> {
+            this.loading = true; this.error = null;
             try { return await fetchGroup(id); }
-            catch (err) { console.error(err); return null; }
+            catch (err) {
+                this.error = axios.isAxiosError(err) ? 'Failed to fetch the group: ' + err.response?.data?.error : 'Failed to fetch the group';
+                console.error(err);
+                return null;
+            }
+            finally { this.loading = false; }
         },
         async createGroup(req: GroupRequest): Promise<void> {
+            this.loading = true; this.error = null;
             try { await createGroup(req); this.groups = await fetchGroups(); }
             catch (err) { this.error = axios.isAxiosError(err) ? 'Failed to create group: ' + err.response?.data?.error : 'Failed to create group'; console.error(err); }
+            finally { this.loading = false; }
         },
         async updateGroup(id: number, req: GroupRequest): Promise<void> {
+            this.loading = true; this.error = null;
             try { await updateGroup(id, req); this.groups = await fetchGroups(); }
-            catch (err) { console.error(err); }
+            catch (err) {
+                this.error = axios.isAxiosError(err) ? 'Failed to update the group: ' + err.response?.data?.error : 'Failed to update the group';
+                console.error(err);
+            }
+            finally { this.loading = false; }
         },
         async deleteGroup(id: number): Promise<void> {
+            this.loading = true; this.error = null;
             try { await deleteGroup(id); this.groups = await fetchGroups(); }
-            catch (err) { console.error(err); }
+            catch (err) {
+                this.error = axios.isAxiosError(err) ? 'Failed to delete the group: ' + err.response?.data?.error : 'Failed to delete the group';
+                console.error(err);
+            }
+            finally { this.loading = false; }
         },
-        async setGroupUsers(id: number, ids: number[]): Promise<void> { await setGroupUsers(id, ids); },
-        async setGroupCertificates(id: number, ids: number[]): Promise<void> { await setGroupCertificates(id, ids); },
+        async setGroupUsers(id: number, ids: number[]): Promise<void> {
+            this.loading = true; this.error = null;
+            try { await setGroupUsers(id, ids); }
+            catch (err) {
+                this.error = axios.isAxiosError(err) ? 'Failed to update the group users: ' + err.response?.data?.error : 'Failed to update the group users';
+                console.error(err);
+            }
+            finally { this.loading = false; }
+        },
+        async setGroupCertificates(id: number, ids: number[]): Promise<void> {
+            this.loading = true; this.error = null;
+            try { await setGroupCertificates(id, ids); }
+            catch (err) {
+                this.error = axios.isAxiosError(err) ? 'Failed to update the group certificates: ' + err.response?.data?.error : 'Failed to update the group certificates';
+                console.error(err);
+            }
+            finally { this.loading = false; }
+        },
     },
 });
