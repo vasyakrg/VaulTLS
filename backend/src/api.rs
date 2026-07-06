@@ -346,11 +346,11 @@ pub(crate) async fn get_certificates(
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
     }
-    let user_id = match authentication.claims.role {
-        UserRole::User => Some(authentication.claims.id),
-        UserRole::Admin => None
+    let certificates = if authentication.claims.is_local_admin() {
+        state.db.get_user_certs(None, None, None).await?
+    } else {
+        state.db.get_visible_certs(authentication.claims.id).await?
     };
-    let certificates = state.db.get_user_certs(user_id, None, None).await?;
     Ok(Json(certificates))
 }
 

@@ -31,3 +31,19 @@ async fn plain_user_cannot_manage_groups() -> Result<()> {
     assert_eq!(resp.status(), Status::Forbidden);
     Ok(())
 }
+
+#[tokio::test]
+async fn user_sees_only_owned_and_group_certs() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;      // local admin id=1
+    client.create_user().await?;                                // создаёт user id=2 (role=User)
+    // серт владельца id=2, выпущен админом
+    let cert = client.create_client_cert(Some(2), Some("pw".into()), None).await?;
+
+    client.switch_user().await?;                                // теперь под user id=2
+    // user id=2 — владелец, видит свой серт
+    let resp = client.get("/certificates").dispatch().await;
+    let body = resp.into_string().await.unwrap();
+    assert!(body.contains(&cert.id.to_string()));
+
+    Ok(())
+}
