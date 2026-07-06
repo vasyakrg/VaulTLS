@@ -127,6 +127,26 @@ impl<'r> FromRequest<'r> for AuthenticatedPrivileged {
 
 impl_openapi_auth!(AuthenticatedPrivileged, "UserRole::Admin");
 
+pub struct AuthenticatedLocalAdmin {
+    pub _claims: Claims,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AuthenticatedLocalAdmin {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let Some(claims) = authenticate_auth_token(request) else { return Outcome::Error((Status::Unauthorized, ())) };
+        if claims.is_local_admin() {
+            Outcome::Success(AuthenticatedLocalAdmin { _claims: claims })
+        } else {
+            Outcome::Error((Status::Forbidden, ()))
+        }
+    }
+}
+
+impl_openapi_auth!(AuthenticatedLocalAdmin, "local UserRole::Admin");
+
 pub(crate) fn authenticate_auth_token(request: &Request<'_>) -> Option<Claims> {
     // Prefer an explicit Authorization: Bearer header (service tokens) over the private
     // cookie (human sessions). A non-Bearer Authorization header is ignored and we fall
