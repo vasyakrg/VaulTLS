@@ -1,6 +1,6 @@
 use crate::constants::{DB_FILE_PATH, TEMP_DB_FILE_PATH};
 use crate::data::enums::{CAType, CertificateRenewMethod, UserRole};
-use crate::data::objects::{ServiceAccount, User};
+use crate::data::objects::{Group, GroupDetail, ServiceAccount, User};
 use crate::helper::get_secret;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -1314,6 +1314,82 @@ impl VaulTLSDB {
             }
         })
     }
+
+    pub(crate) async fn insert_group(&self, name: String, description: Option<String>, created_on: i64) -> Result<Group> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO groups (name, description, created_on) VALUES (?1, ?2, ?3)",
+                params![name, description, created_on],
+            )?;
+            let id = conn.last_insert_rowid();
+            Ok(Group { id, name, description, created_on })
+        })
+    }
+
+    pub(crate) async fn get_all_groups(&self) -> Result<Vec<Group>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare("SELECT id, name, description, created_on FROM groups ORDER BY name")?;
+            let rows = stmt.query_map([], |r| Ok(Group {
+                id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, created_on: r.get(3)?,
+            }))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub(crate) async fn get_group_detail(&self, id: i64) -> Result<GroupDetail> {
+        db_do!(self.pool, |conn: &Connection| {
+            let group = conn.query_row(
+                "SELECT id, name, description, created_on FROM groups WHERE id = ?1",
+                params![id],
+                |r| Ok(Group { id: r.get(0)?, name: r.get(1)?, description: r.get(2)?, created_on: r.get(3)? }),
+            )?;
+            let mut us = conn.prepare("SELECT user_id FROM group_users WHERE group_id = ?1")?;
+            let user_ids = us.query_map(params![id], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut cs = conn.prepare("SELECT certificate_id FROM group_certificates WHERE group_id = ?1")?;
+            let certificate_ids = cs.query_map(params![id], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(GroupDetail { group, user_ids, certificate_ids })
+        })
+    }
+
+    pub(crate) async fn update_group(&self, id: i64, name: String, description: Option<String>) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("UPDATE groups SET name = ?1, description = ?2 WHERE id = ?3", params![name, description, id])?;
+            Ok(())
+        })
+    }
+
+    pub(crate) async fn delete_group(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM groups WHERE id = ?1", params![id])?;
+            Ok(())
+        })
+    }
+
+    pub(crate) async fn set_group_users(&self, id: i64, user_ids: &[i64]) -> Result<()> {
+        let user_ids = user_ids.to_vec();
+        db_do!(self.pool, move |conn: &Connection| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("DELETE FROM group_users WHERE group_id = ?1", params![id])?;
+            for uid in &user_ids {
+                tx.execute("INSERT INTO group_users (group_id, user_id) VALUES (?1, ?2)", params![id, uid])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub(crate) async fn set_group_certs(&self, id: i64, cert_ids: &[i64]) -> Result<()> {
+        let cert_ids = cert_ids.to_vec();
+        db_do!(self.pool, move |conn: &Connection| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("DELETE FROM group_certificates WHERE group_id = ?1", params![id])?;
+            for cid in &cert_ids {
+                tx.execute("INSERT INTO group_certificates (group_id, certificate_id) VALUES (?1, ?2)", params![id, cid])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
 }
 
 fn acme_client_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientProvider> {
@@ -1575,6 +1651,29 @@ mod tests {
         // прямой доступ к пулу недоступен извне — проверяем через существующий метод:
         // миграция применяется в new_in_memory(); успешная сборка БД = миграция ок
         let _ = db.get_all_user().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn group_crud_and_membership() {
+        let db = mem_db().await;
+        let admin = db.insert_user(User { id: -1, name: "a".into(), email: "a@b.c".into(), password_hash: None, oidc_id: None, role: UserRole::Admin }).await.unwrap();
+
+        let g = db.insert_group("A".into(), Some("desc".into()), 100).await.unwrap();
+        assert!(g.id > 0);
+        assert_eq!(db.get_all_groups().await.unwrap().len(), 1);
+
+        db.update_group(g.id, "A2".into(), None).await.unwrap();
+        let d = db.get_group_detail(g.id).await.unwrap();
+        assert_eq!(d.group.name, "A2");
+        assert_eq!(d.group.description, None);
+
+        db.set_group_users(g.id, &[admin.id]).await.unwrap();
+        db.set_group_users(g.id, &[admin.id]).await.unwrap(); // replace-семантика, без дублей
+        let d = db.get_group_detail(g.id).await.unwrap();
+        assert_eq!(d.user_ids, vec![admin.id]);
+
+        db.delete_group(g.id).await.unwrap();
+        assert_eq!(db.get_all_groups().await.unwrap().len(), 0);
     }
 }
 

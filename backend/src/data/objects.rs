@@ -110,3 +110,19 @@ pub struct ServiceAccount {
     pub last_used_at: Option<i64>,
     pub revoked: bool,
 }
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, Debug)]
+pub struct Group {
+    pub id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_on: i64,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, Debug)]
+pub struct GroupDetail {
+    #[serde(flatten)]
+    pub group: Group,
+    pub user_ids: Vec<i64>,
+    pub certificate_ids: Vec<i64>,
+}
