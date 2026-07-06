@@ -8,7 +8,8 @@ export interface User {
     name: string,
     email: string,
     has_password: boolean,
-    role: UserRole
+    role: UserRole,
+    is_local?: boolean
 }
 
 export interface CreateUserRequest {
