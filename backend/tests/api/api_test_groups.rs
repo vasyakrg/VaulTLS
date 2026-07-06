@@ -75,3 +75,12 @@ async fn group_visibility_does_not_grant_download() -> Result<()> {
     assert_eq!(resp.status(), Status::Forbidden);
     Ok(())
 }
+
+#[tokio::test]
+async fn plain_user_can_issue_own_cert() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated_unprivileged().await; // user id=2
+    // пытается выписать серт на чужой user_id=1 — должен принудительно стать своим (id=2)
+    let cert = client.create_client_cert(Some(1), Some("pw".into()), None).await?;
+    assert_eq!(cert.user_id, 2);
+    Ok(())
+}

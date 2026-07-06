@@ -511,13 +511,19 @@ impl<'r> rocket_okapi::JsonSchema for ImportCertForm<'r> {
 
 #[openapi(tag = "Certificates")]
 #[post("/certificates/import", data = "<form>")]
-/// Import a pre-issued leaf certificate; auto-imports its CA from the chain. Requires admin role.
+/// Import a pre-issued leaf certificate; auto-imports its CA from the chain.
 pub(crate) async fn import_certificate(
     state: &State<AppState>,
-    form: rocket::form::Form<ImportCertForm<'_>>,
-    _authentication: AuthenticatedPrivileged,
+    mut form: rocket::form::Form<ImportCertForm<'_>>,
+    authentication: Authenticated,
 ) -> Result<Json<Certificate>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key, parse_pkcs12, parse_pem_bundle, find_issuing_ca, verify_signed_by};
+
+    // Owner of the imported cert: local admins (and services, if ever routed here) may
+    // target any owner; everyone else is forced to import for themselves.
+    if !authentication.claims.is_local_admin() && !authentication.claims.is_service() {
+        form.user_id = authentication.claims.id;
+    }
 
     // 1) Obtain leaf, key, chain and the raw bytes to store.
     let (leaf, chain, stored): (openssl::x509::X509, Vec<openssl::x509::X509>, CertData) =
@@ -675,7 +681,8 @@ pub(crate) async fn import_certificate(
 
 #[openapi(tag = "Certificates")]
 #[post("/certificates", format = "json", data = "<payload>")]
-/// Create a new certificate. Requires admin role.
+/// Create a new certificate. Any authenticated user may issue one for themselves;
+/// local admins may target any owner.
 pub(crate) async fn create_user_certificate(
     state: &State<AppState>,
     payload: Json<CreateUserCertificateRequest>,
@@ -683,15 +690,18 @@ pub(crate) async fn create_user_certificate(
 ) -> Result<Json<Certificate>, ApiError> {
     let mut payload = payload.into_inner();
 
-    // Authorization: human Admin, or service with cert:issue (bound to its owner).
+    // Authorization: any authenticated human may issue a cert; local admins may target
+    // any owner, everyone else (including non-local-admin humans) is forced to self.
+    // Services need cert:issue and are always bound to their own owner.
     if authentication.claims.is_service() {
         if !authentication.claims.has_scope("cert:issue") {
             return Err(ApiError::Forbidden(None));
         }
-        payload.user_id = authentication.claims.id; // force owner; never issue for another user
-    } else if authentication.claims.role != UserRole::Admin {
-        return Err(ApiError::Forbidden(None));
+        payload.user_id = authentication.claims.id; // service — только под своим владельцем
+    } else if !authentication.claims.is_local_admin() {
+        payload.user_id = authentication.claims.id; // не-локальный-админ (user/OIDC-admin) — только себе
     }
+    // local admin: payload.user_id остаётся как задан (любой владелец)
 
     debug!(cert_name=?payload.cert_name, "Creating certificate");
     trace!("{:?}", payload);
