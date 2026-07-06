@@ -112,6 +112,7 @@
           <div class="vt-row-actions">
             <Button
               :id="'DownloadButton-' + data.id"
+              v-if="canDownload(data)"
               icon="pi pi-download"
               severity="secondary"
               outlined
@@ -122,7 +123,7 @@
             />
             <Button
               :id="'DownloadPemButton-' + data.id"
-              v-if="data.certificate_type === CertificateType.TLSClient || data.certificate_type === CertificateType.TLSServer"
+              v-if="canDownload(data) && (data.certificate_type === CertificateType.TLSClient || data.certificate_type === CertificateType.TLSServer)"
               icon="pi pi-file-export"
               severity="secondary"
               outlined
@@ -490,6 +491,17 @@ const settings = computed(() => settingStore.settings)
 const loading = computed(() => certificateStore.loading)
 const error = computed(() => certificateStore.error)
 const hasAnyOU = computed(() => Array.from(certificates.value.values()).some((cert) => cert.name.ou))
+
+// Whether the current user may download the private key material (pkcs12/PEM)
+// for a certificate. Mirrors the backend's download-authorization matrix (Task 8):
+// local admins and owners always may; OIDC admins may (backend enforces exact
+// group membership); plain users may only download certs they own — certs they
+// can merely see via a shared group must hide the secret-access controls.
+const canDownload = (cert: Certificate): boolean => {
+  if (authStore.isLocalAdmin) return true
+  if (cert.user_id === authStore.current_user?.id) return true
+  return authStore.isAdmin
+}
 
 const caName = (cert: Certificate): string => {
   if (cert.acme_provider_id != null) {
