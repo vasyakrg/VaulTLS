@@ -326,6 +326,38 @@ impl VaulTLSDB {
         })
     }
 
+    /// Retrieve certificates visible to a user: those they own, plus those reachable
+    /// via a group they and the certificate both belong to.
+    pub(crate) async fn get_visible_certs(&self, user_id: i64) -> Result<Vec<Certificate>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT c.id, c.name, c.created_on, c.valid_until, c.data, c.password, c.user_id, c.type, c.renew_method, c.ca_id, c.revoked_at, c.acme_provider_id \
+                 FROM user_certificates c \
+                 WHERE c.user_id = ?1 \
+                    OR c.id IN ( \
+                       SELECT gc.certificate_id FROM group_certificates gc \
+                       JOIN group_users gu ON gu.group_id = gc.group_id \
+                       WHERE gu.user_id = ?1)"
+            )?;
+            let rows = stmt.query(params![user_id])?;
+            Ok(rows.mapped(Certificate::from_row).collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// True if the user shares a group with the given certificate.
+    pub(crate) async fn user_shares_group_with_cert(&self, user_id: i64, cert_id: i64) -> Result<bool> {
+        db_do!(self.pool, |conn: &Connection| {
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM group_certificates gc \
+                 JOIN group_users gu ON gu.group_id = gc.group_id \
+                 WHERE gc.certificate_id = ?1 AND gu.user_id = ?2",
+                params![cert_id, user_id],
+                |r| r.get(0),
+            )?;
+            Ok(n > 0)
+        })
+    }
+
     /// Retrieve the certificate's cert data with id from the database
     /// Returns the id of the user the certificate belongs to and the cert data
     pub(crate) async fn get_user_cert_by_id(&self, id: i64) -> Result<Certificate> {
@@ -1674,6 +1706,58 @@ mod tests {
 
         db.delete_group(g.id).await.unwrap();
         assert_eq!(db.get_all_groups().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn visibility_owner_and_group() {
+        use crate::certs::common::CA;
+        use crate::data::enums::{CAType, CertData, CertificateRenewMethod, CertificateType};
+        use crate::data::objects::Name;
+
+        let db = mem_db().await;
+
+        let ca = db.insert_ca(CA {
+            id: -1,
+            name: Name::from("Test CA"),
+            created_on: 0,
+            valid_until: 1,
+            ca_type: CAType::TLS,
+            cert: vec![1, 2, 3],
+            key: vec![4, 5, 6],
+            crl_number: 0,
+            is_imported: false,
+        }).await.unwrap();
+
+        let owner = db.insert_user(User { id: -1, name: "o".into(), email: "o@x.c".into(), password_hash: None, oidc_id: None, role: UserRole::User }).await.unwrap();
+        let viewer = db.insert_user(User { id: -1, name: "v".into(), email: "v@x.c".into(), password_hash: None, oidc_id: None, role: UserRole::User }).await.unwrap();
+
+        let cert = db.insert_user_cert(Certificate {
+            id: -1,
+            name: Name::from("owner-cert"),
+            created_on: 0,
+            valid_until: 1,
+            certificate_type: CertificateType::TLSClient,
+            user_id: owner.id,
+            renew_method: CertificateRenewMethod::None,
+            ca_id: Some(ca.id),
+            revoked_at: None,
+            acme_provider_id: None,
+            data: CertData::Pkcs12(vec![7, 8, 9]),
+            password: "".into(),
+        }).await.unwrap();
+
+        // viewer не видит чужой серт без группы
+        assert_eq!(db.get_visible_certs(viewer.id).await.unwrap().len(), 0);
+        // owner видит свой
+        assert_eq!(db.get_visible_certs(owner.id).await.unwrap().len(), 1);
+
+        // общая группа делает серт видимым viewer-у
+        let g = db.insert_group("G".into(), None, 1).await.unwrap();
+        db.set_group_users(g.id, &[viewer.id]).await.unwrap();
+        db.set_group_certs(g.id, &[cert.id]).await.unwrap();
+        assert_eq!(db.get_visible_certs(viewer.id).await.unwrap().len(), 1);
+        assert!(db.user_shares_group_with_cert(viewer.id, cert.id).await.unwrap());
+        assert!(!db.user_shares_group_with_cert(owner.id, cert.id).await.unwrap()); // owner не в группе
     }
 }
 
