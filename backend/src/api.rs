@@ -340,7 +340,7 @@ pub(crate) async fn get_current_user(
 
 #[openapi(tag = "Certificates")]
 #[get("/certificates")]
-/// Get all certificates. If admin all certificates are returned, otherwise only certificates owned by the user. Requires authentication.
+/// Get all certificates. A local admin receives every certificate; everyone else (OIDC admin, user, service) receives certificates they own or can reach through a shared group. Requires authentication.
 pub(crate) async fn get_certificates(
     state: &State<AppState>,
     authentication: Authenticated
