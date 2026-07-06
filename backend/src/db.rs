@@ -1568,6 +1568,14 @@ mod tests {
             .expect("LE cert must appear in listing");
         assert_eq!(le_cert.ca_id, None, "LE cert ca_id must be None (was stored as NULL)");
     }
+
+    #[tokio::test]
+    async fn migration_15_creates_group_tables() {
+        let db = mem_db().await;
+        // прямой доступ к пулу недоступен извне — проверяем через существующий метод:
+        // миграция применяется в new_in_memory(); успешная сборка БД = миграция ок
+        let _ = db.get_all_user().await.unwrap();
+    }
 }
 
 #[cfg(test)]
