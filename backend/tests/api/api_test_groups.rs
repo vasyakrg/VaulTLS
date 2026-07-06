@@ -47,3 +47,31 @@ async fn user_sees_only_owned_and_group_certs() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn group_visibility_does_not_grant_download() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    client.create_user().await?;                           // user id=2
+    let cert = client.create_client_cert(Some(1), Some("pw".into()), None).await?; // владелец = admin id=1
+
+    // группа с user id=2 и сертом владельца id=1
+    let gid: i64 = serde_json::from_str(&client.post("/groups").header(ContentType::JSON)
+        .body(json!({"name":"Shared"}).to_string()).dispatch().await.into_string().await.unwrap())?;
+    client.put(format!("/groups/{gid}/users")).header(ContentType::JSON)
+        .body(json!({"ids":[2]}).to_string()).dispatch().await;
+    client.put(format!("/groups/{gid}/certificates")).header(ContentType::JSON)
+        .body(json!({"ids":[cert.id]}).to_string()).dispatch().await;
+
+    client.switch_user().await?; // под user id=2
+
+    // видит в списке (через группу)
+    let list = client.get("/certificates").dispatch().await.into_string().await.unwrap();
+    assert!(list.contains(&cert.id.to_string()));
+    // но НЕ качает чужой серт
+    let resp = client.get(format!("/certificates/{}/download", cert.id)).dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    // и НЕ получает пароль
+    let resp = client.get(format!("/certificates/{}/password", cert.id)).dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    Ok(())
+}

@@ -11,7 +11,7 @@ use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
-use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin};
+use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin, Claims};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
@@ -1021,6 +1021,19 @@ pub(crate) async fn download_ca_fullchain(
     ))
 }
 
+/// Право скачать приватный материал серта (pkcs12/pem/пароль).
+async fn can_access_cert_secret(state: &State<AppState>, claims: &Claims, cert_owner_id: i64, cert_id: i64) -> Result<bool, ApiError> {
+    // local admin — всё
+    if claims.is_local_admin() { return Ok(true); }
+    // владелец — свой (service ограничен scope cert:read; проверяется вызывающим)
+    if cert_owner_id == claims.id { return Ok(true); }
+    // OIDC admin (role==Admin, не local, не service) — групповые тоже
+    if !claims.is_service() && claims.role == UserRole::Admin && !claims.is_local {
+        return Ok(state.db.user_shares_group_with_cert(claims.id, cert_id).await?);
+    }
+    Ok(false)
+}
+
 #[openapi(tag = "Certificates")]
 #[get("/certificates/<id>/download?<download_format>")]
 /// Download a user-owned certificate. Requires authentication.
@@ -1035,7 +1048,9 @@ pub(crate) async fn download_certificate(
         return Err(ApiError::Forbidden(None));
     }
     let certificate = state.db.get_user_cert_by_id(id).await?;
-    if certificate.user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+    if !can_access_cert_secret(state, &authentication.claims, certificate.user_id, id).await? {
+        return Err(ApiError::Forbidden(None));
+    }
 
     // PEM zip path: only for TLS certs when ?download_format=pem
     if download_format.as_deref() == Some("pem") {
@@ -1113,7 +1128,9 @@ pub(crate) async fn fetch_certificate_password(
         return Err(ApiError::Forbidden(None));
     }
     let (user_id, password) = state.db.get_user_cert_password(id).await?;
-    if user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+    if !can_access_cert_secret(state, &authentication.claims, user_id, id).await? {
+        return Err(ApiError::Forbidden(None));
+    }
     Ok(Json(password))
 }
 
