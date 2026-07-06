@@ -161,6 +161,17 @@ pub struct ServiceAccountCreated {
     pub scopes: Vec<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct GroupRequest {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct GroupMembersRequest {
+    pub ids: Vec<i64>,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct ServiceTokenResponse {
     pub access_token: String,

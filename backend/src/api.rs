@@ -11,17 +11,17 @@ use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
-use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
+use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
-use crate::data::objects::{AppState, Name, ServiceAccount, User};
+use crate::data::objects::{AppState, Group, GroupDetail, Name, ServiceAccount, User};
 use crate::notification::mail::{MailMessage, Mailer};
     use crate::settings::{FrontendSettings, InnerSettings};
 
@@ -1579,5 +1579,53 @@ pub(crate) async fn delete_service_account(
     _authentication: AuthenticatedPrivileged,
 ) -> Result<(), ApiError> {
     state.db.delete_service_account(sid).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[get("/groups")]
+pub(crate) async fn get_groups(state: &State<AppState>, _auth: AuthenticatedLocalAdmin) -> Result<Json<Vec<Group>>, ApiError> {
+    Ok(Json(state.db.get_all_groups().await?))
+}
+
+#[openapi(tag = "Groups")]
+#[get("/groups/<id>")]
+pub(crate) async fn get_group(state: &State<AppState>, id: i64, _auth: AuthenticatedLocalAdmin) -> Result<Json<GroupDetail>, ApiError> {
+    Ok(Json(state.db.get_group_detail(id).await?))
+}
+
+#[openapi(tag = "Groups")]
+#[post("/groups", format = "json", data = "<payload>")]
+pub(crate) async fn create_group(state: &State<AppState>, payload: Json<GroupRequest>, _auth: AuthenticatedLocalAdmin) -> Result<Json<i64>, ApiError> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let g = state.db.insert_group(payload.name.clone(), payload.description.clone(), now).await?;
+    Ok(Json(g.id))
+}
+
+#[openapi(tag = "Groups")]
+#[put("/groups/<id>", format = "json", data = "<payload>")]
+pub(crate) async fn update_group(state: &State<AppState>, id: i64, payload: Json<GroupRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.update_group(id, payload.name.clone(), payload.description.clone()).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[delete("/groups/<id>")]
+pub(crate) async fn delete_group(state: &State<AppState>, id: i64, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.delete_group(id).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[put("/groups/<id>/users", format = "json", data = "<payload>")]
+pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.set_group_users(id, &payload.ids).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[put("/groups/<id>/certificates", format = "json", data = "<payload>")]
+pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.set_group_certs(id, &payload.ids).await?;
     Ok(())
 }

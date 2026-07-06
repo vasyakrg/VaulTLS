@@ -264,7 +264,14 @@ pub async fn create_rocket() -> Rocket<Build> {
                 create_acme_client_order,
                 issue_acme_client_order,
                 check_acme_client_order_dns,
-                delete_acme_client_order
+                delete_acme_client_order,
+                get_groups,
+                get_group,
+                create_group,
+                update_group,
+                delete_group,
+                set_group_users,
+                set_group_certificates
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -346,7 +353,14 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_acme_client_order,
                 issue_acme_client_order,
                 check_acme_client_order_dns,
-                delete_acme_client_order
+                delete_acme_client_order,
+                get_groups,
+                get_group,
+                create_group,
+                update_group,
+                delete_group,
+                set_group_users,
+                set_group_certificates
             ],
         )
         .mount(
@@ -398,7 +412,14 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_acme_client_order,
                 issue_acme_client_order,
                 check_acme_client_order_dns,
-                delete_acme_client_order
+                delete_acme_client_order,
+                get_groups,
+                get_group,
+                create_group,
+                update_group,
+                delete_group,
+                set_group_users,
+                set_group_certificates
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])
