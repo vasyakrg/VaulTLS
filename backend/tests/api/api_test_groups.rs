@@ -1,7 +1,7 @@
 use crate::common::test_client::VaulTLSClient;
 use anyhow::Result;
 use rocket::http::{ContentType, Status};
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[tokio::test]
 async fn local_admin_can_crud_groups() -> Result<()> {
@@ -82,5 +82,34 @@ async fn plain_user_can_issue_own_cert() -> Result<()> {
     // пытается выписать серт на чужой user_id=1 — должен принудительно стать своим (id=2)
     let cert = client.create_client_cert(Some(1), Some("pw".into()), None).await?;
     assert_eq!(cert.user_id, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn plain_user_import_forces_owner_to_self() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated_unprivileged().await; // role=User, id=2
+
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Import Owner CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("owner-test.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "OWN1";
+    // multipart_import_leaf sends user_id: 1 (another user) — must be forced to self (2)
+    let body = crate::common::helper::multipart_import_leaf(
+        boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1,
+    );
+    let resp = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let imported: Value = serde_json::from_str(&resp.into_string().await.unwrap())?;
+    assert_eq!(
+        imported["user_id"].as_i64(),
+        Some(2),
+        "owner must be forced to self (2), not the requested 1"
+    );
     Ok(())
 }

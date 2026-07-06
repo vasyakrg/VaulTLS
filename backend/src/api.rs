@@ -519,11 +519,18 @@ pub(crate) async fn import_certificate(
 ) -> Result<Json<Certificate>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key, parse_pkcs12, parse_pem_bundle, find_issuing_ca, verify_signed_by};
 
-    // Owner of the imported cert: local admins (and services, if ever routed here) may
-    // target any owner; everyone else is forced to import for themselves.
-    if !authentication.claims.is_local_admin() && !authentication.claims.is_service() {
-        form.user_id = authentication.claims.id;
+    // Authorization: local admins may target any owner; services need cert:issue and
+    // are always bound to their own owner; everyone else (non-local-admin humans) is
+    // forced to import for themselves.
+    if authentication.claims.is_service() {
+        if !authentication.claims.has_scope("cert:issue") {
+            return Err(ApiError::Forbidden(None));
+        }
+        form.user_id = authentication.claims.id; // service — только под своим владельцем
+    } else if !authentication.claims.is_local_admin() {
+        form.user_id = authentication.claims.id; // не-локальный-админ (user/OIDC-admin) — только себе
     }
+    // local admin: form.user_id остаётся как задан (любой владелец)
 
     // 1) Obtain leaf, key, chain and the raw bytes to store.
     let (leaf, chain, stored): (openssl::x509::X509, Vec<openssl::x509::X509>, CertData) =
