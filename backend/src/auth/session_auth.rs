@@ -75,6 +75,8 @@ pub(crate) struct Claims {
     pub(crate) exp: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) service: Option<ServiceClaims>,
+    #[serde(default)]
+    pub(crate) is_local: bool,
 }
 
 impl Claims {
@@ -85,6 +87,9 @@ impl Claims {
         self.service
             .as_ref()
             .is_some_and(|s| s.scopes.iter().any(|x| x == scope))
+    }
+    pub(crate) fn is_local_admin(&self) -> bool {
+        !self.is_service() && self.role == UserRole::Admin && self.is_local
     }
 }
 
@@ -122,6 +127,26 @@ impl<'r> FromRequest<'r> for AuthenticatedPrivileged {
 
 impl_openapi_auth!(AuthenticatedPrivileged, "UserRole::Admin");
 
+pub struct AuthenticatedLocalAdmin {
+    pub _claims: Claims,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AuthenticatedLocalAdmin {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let Some(claims) = authenticate_auth_token(request) else { return Outcome::Error((Status::Unauthorized, ())) };
+        if claims.is_local_admin() {
+            Outcome::Success(AuthenticatedLocalAdmin { _claims: claims })
+        } else {
+            Outcome::Error((Status::Forbidden, ()))
+        }
+    }
+}
+
+impl_openapi_auth!(AuthenticatedLocalAdmin, "local UserRole::Admin");
+
 pub(crate) fn authenticate_auth_token(request: &Request<'_>) -> Option<Claims> {
     // Prefer an explicit Authorization: Bearer header (service tokens) over the private
     // cookie (human sessions). A non-Bearer Authorization header is ignored and we fall
@@ -154,7 +179,7 @@ pub(crate) fn authenticate_auth_token(request: &Request<'_>) -> Option<Claims> {
 }
 
 /// Generate JWT Token for authentication
-pub(crate) fn generate_token(jwt_key: &[u8], user_id: i64, user_role: UserRole) -> Result<String, ApiError> {
+pub(crate) fn generate_token(jwt_key: &[u8], user_id: i64, user_role: UserRole, is_local: bool) -> Result<String, ApiError> {
     let expires = SystemTime::now() + Duration::from_secs(60 * 60 /* 1 hour */);
     let expires_unix = expires.duration_since(UNIX_EPOCH).unwrap().as_secs() as usize;
     let jti = Uuid::new_v4().to_string();
@@ -165,6 +190,7 @@ pub(crate) fn generate_token(jwt_key: &[u8], user_id: i64, user_role: UserRole) 
         id: user_id,
         role: user_role,
         service: None,
+        is_local,
     };
 
     JTI_STORE.write().insert(jti);
@@ -192,6 +218,7 @@ pub(crate) fn generate_service_token(
         id: owner_user_id,
         role: UserRole::User,
         service: Some(ServiceClaims { account_id, scopes }),
+        is_local: false,
     };
     encode(
         &Header::default(),
@@ -225,5 +252,27 @@ mod service_token_tests {
         assert!(claims.is_service());
         assert!(claims.has_scope("cert:read"));
         assert!(!claims.has_scope("cert:issue"));
+    }
+
+    #[test]
+    fn old_token_without_is_local_defaults_false() {
+        // токен, закодированный без поля is_local, должен декодироваться в is_local=false
+        let key = b"0123456789abcdef0123456789abcdef";
+        #[derive(serde::Serialize)]
+        struct OldClaims { jti: String, id: i64, role: u8, exp: usize }
+        let old = OldClaims { jti: "j".into(), id: 1, role: 1, exp: 9_999_999_999 };
+        let token = encode(&Header::default(), &old, &EncodingKey::from_secret(key)).unwrap();
+        let claims = decode::<Claims>(&token, &DecodingKey::from_secret(key), &Validation::default()).unwrap().claims;
+        assert!(!claims.is_local);
+    }
+
+    #[test]
+    fn is_local_admin_classification() {
+        let admin_local = Claims { jti: "a".into(), id: 1, role: UserRole::Admin, exp: 0, service: None, is_local: true };
+        let admin_oidc  = Claims { jti: "b".into(), id: 2, role: UserRole::Admin, exp: 0, service: None, is_local: false };
+        let user_local  = Claims { jti: "c".into(), id: 3, role: UserRole::User,  exp: 0, service: None, is_local: true };
+        assert!(admin_local.is_local_admin());
+        assert!(!admin_oidc.is_local_admin());
+        assert!(!user_local.is_local_admin());
     }
 }

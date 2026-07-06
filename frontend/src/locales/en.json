@@ -44,7 +44,8 @@
     "autoMode": "Auto Mode",
     "version": "Version: {version}",
     "toggleMenu": "Toggle menu",
-    "letsencrypt": "Let's Encrypt"
+    "letsencrypt": "Let's Encrypt",
+    "groups": "Groups"
   },
   "login": {
     "loginButton": "Login",
@@ -170,6 +171,30 @@
       "title": "Delete User",
       "confirm": "Are you sure you want to delete the user {name}?",
       "disclaimer": "Disclaimer: Deleting the user will also delete their certificates. The certificates are still valid until expiry."
+    }
+  },
+  "groups": {
+    "title": "Groups",
+    "subtitle": "Manage user and certificate groups",
+    "name": "Name",
+    "description": "Description",
+    "members": "Members",
+    "certificates": "Certificates",
+    "create": "Create group",
+    "edit": "Edit group",
+    "delete": "Delete group",
+    "empty": "No groups yet",
+    "createModal": {
+      "title": "Create Group",
+      "create": "Create Group"
+    },
+    "editModal": {
+      "title": "Edit Group",
+      "saving": "Saving..."
+    },
+    "deleteModal": {
+      "title": "Delete Group",
+      "confirm": "Are you sure you want to delete the group {name}?"
     }
   },
   "serviceAccounts": {

@@ -11,17 +11,17 @@ use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
-use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged};
+use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin, Claims};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
-use crate::data::objects::{AppState, Name, ServiceAccount, User};
+use crate::data::objects::{AppState, Group, GroupDetail, Name, ServiceAccount, User};
 use crate::notification::mail::{MailMessage, Mailer};
     use crate::settings::{FrontendSettings, InnerSettings};
 
@@ -92,6 +92,7 @@ pub(crate) async fn setup(
         password_hash,
         oidc_id: None,
         role: UserRole::Admin,
+        is_local: false,
     };
 
     state.db.insert_user(user).await?;
@@ -137,7 +138,7 @@ pub(crate) async fn login(
     if let Some(password_hash) = user.password_hash {
         if password_hash.verify(&login_req_opt.password) {
             let jwt_key = state.settings.get_jwt_key()?;
-            let token = generate_token(&jwt_key, user.id, user.role)?;
+            let token = generate_token(&jwt_key, user.id, user.role, true)?;
 
             let mut cookie = Cookie::build(("auth_token", token))
                 .http_only(true)
@@ -304,7 +305,7 @@ pub(crate) async fn oidc_callback(
             user = state.db.register_oidc_user(user).await?;
 
             let jwt_key = state.settings.get_jwt_key()?;
-            let token = generate_token(&jwt_key, user.id, user.role)?;
+            let token = generate_token(&jwt_key, user.id, user.role, false)?;
 
             let mut cookie = Cookie::build(("auth_token", token))
                 .http_only(true)
@@ -332,13 +333,14 @@ pub(crate) async fn get_current_user(
     state: &State<AppState>,
     authentication: Authenticated
 ) -> Result<Json<User>, ApiError> {
-    let user = state.db.get_user(authentication.claims.id).await?;
+    let mut user = state.db.get_user(authentication.claims.id).await?;
+    user.is_local = authentication.claims.is_local;
     Ok(Json(user))
 }
 
 #[openapi(tag = "Certificates")]
 #[get("/certificates")]
-/// Get all certificates. If admin all certificates are returned, otherwise only certificates owned by the user. Requires authentication.
+/// Get all certificates. A local admin receives every certificate; everyone else (OIDC admin, user, service) receives certificates they own or can reach through a shared group. Requires authentication.
 pub(crate) async fn get_certificates(
     state: &State<AppState>,
     authentication: Authenticated
@@ -346,11 +348,11 @@ pub(crate) async fn get_certificates(
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
     }
-    let user_id = match authentication.claims.role {
-        UserRole::User => Some(authentication.claims.id),
-        UserRole::Admin => None
+    let certificates = if authentication.claims.is_local_admin() {
+        state.db.get_user_certs(None, None, None).await?
+    } else {
+        state.db.get_visible_certs(authentication.claims.id).await?
     };
-    let certificates = state.db.get_user_certs(user_id, None, None).await?;
     Ok(Json(certificates))
 }
 
@@ -370,7 +372,7 @@ pub(crate) async fn get_all_ca(
 pub(crate) async fn create_ca(
     state: &State<AppState>,
     payload: Json<CreateCARequest>,
-    _authentication: AuthenticatedPrivileged
+    _authentication: AuthenticatedLocalAdmin
 ) -> Result<Json<i64>, ApiError> {
     let mut ca = match payload.ca_type {
         CAType::TLS => {
@@ -443,7 +445,7 @@ fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> Result<i64, ApiError> {
 pub(crate) async fn import_ca(
     state: &State<AppState>,
     form: rocket::form::Form<ImportCaForm<'_>>,
-    _authentication: AuthenticatedPrivileged,
+    _authentication: AuthenticatedLocalAdmin,
 ) -> Result<Json<i64>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key};
 
@@ -511,13 +513,26 @@ impl<'r> rocket_okapi::JsonSchema for ImportCertForm<'r> {
 
 #[openapi(tag = "Certificates")]
 #[post("/certificates/import", data = "<form>")]
-/// Import a pre-issued leaf certificate; auto-imports its CA from the chain. Requires admin role.
+/// Import a pre-issued leaf certificate; auto-imports its CA from the chain.
 pub(crate) async fn import_certificate(
     state: &State<AppState>,
-    form: rocket::form::Form<ImportCertForm<'_>>,
-    _authentication: AuthenticatedPrivileged,
+    mut form: rocket::form::Form<ImportCertForm<'_>>,
+    authentication: Authenticated,
 ) -> Result<Json<Certificate>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key, parse_pkcs12, parse_pem_bundle, find_issuing_ca, verify_signed_by};
+
+    // Authorization: local admins may target any owner; services need cert:issue and
+    // are always bound to their own owner; everyone else (non-local-admin humans) is
+    // forced to import for themselves.
+    if authentication.claims.is_service() {
+        if !authentication.claims.has_scope("cert:issue") {
+            return Err(ApiError::Forbidden(None));
+        }
+        form.user_id = authentication.claims.id; // service — только под своим владельцем
+    } else if !authentication.claims.is_local_admin() {
+        form.user_id = authentication.claims.id; // не-локальный-админ (user/OIDC-admin) — только себе
+    }
+    // local admin: form.user_id остаётся как задан (любой владелец)
 
     // 1) Obtain leaf, key, chain and the raw bytes to store.
     let (leaf, chain, stored): (openssl::x509::X509, Vec<openssl::x509::X509>, CertData) =
@@ -675,7 +690,8 @@ pub(crate) async fn import_certificate(
 
 #[openapi(tag = "Certificates")]
 #[post("/certificates", format = "json", data = "<payload>")]
-/// Create a new certificate. Requires admin role.
+/// Create a new certificate. Any authenticated user may issue one for themselves;
+/// local admins may target any owner.
 pub(crate) async fn create_user_certificate(
     state: &State<AppState>,
     payload: Json<CreateUserCertificateRequest>,
@@ -683,15 +699,18 @@ pub(crate) async fn create_user_certificate(
 ) -> Result<Json<Certificate>, ApiError> {
     let mut payload = payload.into_inner();
 
-    // Authorization: human Admin, or service with cert:issue (bound to its owner).
+    // Authorization: any authenticated human may issue a cert; local admins may target
+    // any owner, everyone else (including non-local-admin humans) is forced to self.
+    // Services need cert:issue and are always bound to their own owner.
     if authentication.claims.is_service() {
         if !authentication.claims.has_scope("cert:issue") {
             return Err(ApiError::Forbidden(None));
         }
-        payload.user_id = authentication.claims.id; // force owner; never issue for another user
-    } else if authentication.claims.role != UserRole::Admin {
-        return Err(ApiError::Forbidden(None));
+        payload.user_id = authentication.claims.id; // service — только под своим владельцем
+    } else if !authentication.claims.is_local_admin() {
+        payload.user_id = authentication.claims.id; // не-локальный-админ (user/OIDC-admin) — только себе
     }
+    // local admin: payload.user_id остаётся как задан (любой владелец)
 
     debug!(cert_name=?payload.cert_name, "Creating certificate");
     trace!("{:?}", payload);
@@ -1021,6 +1040,19 @@ pub(crate) async fn download_ca_fullchain(
     ))
 }
 
+/// Право скачать приватный материал серта (pkcs12/pem/пароль).
+async fn can_access_cert_secret(state: &State<AppState>, claims: &Claims, cert_owner_id: i64, cert_id: i64) -> Result<bool, ApiError> {
+    // local admin — всё
+    if claims.is_local_admin() { return Ok(true); }
+    // владелец — свой (service ограничен scope cert:read; проверяется вызывающим)
+    if cert_owner_id == claims.id { return Ok(true); }
+    // OIDC admin (role==Admin, не local, не service) — групповые тоже
+    if !claims.is_service() && claims.role == UserRole::Admin && !claims.is_local {
+        return Ok(state.db.user_shares_group_with_cert(claims.id, cert_id).await?);
+    }
+    Ok(false)
+}
+
 #[openapi(tag = "Certificates")]
 #[get("/certificates/<id>/download?<download_format>")]
 /// Download a user-owned certificate. Requires authentication.
@@ -1035,7 +1067,9 @@ pub(crate) async fn download_certificate(
         return Err(ApiError::Forbidden(None));
     }
     let certificate = state.db.get_user_cert_by_id(id).await?;
-    if certificate.user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+    if !can_access_cert_secret(state, &authentication.claims, certificate.user_id, id).await? {
+        return Err(ApiError::Forbidden(None));
+    }
 
     // PEM zip path: only for TLS certs when ?download_format=pem
     if download_format.as_deref() == Some("pem") {
@@ -1113,7 +1147,9 @@ pub(crate) async fn fetch_certificate_password(
         return Err(ApiError::Forbidden(None));
     }
     let (user_id, password) = state.db.get_user_cert_password(id).await?;
-    if user_id != authentication.claims.id && authentication.claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+    if !can_access_cert_secret(state, &authentication.claims, user_id, id).await? {
+        return Err(ApiError::Forbidden(None));
+    }
     Ok(Json(password))
 }
 
@@ -1123,7 +1159,7 @@ pub(crate) async fn fetch_certificate_password(
 pub(crate) async fn delete_ca(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged
+    _authentication: AuthenticatedLocalAdmin
 ) -> Result<(), ApiError> {
     let related_cert_count = state.db.count_user_certs_by_ca_id(id).await?;
     if related_cert_count > 0 {
@@ -1135,12 +1171,16 @@ pub(crate) async fn delete_ca(
 
 #[openapi(tag = "Certificates")]
 #[delete("/certificates/<id>")]
-/// Delete a user-owned certificate. Requires admin role.
+/// Delete a user-owned certificate. Requires being the owner or a local admin.
 pub(crate) async fn delete_user_cert(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged
+    authentication: Authenticated
 ) -> Result<(), ApiError> {
+    let cert = state.db.get_user_cert_by_id(id).await?;
+    let allowed = authentication.claims.is_local_admin()
+        || (!authentication.claims.is_service() && cert.user_id == authentication.claims.id);
+    if !allowed { return Err(ApiError::Forbidden(None)); }
     state.db.delete_user_cert(id).await?;
     Ok(())
 }
@@ -1179,14 +1219,16 @@ async fn create_krl_params(state: &State<AppState>, ca: &CA) -> Result<Vec<Vec<u
 
 #[openapi(tag = "Certificates")]
 #[post("/certificates/<id>/revoke")]
-/// Revoke a user-owned certificate. Requires admin role.
+/// Revoke a user-owned certificate. Requires being the owner or a local admin.
 pub(crate) async fn revoke_certificate(
     state: &State<AppState>,
     id: i64,
-    authentication: AuthenticatedPrivileged
+    authentication: Authenticated
 ) -> Result<(), ApiError> {
     let cert = state.db.get_user_cert_by_id(id).await?;
-    if cert.user_id != authentication._claims.id && authentication._claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+    let allowed = authentication.claims.is_local_admin()
+        || (!authentication.claims.is_service() && cert.user_id == authentication.claims.id);
+    if !allowed { return Err(ApiError::Forbidden(None)); }
 
     let ca_id = cert.ca_id.ok_or_else(|| ApiError::BadRequest("ACME certificates cannot be revoked via an internal CA".into()))?;
     let mut ca = state.db.get_ca_by_id(ca_id).await.map_err(|_| ApiError::NotFound(None))?;
@@ -1363,7 +1405,8 @@ pub(crate) async fn create_user(
         email: payload.user_email.to_string(),
         password_hash,
         oidc_id: None,
-        role: payload.role
+        role: payload.role,
+        is_local: false,
     };
 
     user = state.db.insert_user(user).await?;
@@ -1579,5 +1622,53 @@ pub(crate) async fn delete_service_account(
     _authentication: AuthenticatedPrivileged,
 ) -> Result<(), ApiError> {
     state.db.delete_service_account(sid).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[get("/groups")]
+pub(crate) async fn get_groups(state: &State<AppState>, _auth: AuthenticatedLocalAdmin) -> Result<Json<Vec<Group>>, ApiError> {
+    Ok(Json(state.db.get_all_groups().await?))
+}
+
+#[openapi(tag = "Groups")]
+#[get("/groups/<id>")]
+pub(crate) async fn get_group(state: &State<AppState>, id: i64, _auth: AuthenticatedLocalAdmin) -> Result<Json<GroupDetail>, ApiError> {
+    Ok(Json(state.db.get_group_detail(id).await?))
+}
+
+#[openapi(tag = "Groups")]
+#[post("/groups", format = "json", data = "<payload>")]
+pub(crate) async fn create_group(state: &State<AppState>, payload: Json<GroupRequest>, _auth: AuthenticatedLocalAdmin) -> Result<Json<i64>, ApiError> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    let g = state.db.insert_group(payload.name.clone(), payload.description.clone(), now).await?;
+    Ok(Json(g.id))
+}
+
+#[openapi(tag = "Groups")]
+#[put("/groups/<id>", format = "json", data = "<payload>")]
+pub(crate) async fn update_group(state: &State<AppState>, id: i64, payload: Json<GroupRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.update_group(id, payload.name.clone(), payload.description.clone()).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[delete("/groups/<id>")]
+pub(crate) async fn delete_group(state: &State<AppState>, id: i64, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.delete_group(id).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[put("/groups/<id>/users", format = "json", data = "<payload>")]
+pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.set_group_users(id, &payload.ids).await?;
+    Ok(())
+}
+
+#[openapi(tag = "Groups")]
+#[put("/groups/<id>/certificates", format = "json", data = "<payload>")]
+pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+    state.db.set_group_certs(id, &payload.ids).await?;
     Ok(())
 }

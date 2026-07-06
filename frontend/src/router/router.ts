@@ -9,6 +9,7 @@ import MainLayout from '@/layouts/MainLayout.vue';
 import OverviewTab from '@/components/OverviewTab.vue';
 import SettingsTab from '@/components/SettingsTab.vue';
 import UserTab from "@/components/UserTab.vue";
+import GroupsTab from "@/components/GroupsTab.vue";
 import CATab from "@/components/CATab.vue";
 import AcmeTab from '@/components/AcmeTab.vue';
 import AcmeClientTab from '@/components/AcmeClientTab.vue';
@@ -49,6 +50,11 @@ const router = createRouter({
                     path: 'users',
                     name: 'Users',
                     component: UserTab,
+                },
+                {
+                    path: 'groups',
+                    name: 'Groups',
+                    component: GroupsTab,
                 },
                 {
                     path: 'acme',

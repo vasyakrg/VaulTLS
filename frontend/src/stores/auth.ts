@@ -15,7 +15,10 @@ export const useAuthStore = defineStore('auth', {
     getters: {
         isAdmin(state): boolean {
             return state.current_user?.role === UserRole.Admin;
-        }
+        },
+        isLocalAdmin(state): boolean {
+            return state.current_user?.role === UserRole.Admin && state.current_user?.is_local === true;
+        },
     },
     actions: {
         async init() {
