@@ -44,7 +44,8 @@
     "autoMode": "Modo automático",
     "version": "Versión: {version}",
     "toggleMenu": "Alternar menú",
-    "letsencrypt": "Let's Encrypt"
+    "letsencrypt": "Let's Encrypt",
+    "groups": "Grupos"
   },
   "login": {
     "loginButton": "Iniciar sesión",
@@ -171,6 +172,30 @@
       "title": "Eliminar usuario",
       "confirm": "¿Está seguro de que desea eliminar al usuario {name}?",
       "disclaimer": "Aviso: Eliminar el usuario también eliminará sus certificados. Los certificados seguirán siendo válidos hasta su vencimiento."
+    }
+  },
+  "groups": {
+    "title": "Grupos",
+    "subtitle": "Gestionar grupos de usuarios y certificados",
+    "name": "Nombre",
+    "description": "Descripción",
+    "members": "Miembros",
+    "certificates": "Certificados",
+    "create": "Crear grupo",
+    "edit": "Editar grupo",
+    "delete": "Eliminar grupo",
+    "empty": "Aún no hay grupos",
+    "createModal": {
+      "title": "Crear grupo",
+      "create": "Crear grupo"
+    },
+    "editModal": {
+      "title": "Editar grupo",
+      "saving": "Guardando..."
+    },
+    "deleteModal": {
+      "title": "Eliminar grupo",
+      "confirm": "¿Está seguro de que desea eliminar el grupo {name}?"
     }
   },
   "serviceAccounts": {
