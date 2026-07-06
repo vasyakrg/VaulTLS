@@ -1169,12 +1169,16 @@ pub(crate) async fn delete_ca(
 
 #[openapi(tag = "Certificates")]
 #[delete("/certificates/<id>")]
-/// Delete a user-owned certificate. Requires admin role.
+/// Delete a user-owned certificate. Requires being the owner or a local admin.
 pub(crate) async fn delete_user_cert(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged
+    authentication: Authenticated
 ) -> Result<(), ApiError> {
+    let cert = state.db.get_user_cert_by_id(id).await?;
+    let allowed = authentication.claims.is_local_admin()
+        || (!authentication.claims.is_service() && cert.user_id == authentication.claims.id);
+    if !allowed { return Err(ApiError::Forbidden(None)); }
     state.db.delete_user_cert(id).await?;
     Ok(())
 }
@@ -1213,14 +1217,16 @@ async fn create_krl_params(state: &State<AppState>, ca: &CA) -> Result<Vec<Vec<u
 
 #[openapi(tag = "Certificates")]
 #[post("/certificates/<id>/revoke")]
-/// Revoke a user-owned certificate. Requires admin role.
+/// Revoke a user-owned certificate. Requires being the owner or a local admin.
 pub(crate) async fn revoke_certificate(
     state: &State<AppState>,
     id: i64,
-    authentication: AuthenticatedPrivileged
+    authentication: Authenticated
 ) -> Result<(), ApiError> {
     let cert = state.db.get_user_cert_by_id(id).await?;
-    if cert.user_id != authentication._claims.id && authentication._claims.role != UserRole::Admin { return Err(ApiError::Forbidden(None)) }
+    let allowed = authentication.claims.is_local_admin()
+        || (!authentication.claims.is_service() && cert.user_id == authentication.claims.id);
+    if !allowed { return Err(ApiError::Forbidden(None)); }
 
     let ca_id = cert.ca_id.ok_or_else(|| ApiError::BadRequest("ACME certificates cannot be revoked via an internal CA".into()))?;
     let mut ca = state.db.get_ca_by_id(ca_id).await.map_err(|_| ApiError::NotFound(None))?;

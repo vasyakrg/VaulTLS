@@ -113,3 +113,20 @@ async fn plain_user_import_forces_owner_to_self() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn owner_can_delete_own_others_cannot() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    client.create_user().await?;                           // user id=2
+    let admin_cert = client.create_client_cert(Some(1), Some("pw".into()), None).await?;
+    let user_cert = client.create_client_cert(Some(2), Some("pw".into()), None).await?;
+
+    client.switch_user().await?; // user id=2
+    // не владелец (серт admin) → Forbidden
+    let resp = client.delete(format!("/certificates/{}", admin_cert.id)).dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    // свой → Ok
+    let resp = client.delete(format!("/certificates/{}", user_cert.id)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    Ok(())
+}
