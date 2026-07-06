@@ -137,7 +137,7 @@ pub(crate) async fn login(
     if let Some(password_hash) = user.password_hash {
         if password_hash.verify(&login_req_opt.password) {
             let jwt_key = state.settings.get_jwt_key()?;
-            let token = generate_token(&jwt_key, user.id, user.role)?;
+            let token = generate_token(&jwt_key, user.id, user.role, true)?;
 
             let mut cookie = Cookie::build(("auth_token", token))
                 .http_only(true)
@@ -304,7 +304,7 @@ pub(crate) async fn oidc_callback(
             user = state.db.register_oidc_user(user).await?;
 
             let jwt_key = state.settings.get_jwt_key()?;
-            let token = generate_token(&jwt_key, user.id, user.role)?;
+            let token = generate_token(&jwt_key, user.id, user.role, false)?;
 
             let mut cookie = Cookie::build(("auth_token", token))
                 .http_only(true)
