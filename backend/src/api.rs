@@ -370,7 +370,7 @@ pub(crate) async fn get_all_ca(
 pub(crate) async fn create_ca(
     state: &State<AppState>,
     payload: Json<CreateCARequest>,
-    _authentication: AuthenticatedPrivileged
+    _authentication: AuthenticatedLocalAdmin
 ) -> Result<Json<i64>, ApiError> {
     let mut ca = match payload.ca_type {
         CAType::TLS => {
@@ -443,7 +443,7 @@ fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> Result<i64, ApiError> {
 pub(crate) async fn import_ca(
     state: &State<AppState>,
     form: rocket::form::Form<ImportCaForm<'_>>,
-    _authentication: AuthenticatedPrivileged,
+    _authentication: AuthenticatedLocalAdmin,
 ) -> Result<Json<i64>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key};
 
@@ -1157,7 +1157,7 @@ pub(crate) async fn fetch_certificate_password(
 pub(crate) async fn delete_ca(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged
+    _authentication: AuthenticatedLocalAdmin
 ) -> Result<(), ApiError> {
     let related_cert_count = state.db.count_user_certs_by_ca_id(id).await?;
     if related_cert_count > 0 {

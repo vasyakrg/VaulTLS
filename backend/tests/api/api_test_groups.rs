@@ -130,3 +130,13 @@ async fn owner_can_delete_own_others_cannot() -> Result<()> {
     assert_eq!(resp.status(), Status::Ok);
     Ok(())
 }
+
+#[tokio::test]
+async fn ca_ops_require_local_admin() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated_unprivileged().await; // role=User, id=2
+    let resp = client.post("/certificates/ca").header(ContentType::JSON)
+        .body(json!({"ca_name":{"cn":"x"},"ca_type":0}).to_string())
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    Ok(())
+}
