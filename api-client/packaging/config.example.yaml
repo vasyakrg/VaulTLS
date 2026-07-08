@@ -5,6 +5,12 @@ server:
   insecure_skip_verify: false
 schedule: "0 3 1 * *"
 jitter: 30m
+# Logging. Defaults: level=info, format=text, output=stderr (captured by journald).
+# Set file to also keep a log under /var/log; use level=debug for verbose output.
+log:
+  level: info          # debug|info|warn|error
+  format: text         # text|json
+  # file: /var/log/vaultls-agent.log
 exporter:
   listen: "127.0.0.1:9105"
 domains:

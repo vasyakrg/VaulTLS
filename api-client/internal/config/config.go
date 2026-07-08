@@ -26,11 +26,20 @@ type Domain struct {
 	CertID  int64    `yaml:"cert_id"`
 }
 
+// Log configures the agent's structured logging. Zero values keep the historic
+// behaviour: INFO level, text format, written to stderr (captured by journald).
+type Log struct {
+	Level  string `yaml:"level"`  // debug|info|warn|error (default info)
+	Format string `yaml:"format"` // text|json (default text)
+	File   string `yaml:"file"`   // optional path; when set, logs go here instead of stderr
+}
+
 type Config struct {
 	Server    Server        `yaml:"server"`
 	Schedule  string        `yaml:"schedule"`
 	Jitter    time.Duration `yaml:"-"`
 	JitterRaw string        `yaml:"jitter"`
+	Log       Log           `yaml:"log"`
 	Exporter  struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"exporter"`

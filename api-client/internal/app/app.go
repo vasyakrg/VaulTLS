@@ -17,10 +17,11 @@ import (
 
 func ReconcileAll(ctx context.Context, cfg *config.Config, r *reconcile.Reconciler, log *slog.Logger) {
 	for _, d := range cfg.Domains {
+		log.Debug("reconciling domain", "domain", d.Name, "cert_id", d.CertID, "out_dir", d.OutDir)
 		if err := r.Domain(ctx, d); err != nil {
-			log.Error("reconcile failed", "domain", d.Name, "err", err)
+			log.Error("reconcile failed", "domain", d.Name, "cert_id", d.CertID, "err", err)
 		} else {
-			log.Info("reconcile ok", "domain", d.Name)
+			log.Info("reconcile ok", "domain", d.Name, "cert_id", d.CertID)
 		}
 	}
 }
@@ -30,7 +31,17 @@ func Run(ctx context.Context, configPath, githubAPIBase string) error {
 	if err != nil {
 		return err
 	}
-	log := slog.Default()
+	log, err := newLogger(cfg.Log)
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(log)
+	log.Info("vaultls-agent starting",
+		"version", version.Version,
+		"server", cfg.Server.URL,
+		"domains", len(cfg.Domains),
+		"schedule", cfg.Schedule,
+	)
 	m := metrics.New()
 	m.SetUp()
 	m.SetBuildInfo(version.Version)
@@ -80,10 +91,14 @@ func RunOnce(ctx context.Context, configPath string) error {
 	if err != nil {
 		return err
 	}
+	log, err := newLogger(cfg.Log)
+	if err != nil {
+		return err
+	}
 	m := metrics.New()
 	api := vaultls.New(cfg.Server.URL, cfg.Server.ClientID, cfg.Server.Secret, cfg.Server.InsecureSkipVerify)
 	r := reconcile.New(api, m, time.Now)
-	ReconcileAll(ctx, cfg, r, slog.Default())
+	ReconcileAll(ctx, cfg, r, log)
 	return nil
 }
 

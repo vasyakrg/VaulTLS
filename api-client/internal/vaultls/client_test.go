@@ -67,6 +67,54 @@ func TestListPasswordDownload(t *testing.T) {
 	}
 }
 
+func TestCertUnmarshalName(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want string
+	}{
+		"object with cn+ou": {`{"id":1,"name":{"cn":"*.novotelecom.ru","ou":"nuc"},"valid_until":5}`, "*.novotelecom.ru"},
+		"object cn only":     {`{"id":1,"name":{"cn":"a","ou":null},"valid_until":5}`, "a"},
+		"plain string":       {`{"id":1,"name":"a","valid_until":5}`, "a"},
+		"null name":          {`{"id":1,"name":null,"valid_until":5}`, ""},
+	}
+	for label, tc := range cases {
+		t.Run(label, func(t *testing.T) {
+			var c Cert
+			if err := json.Unmarshal([]byte(tc.body), &c); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if c.Name != tc.want {
+				t.Fatalf("Name = %q, want %q", c.Name, tc.want)
+			}
+			if c.ID != 1 || c.ValidUntil != 5 {
+				t.Fatalf("sibling fields lost: %+v", c)
+			}
+		})
+	}
+}
+
+func TestListDecodesObjectName(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok123", "token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	mux.HandleFunc("/api/certificates", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[{"id":11,"name":{"cn":"*.novotelecom.ru","ou":"lets"},"valid_until":100}]`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	certs, err := New(srv.URL, "svc_abc", "pw", false).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certs) != 1 || certs[0].ID != 11 || certs[0].Name != "*.novotelecom.ru" {
+		t.Fatalf("List = %+v", certs)
+	}
+}
+
 func TestSelectSkipsRevoked(t *testing.T) {
 	rev := int64(5)
 	certs := []Cert{

@@ -116,6 +116,9 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 |---|---|---|
 | `schedule` | cron expression | When to run the reconcile loop (e.g. `"0 3 1 * *"` = 03:00 on the 1st of each month). |
 | `jitter` | duration string | Random delay added to each scheduled run to avoid thundering-herd (e.g. `30m`). |
+| `log.level` | string | Log verbosity: `debug`, `info` (default), `warn`, `error`. |
+| `log.format` | string | Log format: `text` (default) or `json`. |
+| `log.file` | string | Optional file path. When set, logs are written there (e.g. `/var/log/vaultls-agent.log`) instead of stderr. Unset → stderr, captured by journald (`journalctl -u vaultls-agent`). |
 | `exporter.listen` | `host:port` | Address for the Prometheus `/metrics` endpoint. Default: `127.0.0.1:9105`. |
 
 ### Domain entries (`domains[]`)

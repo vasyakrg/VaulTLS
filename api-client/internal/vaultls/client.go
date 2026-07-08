@@ -21,6 +21,38 @@ type Cert struct {
 	RevokedAt  *int64 `json:"revoked_at"`
 }
 
+// UnmarshalJSON collapses the backend's structured certificate name — an object
+// {"cn": "...", "ou": "..."} — down to its CN, while still accepting a plain
+// string so older payloads and unit-test fixtures keep working.
+func (c *Cert) UnmarshalJSON(b []byte) error {
+	type alias Cert // strips this method; the embedded Name below shadows alias.Name
+	probe := struct {
+		*alias
+		Name json.RawMessage `json:"name"`
+	}{alias: (*alias)(c)}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		return err
+	}
+	raw := bytes.TrimSpace(probe.Name)
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
+		c.Name = ""
+	case raw[0] == '{':
+		var obj struct {
+			CN string `json:"cn"`
+		}
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return fmt.Errorf("decode cert name: %w", err)
+		}
+		c.Name = obj.CN
+	default:
+		if err := json.Unmarshal(raw, &c.Name); err != nil {
+			return fmt.Errorf("decode cert name: %w", err)
+		}
+	}
+	return nil
+}
+
 type Client struct {
 	base      string
 	clientID  string
