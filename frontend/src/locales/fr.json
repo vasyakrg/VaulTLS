@@ -1,1 +1,20 @@
-{}
+{
+  "sidebar": {
+    "audit": "Audit"
+  },
+  "audit": {
+    "title": "Journal d'audit",
+    "time": "Heure",
+    "actor": "Utilisateur",
+    "action": "Action",
+    "target": "Cible",
+    "result": "Résultat",
+    "anyAction": "Toute action",
+    "anyResult": "Tout résultat",
+    "olderThan": "Plus ancien que {days} jours",
+    "all": "Tous les enregistrements",
+    "purge": "Purger",
+    "confirmPurge": "Supprimer les enregistrements d'audit sélectionnés ?",
+    "empty": "Aucun enregistrement trouvé"
+  }
+}
