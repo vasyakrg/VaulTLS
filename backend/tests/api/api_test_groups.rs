@@ -49,7 +49,7 @@ async fn user_sees_only_owned_and_group_certs() -> Result<()> {
 }
 
 #[tokio::test]
-async fn group_visibility_does_not_grant_download() -> Result<()> {
+async fn group_visibility_grants_download_but_not_management() -> Result<()> {
     let client = VaulTLSClient::new_authenticated().await; // local admin id=1
     client.create_user().await?;                           // user id=2
     let cert = client.create_client_cert(Some(1), Some("pw".into()), None).await?; // владелец = admin id=1
@@ -67,11 +67,17 @@ async fn group_visibility_does_not_grant_download() -> Result<()> {
     // видит в списке (через группу)
     let list = client.get("/certificates").dispatch().await.into_string().await.unwrap();
     assert!(list.contains(&cert.id.to_string()));
-    // но НЕ качает чужой серт
+    // качает чужой групповой серт
     let resp = client.get(format!("/certificates/{}/download", cert.id)).dispatch().await;
-    assert_eq!(resp.status(), Status::Forbidden);
-    // и НЕ получает пароль
+    assert_eq!(resp.status(), Status::Ok);
+    // и получает пароль
     let resp = client.get(format!("/certificates/{}/password", cert.id)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    // но НЕ отзывает чужой групповой серт
+    let resp = client.post(format!("/certificates/{}/revoke", cert.id)).dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    // и НЕ удаляет его
+    let resp = client.delete(format!("/certificates/{}", cert.id)).dispatch().await;
     assert_eq!(resp.status(), Status::Forbidden);
     Ok(())
 }

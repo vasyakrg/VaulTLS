@@ -1046,11 +1046,12 @@ async fn can_access_cert_secret(state: &State<AppState>, claims: &Claims, cert_o
     if claims.is_local_admin() { return Ok(true); }
     // владелец — свой (service ограничен scope cert:read; проверяется вызывающим)
     if cert_owner_id == claims.id { return Ok(true); }
-    // OIDC admin (role==Admin, не local, не service) — групповые тоже
-    if !claims.is_service() && claims.role == UserRole::Admin && !claims.is_local {
-        return Ok(state.db.user_shares_group_with_cert(claims.id, cert_id).await?);
-    }
-    Ok(false)
+    // service-аккаунты дальше группового доступа не идут — только свои серты
+    if claims.is_service() { return Ok(false); }
+    // любой человек (обычный пользователь или OIDC admin) может скачать приватный
+    // материал серта, если состоит хотя бы в одной группе этого серта. Управление
+    // (revoke/delete) при этом остаётся за владельцем и локальным админом.
+    Ok(state.db.user_shares_group_with_cert(claims.id, cert_id).await?)
 }
 
 #[openapi(tag = "Certificates")]
