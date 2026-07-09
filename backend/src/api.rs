@@ -19,9 +19,9 @@ use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retri
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
 use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
-use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
+use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
-use crate::data::objects::{AppState, Group, GroupDetail, Name, ServiceAccount, User};
+use crate::data::objects::{AppState, AuditEntry, Group, GroupDetail, Name, ServiceAccount, User};
 use crate::notification::mail::{MailMessage, Mailer};
     use crate::settings::{FrontendSettings, InnerSettings};
 
@@ -119,22 +119,72 @@ pub(crate) async fn setup(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_audit(
+    state: &AppState,
+    actor_id: Option<i64>,
+    actor_label: String,
+    actor_type: AuditActorType,
+    action: AuditAction,
+    target_type: Option<String>,
+    target_id: Option<String>,
+    target_label: Option<String>,
+    result: AuditResult,
+    detail: Option<String>,
+    ip: Option<String>,
+) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let entry = AuditEntry {
+        ts, actor_id, actor_label, actor_type, action,
+        target_type, target_id, target_label, result, detail, ip,
+    };
+    if let Err(e) = state.db.insert_audit(entry).await {
+        tracing::warn!(error = %e, "Failed to write audit log entry");
+    }
+}
+
+pub(crate) async fn audit_actor(
+    state: &AppState,
+    claims: &Claims,
+) -> (Option<i64>, String, AuditActorType) {
+    if let Some(service) = &claims.service {
+        return (
+            Some(service.account_id),
+            format!("service:{}", service.account_id),
+            AuditActorType::Service,
+        );
+    }
+    let label = state.db.get_user_name(claims.id).await.unwrap_or_else(|_| claims.id.to_string());
+    (Some(claims.id), label, AuditActorType::User)
+}
+
 #[openapi(tag = "Authentication")]
 #[post("/auth/login", format = "json", data = "<login_req_opt>")]
 /// Endpoint to login. Required for most endpoints.
 pub(crate) async fn login(
     state: &State<AppState>,
     jar: &CookieJar<'_>,
+    remote: Option<std::net::IpAddr>,
     login_req_opt: Json<LoginRequest>
 ) -> Result<(), ApiError> {
     if !state.settings.get_password_enabled() {
         warn!("Password login is disabled.");
         return Err(ApiError::Unauthorized(Some("Password login is disabled".to_string())))
     }
-    let user: User = state.db.get_user_by_email(login_req_opt.email.clone()).await.map_err(|_| {
-        warn!(user=login_req_opt.email, "Invalid email");
-        ApiError::Unauthorized(Some("Invalid credentials".to_string()))
-    })?;
+    let ip = remote.map(|a| a.to_string());
+    let user: User = match state.db.get_user_by_email(login_req_opt.email.clone()).await {
+        Ok(u) => u,
+        Err(_) => {
+            warn!(user=login_req_opt.email, "Invalid email");
+            record_audit(state, None, login_req_opt.email.clone(), AuditActorType::Anonymous,
+                AuditAction::Login, None, None, None, AuditResult::Failure,
+                Some("invalid email".to_string()), ip).await;
+            return Err(ApiError::Unauthorized(Some("Invalid credentials".to_string())));
+        }
+    };
     if let Some(password_hash) = user.password_hash {
         if password_hash.verify(&login_req_opt.password) {
             let jwt_key = state.settings.get_jwt_key()?;
@@ -159,6 +209,9 @@ pub(crate) async fn login(
                 state.db.set_user_password(user.id, migration_password).await?;
             }
 
+            record_audit(state, Some(user.id), user.name.clone(), AuditActorType::User,
+                AuditAction::Login, None, None, None, AuditResult::Success, None, ip.clone()).await;
+
             return Ok(());
         } else if let Password::V1(hash_string) = password_hash {
             // User tried to supply a hashed password, but has not been migrated yet
@@ -167,6 +220,9 @@ pub(crate) async fn login(
         }
     }
     warn!(user=user.name, "Invalid password");
+    record_audit(state, Some(user.id), user.name.clone(), AuditActorType::User,
+        AuditAction::Login, None, None, None, AuditResult::Failure,
+        Some("invalid password".to_string()), ip).await;
     Err(ApiError::Unauthorized(Some("Invalid credentials".to_string())))
 }
 
@@ -210,10 +266,15 @@ pub(crate) async fn change_password(
 #[post("/auth/logout")]
 /// Endpoint to logout.
 pub(crate) async fn logout(
+    state: &State<AppState>,
     jar: &CookieJar<'_>,
+    remote: Option<std::net::IpAddr>,
     authentication: Option<Authenticated>
 ) -> Result<(), ApiError> {
     if let Some(authentication) = authentication {
+        let (actor_id, label, atype) = audit_actor(state, &authentication.claims).await;
+        record_audit(state, actor_id, label, atype, AuditAction::Logout,
+            None, None, None, AuditResult::Success, None, remote.map(|a| a.to_string())).await;
         invalidate_token(&authentication.claims.jti);
     }
     jar.remove_private("auth_token");
