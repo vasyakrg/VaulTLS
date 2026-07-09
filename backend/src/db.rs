@@ -1842,6 +1842,56 @@ mod tests {
         assert!(db.user_shares_group_with_cert(viewer.id, cert.id).await.unwrap());
         assert!(!db.user_shares_group_with_cert(owner.id, cert.id).await.unwrap()); // owner не в группе
     }
+
+    #[tokio::test]
+    async fn audit_insert_query_purge_roundtrip() {
+        use crate::data::enums::{AuditAction, AuditActorType, AuditResult};
+        use crate::data::objects::{AuditEntry, AuditFilter};
+        let db = VaulTLSDB::new(false, true).unwrap();
+
+        let mk = |ts: i64, action: AuditAction| AuditEntry {
+            ts,
+            actor_id: Some(1),
+            actor_label: "admin".to_string(),
+            actor_type: AuditActorType::User,
+            action,
+            target_type: Some("certificate".to_string()),
+            target_id: Some("42".to_string()),
+            target_label: Some("example.com".to_string()),
+            result: AuditResult::Success,
+            detail: None,
+            ip: None,
+        };
+
+        db.insert_audit(mk(1000, AuditAction::Login)).await.unwrap();
+        db.insert_audit(mk(2000, AuditAction::DownloadCertificate)).await.unwrap();
+        db.insert_audit(mk(3000, AuditAction::Login)).await.unwrap();
+
+        // total + newest-first ordering
+        let all = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
+        assert_eq!(all.total, 3);
+        assert_eq!(all.rows.len(), 3);
+        assert_eq!(all.rows[0].ts, 3000);
+
+        // filter by action
+        let f = AuditFilter { action: Some("login".to_string()), ..Default::default() };
+        let logins = db.query_audit(f, 100, 0).await.unwrap();
+        assert_eq!(logins.total, 2);
+        assert!(logins.rows.iter().all(|r| r.action == "login"));
+
+        // filter by time window
+        let f = AuditFilter { from: Some(1500), to: Some(2500), ..Default::default() };
+        let win = db.query_audit(f, 100, 0).await.unwrap();
+        assert_eq!(win.total, 1);
+        assert_eq!(win.rows[0].ts, 2000);
+
+        // purge older than 2500 removes ts=1000 and ts=2000
+        let deleted = db.purge_audit(2500).await.unwrap();
+        assert_eq!(deleted, 2);
+        let left = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
+        assert_eq!(left.total, 1);
+        assert_eq!(left.rows[0].ts, 3000);
+    }
 }
 
 #[cfg(test)]
@@ -1892,55 +1942,5 @@ mod import_tests {
         assert!(fetched.is_imported);
         assert!(!fetched.has_private_key());
         assert!(fetched.key.is_empty());
-    }
-
-    #[tokio::test]
-    async fn audit_insert_query_purge_roundtrip() {
-        use crate::data::enums::{AuditAction, AuditActorType, AuditResult};
-        use crate::data::objects::{AuditEntry, AuditFilter};
-        let db = VaulTLSDB::new(false, true).unwrap();
-
-        let mk = |ts: i64, action: AuditAction| AuditEntry {
-            ts,
-            actor_id: Some(1),
-            actor_label: "admin".to_string(),
-            actor_type: AuditActorType::User,
-            action,
-            target_type: Some("certificate".to_string()),
-            target_id: Some("42".to_string()),
-            target_label: Some("example.com".to_string()),
-            result: AuditResult::Success,
-            detail: None,
-            ip: None,
-        };
-
-        db.insert_audit(mk(1000, AuditAction::Login)).await.unwrap();
-        db.insert_audit(mk(2000, AuditAction::DownloadCertificate)).await.unwrap();
-        db.insert_audit(mk(3000, AuditAction::Login)).await.unwrap();
-
-        // total + newest-first ordering
-        let all = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
-        assert_eq!(all.total, 3);
-        assert_eq!(all.rows.len(), 3);
-        assert_eq!(all.rows[0].ts, 3000);
-
-        // filter by action
-        let f = AuditFilter { action: Some("login".to_string()), ..Default::default() };
-        let logins = db.query_audit(f, 100, 0).await.unwrap();
-        assert_eq!(logins.total, 2);
-        assert!(logins.rows.iter().all(|r| r.action == "login"));
-
-        // filter by time window
-        let f = AuditFilter { from: Some(1500), to: Some(2500), ..Default::default() };
-        let win = db.query_audit(f, 100, 0).await.unwrap();
-        assert_eq!(win.total, 1);
-        assert_eq!(win.rows[0].ts, 2000);
-
-        // purge older than 2500 removes ts=1000 and ts=2000
-        let deleted = db.purge_audit(2500).await.unwrap();
-        assert_eq!(deleted, 2);
-        let left = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
-        assert_eq!(left.total, 1);
-        assert_eq!(left.rows[0].ts, 3000);
     }
 }
