@@ -54,7 +54,7 @@ pub async fn create_acme_account(
         eab_kid.clone(),
         eab_hmac_key.clone(),
         req.ca_id,
-        auth._claims.id,
+        auth.claims.id,
         req.auto_validate,
     ).await?;
 
