@@ -1,6 +1,6 @@
 use crate::constants::{DB_FILE_PATH, TEMP_DB_FILE_PATH};
 use crate::data::enums::{CAType, CertificateRenewMethod, UserRole};
-use crate::data::objects::{Group, GroupDetail, ServiceAccount, User};
+use crate::data::objects::{AuditEntry, AuditFilter, AuditLogRow, AuditPage, Group, GroupDetail, ServiceAccount, User};
 use crate::helper::get_secret;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -1425,6 +1425,83 @@ impl VaulTLSDB {
             Ok(())
         })
     }
+
+    pub(crate) async fn insert_audit(&self, e: AuditEntry) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO audit_log \
+                 (ts, actor_id, actor_label, actor_type, action, target_type, target_id, target_label, result, detail, ip) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    e.ts, e.actor_id, e.actor_label, e.actor_type.as_str(), e.action.as_str(),
+                    e.target_type, e.target_id, e.target_label, e.result.as_str(), e.detail, e.ip
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(crate) async fn query_audit(
+        &self,
+        filter: AuditFilter,
+        limit: i64,
+        offset: i64,
+    ) -> Result<AuditPage> {
+        db_do!(self.pool, move |conn: &Connection| {
+            // Build a dynamic WHERE with named-ish positional params.
+            let mut where_parts: Vec<String> = Vec::new();
+            let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+            if let Some(a) = filter.actor_id { where_parts.push(format!("actor_id = ?{}", args.len()+1)); args.push(Box::new(a)); }
+            if let Some(a) = &filter.action { where_parts.push(format!("action = ?{}", args.len()+1)); args.push(Box::new(a.clone())); }
+            if let Some(r) = &filter.result { where_parts.push(format!("result = ?{}", args.len()+1)); args.push(Box::new(r.clone())); }
+            if let Some(f) = filter.from { where_parts.push(format!("ts >= ?{}", args.len()+1)); args.push(Box::new(f)); }
+            if let Some(t) = filter.to { where_parts.push(format!("ts <= ?{}", args.len()+1)); args.push(Box::new(t)); }
+            let where_sql = if where_parts.is_empty() { String::new() } else { format!("WHERE {}", where_parts.join(" AND ")) };
+
+            let arg_refs: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+
+            let total: i64 = conn.query_row(
+                &format!("SELECT COUNT(*) FROM audit_log {where_sql}"),
+                arg_refs.as_slice(),
+                |r| r.get(0),
+            )?;
+
+            let page_sql = format!(
+                "SELECT id, ts, actor_id, actor_label, actor_type, action, target_type, target_id, target_label, result, detail, ip \
+                 FROM audit_log {where_sql} ORDER BY ts DESC, id DESC LIMIT ?{} OFFSET ?{}",
+                args.len()+1, args.len()+2
+            );
+            let mut page_args = arg_refs.clone();
+            page_args.push(&limit);
+            page_args.push(&offset);
+
+            let mut stmt = conn.prepare(&page_sql)?;
+            let rows = stmt.query_map(page_args.as_slice(), |r| Ok(AuditLogRow {
+                id: r.get(0)?, ts: r.get(1)?, actor_id: r.get(2)?, actor_label: r.get(3)?,
+                actor_type: r.get(4)?, action: r.get(5)?, target_type: r.get(6)?,
+                target_id: r.get(7)?, target_label: r.get(8)?, result: r.get(9)?,
+                detail: r.get(10)?, ip: r.get(11)?,
+            }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+            Ok(AuditPage { rows, total })
+        })
+    }
+
+    pub(crate) async fn purge_audit(&self, before_ts: i64) -> Result<usize> {
+        db_do!(self.pool, |conn: &Connection| {
+            let n = conn.execute("DELETE FROM audit_log WHERE ts < ?1", params![before_ts])?;
+            Ok(n)
+        })
+    }
+
+    pub(crate) async fn get_user_name(&self, id: i64) -> Result<String> {
+        db_do!(self.pool, |conn: &Connection| {
+            let name: String = conn.query_row(
+                "SELECT name FROM users WHERE id = ?1", params![id], |r| r.get(0),
+            )?;
+            Ok(name)
+        })
+    }
 }
 
 fn acme_client_provider_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcmeClientProvider> {
@@ -1815,5 +1892,55 @@ mod import_tests {
         assert!(fetched.is_imported);
         assert!(!fetched.has_private_key());
         assert!(fetched.key.is_empty());
+    }
+
+    #[tokio::test]
+    async fn audit_insert_query_purge_roundtrip() {
+        use crate::data::enums::{AuditAction, AuditActorType, AuditResult};
+        use crate::data::objects::{AuditEntry, AuditFilter};
+        let db = VaulTLSDB::new(false, true).unwrap();
+
+        let mk = |ts: i64, action: AuditAction| AuditEntry {
+            ts,
+            actor_id: Some(1),
+            actor_label: "admin".to_string(),
+            actor_type: AuditActorType::User,
+            action,
+            target_type: Some("certificate".to_string()),
+            target_id: Some("42".to_string()),
+            target_label: Some("example.com".to_string()),
+            result: AuditResult::Success,
+            detail: None,
+            ip: None,
+        };
+
+        db.insert_audit(mk(1000, AuditAction::Login)).await.unwrap();
+        db.insert_audit(mk(2000, AuditAction::DownloadCertificate)).await.unwrap();
+        db.insert_audit(mk(3000, AuditAction::Login)).await.unwrap();
+
+        // total + newest-first ordering
+        let all = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
+        assert_eq!(all.total, 3);
+        assert_eq!(all.rows.len(), 3);
+        assert_eq!(all.rows[0].ts, 3000);
+
+        // filter by action
+        let f = AuditFilter { action: Some("login".to_string()), ..Default::default() };
+        let logins = db.query_audit(f, 100, 0).await.unwrap();
+        assert_eq!(logins.total, 2);
+        assert!(logins.rows.iter().all(|r| r.action == "login"));
+
+        // filter by time window
+        let f = AuditFilter { from: Some(1500), to: Some(2500), ..Default::default() };
+        let win = db.query_audit(f, 100, 0).await.unwrap();
+        assert_eq!(win.total, 1);
+        assert_eq!(win.rows[0].ts, 2000);
+
+        // purge older than 2500 removes ts=1000 and ts=2000
+        let deleted = db.purge_audit(2500).await.unwrap();
+        assert_eq!(deleted, 2);
+        let left = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
+        assert_eq!(left.total, 1);
+        assert_eq!(left.rows[0].ts, 3000);
     }
 }

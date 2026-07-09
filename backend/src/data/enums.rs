@@ -178,3 +178,93 @@ pub enum CertStatus {
     NotYetValid,
     Unknown,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditActorType { User, Service, Anonymous }
+
+impl AuditActorType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuditActorType::User => "user",
+            AuditActorType::Service => "service",
+            AuditActorType::Anonymous => "anonymous",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditResult { Success, Failure }
+
+impl AuditResult {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuditResult::Success => "success",
+            AuditResult::Failure => "failure",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditAction {
+    Login, Logout, DownloadCertificate, FetchCertificatePassword,
+    CreateCa, ImportCa, DeleteCa, RevokeCertificate, DeleteCertificate,
+    CreateUser, UpdateUser, DeleteUser,
+    CreateGroup, UpdateGroup, DeleteGroup,
+    CreateServiceAccount, RevokeServiceAccount, DeleteServiceAccount,
+    UpdateSettings,
+}
+
+impl AuditAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuditAction::Login => "login",
+            AuditAction::Logout => "logout",
+            AuditAction::DownloadCertificate => "download_certificate",
+            AuditAction::FetchCertificatePassword => "fetch_certificate_password",
+            AuditAction::CreateCa => "create_ca",
+            AuditAction::ImportCa => "import_ca",
+            AuditAction::DeleteCa => "delete_ca",
+            AuditAction::RevokeCertificate => "revoke_certificate",
+            AuditAction::DeleteCertificate => "delete_certificate",
+            AuditAction::CreateUser => "create_user",
+            AuditAction::UpdateUser => "update_user",
+            AuditAction::DeleteUser => "delete_user",
+            AuditAction::CreateGroup => "create_group",
+            AuditAction::UpdateGroup => "update_group",
+            AuditAction::DeleteGroup => "delete_group",
+            AuditAction::CreateServiceAccount => "create_service_account",
+            AuditAction::RevokeServiceAccount => "revoke_service_account",
+            AuditAction::DeleteServiceAccount => "delete_service_account",
+            AuditAction::UpdateSettings => "update_settings",
+        }
+    }
+}
+
+impl std::str::FromStr for AuditAction {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "login" => Ok(AuditAction::Login),
+            "logout" => Ok(AuditAction::Logout),
+            "download_certificate" => Ok(AuditAction::DownloadCertificate),
+            "fetch_certificate_password" => Ok(AuditAction::FetchCertificatePassword),
+            "create_ca" => Ok(AuditAction::CreateCa),
+            "import_ca" => Ok(AuditAction::ImportCa),
+            "delete_ca" => Ok(AuditAction::DeleteCa),
+            "revoke_certificate" => Ok(AuditAction::RevokeCertificate),
+            "delete_certificate" => Ok(AuditAction::DeleteCertificate),
+            "create_user" => Ok(AuditAction::CreateUser),
+            "update_user" => Ok(AuditAction::UpdateUser),
+            "delete_user" => Ok(AuditAction::DeleteUser),
+            "create_group" => Ok(AuditAction::CreateGroup),
+            "update_group" => Ok(AuditAction::UpdateGroup),
+            "delete_group" => Ok(AuditAction::DeleteGroup),
+            "create_service_account" => Ok(AuditAction::CreateServiceAccount),
+            "revoke_service_account" => Ok(AuditAction::RevokeServiceAccount),
+            "delete_service_account" => Ok(AuditAction::DeleteServiceAccount),
+            "update_settings" => Ok(AuditAction::UpdateSettings),
+            _ => Err(()),
+        }
+    }
+}
