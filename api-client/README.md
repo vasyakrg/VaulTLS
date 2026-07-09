@@ -210,13 +210,20 @@ point your Prometheus at it locally, scrape via a node-exporter-style sidecar, o
 | `vaultls_agent_build_info` | Gauge | `version` | Build version info (value always `1`) |
 | `vaultls_agent_update_available` | Gauge | — | `1` if a newer GitHub release exists |
 | `vaultls_agent_latest_version_info` | Gauge | `version` | Latest known release tag (value always `1`) |
-| `vaultls_cert_expiry_timestamp_seconds` | Gauge | `domain` | Certificate `NotAfter` as a Unix timestamp |
-| `vaultls_cert_serial_info` | Gauge | `domain`, `serial` | Current deployed certificate serial (value always `1`) |
-| `vaultls_last_check_timestamp_seconds` | Gauge | `domain` | Unix timestamp of the last reconcile check |
-| `vaultls_last_renewal_timestamp_seconds` | Gauge | `domain` | Unix timestamp of the last actual certificate write |
-| `vaultls_reconcile_errors_total` | Counter | `domain`, `stage` | Reconcile errors by domain and pipeline stage |
-| `vaultls_reload_failures_total` | Counter | `domain` | Reload command failures |
+| `vaultls_cert_expiry_timestamp_seconds` | Gauge | `domain`, `cert_id`, `out_dir` | Certificate `NotAfter` as a Unix timestamp |
+| `vaultls_cert_serial_info` | Gauge | `domain`, `cert_id`, `out_dir`, `serial` | Current deployed certificate serial (value always `1`) |
+| `vaultls_last_check_timestamp_seconds` | Gauge | `domain`, `cert_id`, `out_dir` | Unix timestamp of the last reconcile check |
+| `vaultls_last_renewal_timestamp_seconds` | Gauge | `domain`, `cert_id`, `out_dir` | Unix timestamp of the last actual certificate write |
+| `vaultls_reconcile_errors_total` | Counter | `domain`, `cert_id`, `out_dir`, `stage` | Reconcile errors by entry and pipeline stage |
+| `vaultls_reload_failures_total` | Counter | `domain`, `cert_id`, `out_dir` | Reload command failures |
 | `vaultls_scrape_token_errors_total` | Counter | — | Authentication/token errors against the VaulTLS API |
+
+A `domains:` entry is identified by all three of `domain`, `cert_id` and `out_dir`,
+because several entries may track the same (wildcard) domain name while pulling
+different certificates into different directories. `cert_id` is empty when the
+entry selects its certificate by name; `domain` falls back to `out_dir` when the
+entry has no `name`. Two entries may not share an `out_dir` — the agent refuses
+such a config at startup.
 
 ### Prometheus scrape config
 

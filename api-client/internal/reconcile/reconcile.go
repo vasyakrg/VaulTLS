@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/vasyakrg/vaultls-agent/internal/config"
@@ -31,11 +32,22 @@ func New(api API, m *metrics.Metrics, now Clock) *Reconciler {
 	return &Reconciler{api: api, m: m, now: now}
 }
 
-func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
-	label := d.Name
-	if label == "" {
-		label = d.OutDir
+// certLabels keys metric series by the whole config entry: two entries may share
+// one domain name while pulling different certificates into different directories.
+func certLabels(d config.Domain) metrics.CertLabels {
+	domain := d.Name
+	if domain == "" {
+		domain = d.OutDir
 	}
+	certID := ""
+	if d.CertID != 0 {
+		certID = strconv.FormatInt(d.CertID, 10)
+	}
+	return metrics.CertLabels{Domain: domain, CertID: certID, OutDir: d.OutDir}
+}
+
+func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
+	label := certLabels(d)
 	now := r.now()
 	r.m.MarkCheck(label, float64(now.Unix()))
 

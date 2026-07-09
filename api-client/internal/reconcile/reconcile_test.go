@@ -155,6 +155,54 @@ func TestReconcileSelectsByCertID(t *testing.T) {
 	}
 }
 
+// Two config entries may share the same domain name while pointing at different
+// certificates and output directories. Each must keep its own metric series.
+func TestReconcileSameNameDistinctCertsKeepSeparateSeries(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	vu := time.Now().Add(48 * time.Hour).UnixMilli()
+	apiA := &fakeAPI{
+		certs:    []vaultls.Cert{{ID: 11, Name: "*.example.com", ValidUntil: vu}},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	apiB := &fakeAPI{
+		certs:    []vaultls.Cert{{ID: 14, Name: "*.example.com", ValidUntil: vu}},
+		p12:      makeP12(t, 0x0d4e5f),
+		password: "pw",
+	}
+	m := metrics.New()
+	ctx := context.Background()
+
+	dA := newDomain(dirA)
+	dA.CertID = 11
+	dB := newDomain(dirB)
+	dB.CertID = 14
+	if err := New(apiA, m, time.Now).Domain(ctx, dA); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(apiB, m, time.Now).Domain(ctx, dB); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`vaultls_cert_serial_info{cert_id="11",domain="*.example.com",out_dir="` + dirA + `",serial="A1B2C"} 1`,
+		`vaultls_cert_serial_info{cert_id="14",domain="*.example.com",out_dir="` + dirB + `",serial="D4E5F"} 1`,
+		`vaultls_cert_expiry_timestamp_seconds{cert_id="11",domain="*.example.com",out_dir="` + dirA + `"}`,
+		`vaultls_cert_expiry_timestamp_seconds{cert_id="14",domain="*.example.com",out_dir="` + dirB + `"}`,
+		`vaultls_last_check_timestamp_seconds{cert_id="11",domain="*.example.com",out_dir="` + dirA + `"}`,
+		`vaultls_last_check_timestamp_seconds{cert_id="14",domain="*.example.com",out_dir="` + dirB + `"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q\n%s", want, body)
+		}
+	}
+}
+
 func TestReconcileCertIDOnlyDistinctLabels(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()

@@ -15,6 +15,49 @@ func writeTmp(t *testing.T, body string) string {
 	return p
 }
 
+func TestLoadRejectsDuplicateOutDir(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    cert_id: 11
+    reload: "true"
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    cert_id: 14
+    reload: "true"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for duplicate out_dir")
+	}
+}
+
+// Same wildcard name, different cert_id and out_dir is a valid deployment.
+func TestLoadAllowsSameNameDistinctOutDir(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    cert_id: 11
+    reload: "true"
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/nuc
+    cert_id: 14
+    reload: "true"
+`)
+	if _, err := Load(p); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
 func TestLoadAppliesDefaultsAndExpandsEnv(t *testing.T) {
 	t.Setenv("VAULTLS_SECRET", "s3cr3t")
 	p := writeTmp(t, `

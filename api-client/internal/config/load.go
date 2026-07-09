@@ -70,7 +70,16 @@ func validate(cfg *Config) error {
 	if len(cfg.Domains) == 0 {
 		return fmt.Errorf("at least one domain is required")
 	}
+	// Two entries writing into one directory would silently overwrite each
+	// other's key material on every reconcile.
+	seenOutDir := map[string]int{}
 	for i, d := range cfg.Domains {
+		if d.OutDir != "" {
+			if first, dup := seenOutDir[d.OutDir]; dup {
+				return fmt.Errorf("domain[%d] (%s): out_dir %q already used by domain[%d]", i, d.Name, d.OutDir, first)
+			}
+			seenOutDir[d.OutDir] = i
+		}
 		if d.Name == "" && d.CertID == 0 {
 			return fmt.Errorf("domain[%d]: name or cert_id required", i)
 		}
