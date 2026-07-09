@@ -45,7 +45,8 @@
     "version": "Version: {version}",
     "toggleMenu": "Toggle menu",
     "letsencrypt": "Let's Encrypt",
-    "groups": "Groups"
+    "groups": "Groups",
+    "audit": "Audit"
   },
   "login": {
     "loginButton": "Login",
@@ -460,5 +461,21 @@
       "confirm": "Are you sure you want to deactivate the ACME account {name}? The account will no longer be able to issue certificates.",
       "deactivate": "Deactivate"
     }
+  },
+  "audit": {
+    "title": "Audit Log",
+    "time": "Time",
+    "actor": "Actor",
+    "action": "Action",
+    "target": "Target",
+    "result": "Result",
+    "anyAction": "Any action",
+    "anyResult": "Any result",
+    "actorId": "User ID",
+    "olderThan": "Older than {days} days",
+    "all": "All records",
+    "purge": "Purge",
+    "confirmPurge": "Delete the selected audit records?",
+    "empty": "No records found"
   }
 }

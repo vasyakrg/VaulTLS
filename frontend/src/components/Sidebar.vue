@@ -157,6 +157,9 @@ const items = computed(() => [
   ...(auth.isLocalAdmin ? [
     { name: 'groups', to: '/groups', icon: 'pi pi-th-large', label: 'sidebar.groups' },
   ] : []),
+  ...(auth.isLocalAdmin ? [
+    { name: 'audit', to: '/audit', icon: 'pi pi-history', label: 'sidebar.audit' },
+  ] : []),
   ...(auth.isAdmin && settingsStore.settings?.acme.enabled ? [
     { name: 'acme', to: '/acme', icon: 'pi pi-bolt', label: 'sidebar.acme' },
   ] : []),

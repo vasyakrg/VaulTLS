@@ -13,6 +13,7 @@ import GroupsTab from "@/components/GroupsTab.vue";
 import CATab from "@/components/CATab.vue";
 import AcmeTab from '@/components/AcmeTab.vue';
 import AcmeClientTab from '@/components/AcmeClientTab.vue';
+import AuditTab from '@/components/AuditTab.vue';
 
 const router = createRouter({
     history: createWebHistory(),
@@ -55,6 +56,11 @@ const router = createRouter({
                     path: 'groups',
                     name: 'Groups',
                     component: GroupsTab,
+                },
+                {
+                    path: 'audit',
+                    name: 'Audit',
+                    component: AuditTab,
                 },
                 {
                     path: 'acme',

@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::data::enums::UserRole;
+use crate::data::enums::{AuditAction, AuditActorType, AuditResult};
 use crate::db::VaulTLSDB;
 use crate::notification::mail::Mailer;
 use crate::settings::Settings;
@@ -128,4 +129,50 @@ pub struct GroupDetail {
     pub group: Group,
     pub user_ids: Vec<i64>,
     pub certificate_ids: Vec<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuditEntry {
+    pub ts: i64,
+    pub actor_id: Option<i64>,
+    pub actor_label: String,
+    pub actor_type: AuditActorType,
+    pub action: AuditAction,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub target_label: Option<String>,
+    pub result: AuditResult,
+    pub detail: Option<String>,
+    pub ip: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AuditLogRow {
+    pub id: i64,
+    pub ts: i64,
+    pub actor_id: Option<i64>,
+    pub actor_label: String,
+    pub actor_type: String,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub target_label: Option<String>,
+    pub result: String,
+    pub detail: Option<String>,
+    pub ip: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct AuditFilter {
+    pub actor_id: Option<i64>,
+    pub action: Option<String>,
+    pub result: Option<String>,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AuditPage {
+    pub rows: Vec<AuditLogRow>,
+    pub total: i64,
 }

@@ -171,7 +171,7 @@ pub async fn issue_acme_client_order(
                     };
                     state.db.insert_acme_client_certificate(
                         cert_name,
-                        packed.pkcs12_der, "".into(), packed.valid_until, auth._claims.id, provider.id,
+                        packed.pkcs12_der, "".into(), packed.valid_until, auth.claims.id, provider.id,
                     ).await.map_err(|e| anyhow::anyhow!(e.to_string()))?
                 };
                 state.db.update_acme_client_order_status(id, "valid", Some(result_cert_id), None).await

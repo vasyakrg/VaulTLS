@@ -56,7 +56,7 @@ pub struct Authenticated {
 }
 
 pub struct AuthenticatedPrivileged {
-    pub _claims: Claims,
+    pub claims: Claims,
 }
 
 /// Service-token-only claim block (absent for human tokens).
@@ -118,7 +118,7 @@ impl<'r> FromRequest<'r> for AuthenticatedPrivileged {
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let Some(claims) =  authenticate_auth_token(request) else { return Outcome::Error((Status::Unauthorized, ())) };
         if claims.role == UserRole::Admin {
-            Outcome::Success(AuthenticatedPrivileged { _claims: claims })
+            Outcome::Success(AuthenticatedPrivileged { claims })
         } else {
             Outcome::Error((Status::Forbidden, ()))
         }
@@ -128,7 +128,7 @@ impl<'r> FromRequest<'r> for AuthenticatedPrivileged {
 impl_openapi_auth!(AuthenticatedPrivileged, "UserRole::Admin");
 
 pub struct AuthenticatedLocalAdmin {
-    pub _claims: Claims,
+    pub claims: Claims,
 }
 
 #[rocket::async_trait]
@@ -138,7 +138,7 @@ impl<'r> FromRequest<'r> for AuthenticatedLocalAdmin {
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let Some(claims) = authenticate_auth_token(request) else { return Outcome::Error((Status::Unauthorized, ())) };
         if claims.is_local_admin() {
-            Outcome::Success(AuthenticatedLocalAdmin { _claims: claims })
+            Outcome::Success(AuthenticatedLocalAdmin { claims })
         } else {
             Outcome::Error((Status::Forbidden, ()))
         }

@@ -45,7 +45,8 @@
     "version": "Versión: {version}",
     "toggleMenu": "Alternar menú",
     "letsencrypt": "Let's Encrypt",
-    "groups": "Grupos"
+    "groups": "Grupos",
+    "audit": "Auditoría"
   },
   "login": {
     "loginButton": "Iniciar sesión",
@@ -461,5 +462,21 @@
       "certRequired": "El archivo de certificado es obligatorio",
       "keyRequired": "El archivo de clave privada es obligatorio"
     }
+  },
+  "audit": {
+    "title": "Registro de auditoría",
+    "time": "Hora",
+    "actor": "Usuario",
+    "action": "Acción",
+    "target": "Objeto",
+    "result": "Resultado",
+    "anyAction": "Cualquier acción",
+    "anyResult": "Cualquier resultado",
+    "actorId": "ID de usuario",
+    "olderThan": "Más antiguo que {days} días",
+    "all": "Todos los registros",
+    "purge": "Purgar",
+    "confirmPurge": "¿Eliminar los registros de auditoría seleccionados?",
+    "empty": "No se encontraron registros"
   }
 }

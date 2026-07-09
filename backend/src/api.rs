@@ -19,9 +19,9 @@ use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retri
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
 use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
-use crate::data::enums::{CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
+use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
-use crate::data::objects::{AppState, Group, GroupDetail, Name, ServiceAccount, User};
+use crate::data::objects::{AppState, AuditEntry, Group, GroupDetail, Name, ServiceAccount, User};
 use crate::notification::mail::{MailMessage, Mailer};
     use crate::settings::{FrontendSettings, InnerSettings};
 
@@ -119,22 +119,72 @@ pub(crate) async fn setup(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_audit(
+    state: &AppState,
+    actor_id: Option<i64>,
+    actor_label: String,
+    actor_type: AuditActorType,
+    action: AuditAction,
+    target_type: Option<String>,
+    target_id: Option<String>,
+    target_label: Option<String>,
+    result: AuditResult,
+    detail: Option<String>,
+    ip: Option<String>,
+) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let entry = AuditEntry {
+        ts, actor_id, actor_label, actor_type, action,
+        target_type, target_id, target_label, result, detail, ip,
+    };
+    if let Err(e) = state.db.insert_audit(entry).await {
+        tracing::warn!(error = %e, "Failed to write audit log entry");
+    }
+}
+
+pub(crate) async fn audit_actor(
+    state: &AppState,
+    claims: &Claims,
+) -> (Option<i64>, String, AuditActorType) {
+    if let Some(service) = &claims.service {
+        return (
+            Some(service.account_id),
+            format!("service:{}", service.account_id),
+            AuditActorType::Service,
+        );
+    }
+    let label = state.db.get_user_name(claims.id).await.unwrap_or_else(|_| claims.id.to_string());
+    (Some(claims.id), label, AuditActorType::User)
+}
+
 #[openapi(tag = "Authentication")]
 #[post("/auth/login", format = "json", data = "<login_req_opt>")]
 /// Endpoint to login. Required for most endpoints.
 pub(crate) async fn login(
     state: &State<AppState>,
     jar: &CookieJar<'_>,
+    remote: Option<std::net::IpAddr>,
     login_req_opt: Json<LoginRequest>
 ) -> Result<(), ApiError> {
     if !state.settings.get_password_enabled() {
         warn!("Password login is disabled.");
         return Err(ApiError::Unauthorized(Some("Password login is disabled".to_string())))
     }
-    let user: User = state.db.get_user_by_email(login_req_opt.email.clone()).await.map_err(|_| {
-        warn!(user=login_req_opt.email, "Invalid email");
-        ApiError::Unauthorized(Some("Invalid credentials".to_string()))
-    })?;
+    let ip = remote.map(|a| a.to_string());
+    let user: User = match state.db.get_user_by_email(login_req_opt.email.clone()).await {
+        Ok(u) => u,
+        Err(_) => {
+            warn!(user=login_req_opt.email, "Invalid email");
+            record_audit(state, None, login_req_opt.email.clone(), AuditActorType::Anonymous,
+                AuditAction::Login, None, None, None, AuditResult::Failure,
+                Some("invalid email".to_string()), ip).await;
+            return Err(ApiError::Unauthorized(Some("Invalid credentials".to_string())));
+        }
+    };
     if let Some(password_hash) = user.password_hash {
         if password_hash.verify(&login_req_opt.password) {
             let jwt_key = state.settings.get_jwt_key()?;
@@ -159,6 +209,9 @@ pub(crate) async fn login(
                 state.db.set_user_password(user.id, migration_password).await?;
             }
 
+            record_audit(state, Some(user.id), user.name.clone(), AuditActorType::User,
+                AuditAction::Login, None, None, None, AuditResult::Success, None, ip.clone()).await;
+
             return Ok(());
         } else if let Password::V1(hash_string) = password_hash {
             // User tried to supply a hashed password, but has not been migrated yet
@@ -167,6 +220,9 @@ pub(crate) async fn login(
         }
     }
     warn!(user=user.name, "Invalid password");
+    record_audit(state, Some(user.id), user.name.clone(), AuditActorType::User,
+        AuditAction::Login, None, None, None, AuditResult::Failure,
+        Some("invalid password".to_string()), ip).await;
     Err(ApiError::Unauthorized(Some("Invalid credentials".to_string())))
 }
 
@@ -210,10 +266,15 @@ pub(crate) async fn change_password(
 #[post("/auth/logout")]
 /// Endpoint to logout.
 pub(crate) async fn logout(
+    state: &State<AppState>,
     jar: &CookieJar<'_>,
+    remote: Option<std::net::IpAddr>,
     authentication: Option<Authenticated>
 ) -> Result<(), ApiError> {
     if let Some(authentication) = authentication {
+        let (actor_id, label, atype) = audit_actor(state, &authentication.claims).await;
+        record_audit(state, actor_id, label, atype, AuditAction::Logout,
+            None, None, None, AuditResult::Success, None, remote.map(|a| a.to_string())).await;
         invalidate_token(&authentication.claims.jti);
     }
     jar.remove_private("auth_token");
@@ -372,7 +433,7 @@ pub(crate) async fn get_all_ca(
 pub(crate) async fn create_ca(
     state: &State<AppState>,
     payload: Json<CreateCARequest>,
-    _authentication: AuthenticatedLocalAdmin
+    authentication: AuthenticatedLocalAdmin
 ) -> Result<Json<i64>, ApiError> {
     let mut ca = match payload.ca_type {
         CAType::TLS => {
@@ -392,6 +453,11 @@ pub(crate) async fn create_ca(
 
     ca = state.db.insert_ca(ca).await?;
     save_ca(&ca)?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::CreateCa,
+        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(Json(ca.id))
 }
 
@@ -445,7 +511,7 @@ fn asn1_to_unix_ms(t: &openssl::asn1::Asn1TimeRef) -> Result<i64, ApiError> {
 pub(crate) async fn import_ca(
     state: &State<AppState>,
     form: rocket::form::Form<ImportCaForm<'_>>,
-    _authentication: AuthenticatedLocalAdmin,
+    authentication: AuthenticatedLocalAdmin,
 ) -> Result<Json<i64>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key};
 
@@ -479,6 +545,11 @@ pub(crate) async fn import_ca(
 
     ca = state.db.insert_ca(ca).await?;
     save_ca(&ca)?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::ImportCa,
+        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(Json(ca.id))
 }
 
@@ -1118,6 +1189,12 @@ pub(crate) async fn download_certificate(
 
                 let cursor = zip.finish().map_err(|e| ApiError::Other(e.to_string()))?;
                 let zip_bytes = cursor.into_inner();
+
+                let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+                record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
+                    Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
+                    Some(download_format.clone().unwrap_or_else(|| "pkcs12".into())), None).await;
+
                 return Ok(DownloadResponse::new_typed(
                     zip_bytes,
                     &format!("{}.zip", certificate.name),
@@ -1132,6 +1209,11 @@ pub(crate) async fn download_certificate(
         CertificateType::TLSClient | CertificateType::TLSServer => format!("{}.p12", certificate.name),
         CertificateType::SSHClient | CertificateType::SSHServer => format!("{}.zip", certificate.name),
     };
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
+        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
+        Some(download_format.clone().unwrap_or_else(|| "pkcs12".into())), None).await;
 
     Ok(DownloadResponse::new(certificate.data.into_bytes(), &file_name))
 }
@@ -1151,6 +1233,11 @@ pub(crate) async fn fetch_certificate_password(
     if !can_access_cert_secret(state, &authentication.claims, user_id, id).await? {
         return Err(ApiError::Forbidden(None));
     }
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::FetchCertificatePassword,
+        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(Json(password))
 }
 
@@ -1160,13 +1247,18 @@ pub(crate) async fn fetch_certificate_password(
 pub(crate) async fn delete_ca(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedLocalAdmin
+    authentication: AuthenticatedLocalAdmin
 ) -> Result<(), ApiError> {
     let related_cert_count = state.db.count_user_certs_by_ca_id(id).await?;
     if related_cert_count > 0 {
         return Err(ApiError::BadRequest("The CA still has user certificates attached to it.".to_string()));
     }
     state.db.delete_ca(id).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteCa,
+        Some("ca".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
@@ -1183,6 +1275,11 @@ pub(crate) async fn delete_user_cert(
         || (!authentication.claims.is_service() && cert.user_id == authentication.claims.id);
     if !allowed { return Err(ApiError::Forbidden(None)); }
     state.db.delete_user_cert(id).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteCertificate,
+        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
@@ -1250,6 +1347,10 @@ pub(crate) async fn revoke_certificate(
             state.db.increase_ca_crl_number(ca.id, ca.crl_number).await?;
         }
     }
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::RevokeCertificate,
+        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
 
     Ok(())
 }
@@ -1327,7 +1428,7 @@ pub(crate) async fn fetch_settings(
 pub(crate) async fn update_settings(
     state: &State<AppState>,
     payload: Json<InnerSettings>,
-    _authentication: AuthenticatedPrivileged
+    authentication: AuthenticatedPrivileged
 ) -> Result<(), ApiError> {
     let mut oidc = state.oidc.lock().await;
 
@@ -1366,6 +1467,10 @@ pub(crate) async fn update_settings(
 
     info!("Settings updated.");
 
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateSettings,
+        Some("settings".into()), None, None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
@@ -1386,7 +1491,7 @@ pub(crate) async fn get_users(
 pub(crate) async fn create_user(
     state: &State<AppState>,
     payload: Json<CreateUserRequest>,
-    _authentication: AuthenticatedPrivileged
+    authentication: AuthenticatedPrivileged
 ) -> Result<Json<i64>, ApiError> {
     let trim_password = payload.password.as_deref().unwrap_or("").trim();
 
@@ -1414,6 +1519,10 @@ pub(crate) async fn create_user(
 
     info!(user=?user, "User created.");
     trace!("{:?}", user);
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::CreateUser,
+        Some("user".into()), Some(user.id.to_string()), None, AuditResult::Success, None, None).await;
 
     Ok(Json(user.id))
 }
@@ -1447,6 +1556,10 @@ pub(crate) async fn update_user(
     info!(user=?user, "User updated.");
     trace!("{:?}", user);
 
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateUser,
+        Some("user".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
@@ -1458,12 +1571,16 @@ pub(crate) async fn delete_user(
     id: i64,
     authentication: AuthenticatedPrivileged
 ) -> Result<(), ApiError> {
-    if id == authentication._claims.id {
+    if id == authentication.claims.id {
         return Err(ApiError::BadRequest("You cannot delete your own account".into()));
     }
     state.db.delete_user(id).await?;
 
     info!(user=?id, "User deleted.");
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteUser,
+        Some("user".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
 
     Ok(())
 }
@@ -1553,7 +1670,7 @@ pub(crate) async fn create_service_account(
     state: &State<AppState>,
     id: i64,
     payload: Json<CreateServiceAccountRequest>,
-    _authentication: AuthenticatedPrivileged,
+    authentication: AuthenticatedPrivileged,
 ) -> Result<Json<ServiceAccountCreated>, ApiError> {
     // Validate scopes
     for scope in &payload.scopes {
@@ -1580,6 +1697,10 @@ pub(crate) async fn create_service_account(
         revoked: false,
     };
     let saved = state.db.insert_service_account(sa).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::CreateServiceAccount,
+        Some("service_account".into()), Some(saved.id.to_string()), None, AuditResult::Success, None, None).await;
 
     Ok(Json(ServiceAccountCreated {
         id: saved.id,
@@ -1608,9 +1729,14 @@ pub(crate) async fn list_service_accounts(
 pub(crate) async fn revoke_service_account(
     state: &State<AppState>,
     sid: i64,
-    _authentication: AuthenticatedPrivileged,
+    authentication: AuthenticatedPrivileged,
 ) -> Result<(), ApiError> {
     state.db.revoke_service_account(sid).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::RevokeServiceAccount,
+        Some("service_account".into()), Some(sid.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
@@ -1620,9 +1746,14 @@ pub(crate) async fn revoke_service_account(
 pub(crate) async fn delete_service_account(
     state: &State<AppState>,
     sid: i64,
-    _authentication: AuthenticatedPrivileged,
+    authentication: AuthenticatedPrivileged,
 ) -> Result<(), ApiError> {
     state.db.delete_service_account(sid).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteServiceAccount,
+        Some("service_account".into()), Some(sid.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
@@ -1640,36 +1771,94 @@ pub(crate) async fn get_group(state: &State<AppState>, id: i64, _auth: Authentic
 
 #[openapi(tag = "Groups")]
 #[post("/groups", format = "json", data = "<payload>")]
-pub(crate) async fn create_group(state: &State<AppState>, payload: Json<GroupRequest>, _auth: AuthenticatedLocalAdmin) -> Result<Json<i64>, ApiError> {
+pub(crate) async fn create_group(state: &State<AppState>, payload: Json<GroupRequest>, auth: AuthenticatedLocalAdmin) -> Result<Json<i64>, ApiError> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
     let g = state.db.insert_group(payload.name.clone(), payload.description.clone(), now).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::CreateGroup,
+        Some("group".into()), Some(g.id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(Json(g.id))
 }
 
 #[openapi(tag = "Groups")]
 #[put("/groups/<id>", format = "json", data = "<payload>")]
-pub(crate) async fn update_group(state: &State<AppState>, id: i64, payload: Json<GroupRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+pub(crate) async fn update_group(state: &State<AppState>, id: i64, payload: Json<GroupRequest>, auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.update_group(id, payload.name.clone(), payload.description.clone()).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
 #[openapi(tag = "Groups")]
 #[delete("/groups/<id>")]
-pub(crate) async fn delete_group(state: &State<AppState>, id: i64, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+pub(crate) async fn delete_group(state: &State<AppState>, id: i64, auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.delete_group(id).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteGroup,
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+
     Ok(())
 }
 
 #[openapi(tag = "Groups")]
 #[put("/groups/<id>/users", format = "json", data = "<payload>")]
-pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.set_group_users(id, &payload.ids).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("members".into()), None).await;
+
     Ok(())
 }
 
 #[openapi(tag = "Groups")]
 #[put("/groups/<id>/certificates", format = "json", data = "<payload>")]
-pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.set_group_certs(id, &payload.ids).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("certificates".into()), None).await;
+
     Ok(())
+}
+
+#[openapi(tag = "Audit")]
+#[get("/audit?<actor>&<action>&<result>&<from>&<to>&<limit>&<offset>")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn get_audit(
+    state: &State<AppState>,
+    _auth: AuthenticatedLocalAdmin,
+    actor: Option<i64>,
+    action: Option<String>,
+    result: Option<String>,
+    from: Option<i64>,
+    to: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Json<crate::data::objects::AuditPage>, ApiError> {
+    let filter = crate::data::objects::AuditFilter {
+        actor_id: actor, action, result, from, to,
+    };
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let offset = offset.unwrap_or(0).max(0);
+    Ok(Json(state.db.query_audit(filter, limit, offset).await?))
+}
+
+#[openapi(tag = "Audit")]
+#[delete("/audit?<before>")]
+pub(crate) async fn delete_audit(
+    state: &State<AppState>,
+    _auth: AuthenticatedLocalAdmin,
+    before: i64,
+) -> Result<Json<u64>, ApiError> {
+    let n = state.db.purge_audit(before).await?;
+    Ok(Json(n as u64))
 }
