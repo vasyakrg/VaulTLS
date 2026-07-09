@@ -50,7 +50,12 @@
       </template>
 
       <Column field="name.cn" :header="$t('common.colName')" sortable>
-        <template #body="{ data }">{{ data.name.cn }}</template>
+        <template #body="{ data }">
+          <div>{{ data.name.cn }}</div>
+          <div v-if="certsByCaId.get(data.id)?.length" class="vt-ca-certs">
+            {{ certsByCaId.get(data.id)!.join(', ') }}
+          </div>
+        </template>
       </Column>
       <Column v-if="hasAnyOU" field="name.ou" :header="$t('common.colGroup')">
         <template #body="{ data }">{{ data.name.ou ?? '' }}</template>
@@ -220,6 +225,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import Tooltip from 'primevue/tooltip'
 import { useCAStore } from '@/stores/cas'
+import { useCertificateStore } from '@/stores/certificates'
 import { type CA, type CARequirements, CAType } from '@/types/CA'
 import { useAuthStore } from '@/stores/auth'
 import { ValidityUnit } from '@/types/ValidityUnit.ts'
@@ -242,6 +248,7 @@ const vTooltip = Tooltip
 
 // stores
 const caStore = useCAStore()
+const certStore = useCertificateStore()
 const authStore = useAuthStore()
 
 // local state
@@ -254,6 +261,18 @@ const casArray = computed(() => Array.from(cas.value.values()))
 const loading = computed(() => caStore.loading)
 const error = computed(() => caStore.error)
 const hasAnyOU = computed(() => casArray.value.some((ca) => ca.name.ou))
+
+// map ca_id -> list of certificate names issued by that CA
+const certsByCaId = computed(() => {
+  const map = new Map<number, string[]>()
+  for (const cert of certStore.certificates.values()) {
+    if (cert.ca_id == null) continue
+    const list = map.get(cert.ca_id) ?? []
+    list.push(cert.name.cn)
+    map.set(cert.ca_id, list)
+  }
+  return map
+})
 
 // modals state
 const isDeleteModalVisible = ref(false)
@@ -283,7 +302,7 @@ const validityUnitOptions = computed(() => [
 
 // lifecycle
 onMounted(async () => {
-  await caStore.fetchCAs()
+  await Promise.all([caStore.fetchCAs(), certStore.fetchCertificates()])
 })
 
 // handlers
@@ -426,6 +445,13 @@ const getCrlMenuItems = (ca: CA) => {
 
 .vt-search {
   padding-left: 32px;
+}
+
+.vt-ca-certs {
+  font-size: 11px;
+  color: var(--vt-muted);
+  margin-top: 2px;
+  line-height: 1.35;
 }
 
 .vt-row-actions {
