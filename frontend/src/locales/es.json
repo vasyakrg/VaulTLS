@@ -472,6 +472,7 @@
     "result": "Resultado",
     "anyAction": "Cualquier acción",
     "anyResult": "Cualquier resultado",
+    "actorId": "ID de usuario",
     "olderThan": "Más antiguo que {days} días",
     "all": "Todos los registros",
     "purge": "Purgar",

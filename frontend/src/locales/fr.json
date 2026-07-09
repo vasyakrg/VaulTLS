@@ -11,6 +11,7 @@
     "result": "Résultat",
     "anyAction": "Toute action",
     "anyResult": "Tout résultat",
+    "actorId": "ID utilisateur",
     "olderThan": "Plus ancien que {days} jours",
     "all": "Tous les enregistrements",
     "purge": "Purger",

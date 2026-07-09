@@ -1808,15 +1808,25 @@ pub(crate) async fn delete_group(state: &State<AppState>, id: i64, auth: Authent
 
 #[openapi(tag = "Groups")]
 #[put("/groups/<id>/users", format = "json", data = "<payload>")]
-pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.set_group_users(id, &payload.ids).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("members".into()), None).await;
+
     Ok(())
 }
 
 #[openapi(tag = "Groups")]
 #[put("/groups/<id>/certificates", format = "json", data = "<payload>")]
-pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
+pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.set_group_certs(id, &payload.ids).await?;
+
+    let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("certificates".into()), None).await;
+
     Ok(())
 }
 

@@ -25,6 +25,7 @@
       </select>
       <input type="date" v-model="fromDate" @change="reload" />
       <input type="date" v-model="toDate" @change="reload" />
+      <input type="number" v-model="actorId" :placeholder="$t('audit.actorId')" min="1" @change="reload" />
     </div>
 
     <table class="audit-table">
@@ -81,6 +82,7 @@ const offset = ref(0);
 const filters = reactive({ action: '', result: '' });
 const fromDate = ref('');
 const toDate = ref('');
+const actorId = ref<string>('');
 const purgeChoice = ref('90');
 
 const toTs = (d: string): number | undefined =>
@@ -92,10 +94,11 @@ async function reload() {
 }
 async function load() {
   const page = await fetchAudit({
+    actor: actorId.value ? Number(actorId.value) : undefined,
     action: filters.action || undefined,
     result: filters.result || undefined,
     from: toTs(fromDate.value),
-    to: toTs(toDate.value),
+    to: toDate.value ? (toTs(toDate.value)! + 86399) : undefined,
     limit: limit.value,
     offset: offset.value,
   });
