@@ -5,7 +5,7 @@
         <h1>{{ $t('ca.title') }}</h1>
         <p class="vt-sub">{{ $t('ca.subtitle') }}</p>
       </div>
-      <div class="vt-actions" v-if="authStore.isAdmin">
+      <div class="vt-actions" v-if="authStore.isLocalAdmin">
         <Button
           icon="pi pi-upload"
           severity="secondary"
@@ -109,7 +109,7 @@
               popup
             />
             <Button
-              v-if="authStore.isAdmin"
+              v-if="authStore.isLocalAdmin"
               :id="'DeleteButton-' + data.id"
               icon="pi pi-trash"
               severity="danger"
