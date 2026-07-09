@@ -456,7 +456,7 @@ pub(crate) async fn create_ca(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::CreateCa,
-        Some("ca".into()), None, None, AuditResult::Success, None, None).await;
+        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, None).await;
 
     Ok(Json(ca.id))
 }
@@ -548,7 +548,7 @@ pub(crate) async fn import_ca(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::ImportCa,
-        Some("ca".into()), None, None, AuditResult::Success, None, None).await;
+        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, None).await;
 
     Ok(Json(ca.id))
 }
@@ -1818,4 +1818,37 @@ pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: J
 pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, payload: Json<GroupMembersRequest>, _auth: AuthenticatedLocalAdmin) -> Result<(), ApiError> {
     state.db.set_group_certs(id, &payload.ids).await?;
     Ok(())
+}
+
+#[openapi(tag = "Audit")]
+#[get("/audit?<actor>&<action>&<result>&<from>&<to>&<limit>&<offset>")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn get_audit(
+    state: &State<AppState>,
+    _auth: AuthenticatedLocalAdmin,
+    actor: Option<i64>,
+    action: Option<String>,
+    result: Option<String>,
+    from: Option<i64>,
+    to: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Json<crate::data::objects::AuditPage>, ApiError> {
+    let filter = crate::data::objects::AuditFilter {
+        actor_id: actor, action, result, from, to,
+    };
+    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let offset = offset.unwrap_or(0).max(0);
+    Ok(Json(state.db.query_audit(filter, limit, offset).await?))
+}
+
+#[openapi(tag = "Audit")]
+#[delete("/audit?<before>")]
+pub(crate) async fn delete_audit(
+    state: &State<AppState>,
+    _auth: AuthenticatedLocalAdmin,
+    before: i64,
+) -> Result<Json<u64>, ApiError> {
+    let n = state.db.purge_audit(before).await?;
+    Ok(Json(n as u64))
 }

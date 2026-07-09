@@ -271,7 +271,9 @@ pub async fn create_rocket() -> Rocket<Build> {
                 update_group,
                 delete_group,
                 set_group_users,
-                set_group_certificates
+                set_group_certificates,
+                get_audit,
+                delete_audit
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -360,7 +362,9 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 update_group,
                 delete_group,
                 set_group_users,
-                set_group_certificates
+                set_group_certificates,
+                get_audit,
+                delete_audit
             ],
         )
         .mount(
@@ -419,7 +423,9 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 update_group,
                 delete_group,
                 set_group_users,
-                set_group_certificates
+                set_group_certificates,
+                get_audit,
+                delete_audit
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])
