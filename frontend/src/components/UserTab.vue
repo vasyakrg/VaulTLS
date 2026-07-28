@@ -64,16 +64,6 @@
         <template #body="{ data }">
           <div class="vt-row-actions">
             <Button
-              :id="'UserServiceAccountsButton-' + data.id"
-              icon="pi pi-key"
-              severity="secondary"
-              outlined
-              size="small"
-              v-tooltip.top="$t('serviceAccounts.openButton')"
-              :aria-label="$t('serviceAccounts.openButton')"
-              @click="openServiceAccounts(data)"
-            />
-            <Button
               :id="'UserEditButton-' + data.id"
               icon="pi pi-pencil"
               severity="secondary"
@@ -214,11 +204,6 @@
         <small>{{ $t('users.deleteModal.disclaimer') }}</small>
       </p>
     </BaseModal>
-
-    <ServiceAccountsModal
-      v-model:visible="isServiceAccountsVisible"
-      :user="serviceAccountsUser"
-    />
   </div>
 </template>
 
@@ -238,7 +223,6 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import { FilterMatchMode } from '@primevue/core/api'
 import BaseModal from '@/components/BaseModal.vue'
-import ServiceAccountsModal from '@/components/ServiceAccountsModal.vue'
 
 const { t } = useI18n()
 
@@ -327,14 +311,6 @@ const deleteUser = async () => {
     await certStore.fetchCertificates()
     closeDeleteModal()
   }
-}
-
-// --- Service Accounts ---
-const isServiceAccountsVisible = ref(false)
-const serviceAccountsUser = ref<User | null>(null)
-const openServiceAccounts = (user: User) => {
-  serviceAccountsUser.value = user
-  isServiceAccountsVisible.value = true
 }
 
 // lifecycle
