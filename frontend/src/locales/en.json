@@ -201,6 +201,7 @@
   "serviceAccounts": {
     "title": "Service Accounts",
     "subtitle": "API access for {name}",
+    "selfSubtitle": "Machine credentials for API access. A service account acts on your behalf and never gets more access than you have.",
     "openButton": "Service accounts",
     "create": "Create service account",
     "name": "Name",

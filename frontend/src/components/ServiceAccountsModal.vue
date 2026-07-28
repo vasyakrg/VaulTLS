@@ -37,7 +37,8 @@
         <input v-model="scopeRead" type="checkbox" class="vt-checkbox" />
         {{ $t('serviceAccounts.scopeCertRead') }}
       </label>
-      <label class="vt-checkbox-label">
+      <!-- cert:issue отдаёт право выпускать сертификаты — только для админа -->
+      <label v-if="authStore.isAdmin" class="vt-checkbox-label">
         <input v-model="scopeIssue" type="checkbox" class="vt-checkbox" />
         {{ $t('serviceAccounts.scopeCertIssue') }}
       </label>
@@ -108,6 +109,7 @@ import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import { useServiceAccountStore } from '@/stores/serviceAccounts'
+import { useAuthStore } from '@/stores/auth'
 import type { User } from '@/types/User'
 
 const props = defineProps<{ visible: boolean; user: User | null }>()
@@ -116,6 +118,7 @@ const emit = defineEmits<{ 'update:visible': [boolean] }>()
 const vTooltip = Tooltip
 
 const store = useServiceAccountStore()
+const authStore = useAuthStore()
 const newName = ref('')
 const scopeRead = ref(true)
 const scopeIssue = ref(false)
@@ -138,7 +141,7 @@ const onCreate = async () => {
   if (!props.user) return
   const scopes: string[] = []
   if (scopeRead.value) scopes.push('cert:read')
-  if (scopeIssue.value) scopes.push('cert:issue')
+  if (scopeIssue.value && authStore.isAdmin) scopes.push('cert:issue')
   await store.create(props.user.id, { name: newName.value, scopes })
   newName.value = ''
 }

@@ -324,7 +324,26 @@
           </div>
         </div>
       </div>
+
+      <!-- Service Accounts (собственные, доступны любому пользователю) -->
+      <div class="vt-subsection">
+        <div class="vt-subsection-title">{{ $t('serviceAccounts.title') }}</div>
+        <p class="vt-sub">{{ $t('serviceAccounts.selfSubtitle') }}</p>
+        <Button
+          id="OwnServiceAccountsButton"
+          icon="pi pi-key"
+          severity="secondary"
+          outlined
+          :label="$t('serviceAccounts.openButton')"
+          @click="isServiceAccountsVisible = true"
+        />
+      </div>
     </div>
+
+    <ServiceAccountsModal
+      v-model:visible="isServiceAccountsVisible"
+      :user="current_user ?? null"
+    />
 
     <!-- Feedback messages -->
     <div v-if="settings_error" class="vt-error">{{ settings_error }}</div>
@@ -349,6 +368,7 @@ import InputNumber from 'primevue/inputnumber';
 import Password from 'primevue/password';
 import Select from 'primevue/select';
 import ToggleSwitch from 'primevue/toggleswitch';
+import ServiceAccountsModal from '@/components/ServiceAccountsModal.vue';
 
 const { t } = useI18n();
 
@@ -361,6 +381,7 @@ const setupStore = useSetupStore();
 // Local copy of settings — not committed to the store until Save is clicked
 const settings = ref<Settings | null>(null);
 const current_user = computed(() => authStore.current_user);
+const isServiceAccountsVisible = ref(false);
 const settings_error = computed(() => settingsStore.error);
 const user_error = computed(() => userStore.error);
 const password_error = computed(() => authStore.error);
