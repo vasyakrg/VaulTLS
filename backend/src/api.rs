@@ -1117,11 +1117,10 @@ async fn can_access_cert_secret(state: &State<AppState>, claims: &Claims, cert_o
     if claims.is_local_admin() { return Ok(true); }
     // владелец — свой (service ограничен scope cert:read; проверяется вызывающим)
     if cert_owner_id == claims.id { return Ok(true); }
-    // service-аккаунты дальше группового доступа не идут — только свои серты
-    if claims.is_service() { return Ok(false); }
-    // любой человек (обычный пользователь или OIDC admin) может скачать приватный
-    // материал серта, если состоит хотя бы в одной группе этого серта. Управление
-    // (revoke/delete) при этом остаётся за владельцем и локальным админом.
+    // Групповой доступ. claims.id у сервисного токена — это его владелец, поэтому
+    // сервис получает ровно те же права на чтение, что и владелец: не больше и не
+    // меньше. Иначе серт виден в GET /certificates, но не скачивается (403).
+    // Управление (revoke/delete) остаётся за владельцем и локальным админом.
     Ok(state.db.user_shares_group_with_cert(claims.id, cert_id).await?)
 }
 
@@ -1662,20 +1661,47 @@ pub(crate) async fn service_token(
 }
 
 const ALLOWED_SCOPES: [&str; 2] = ["cert:read", "cert:issue"];
+/// Скоупы, которые обычный пользователь вправе выдать своему сервисному аккаунту.
+/// Выпуск сертификатов (`cert:issue`) остаётся за админом.
+const SELF_SERVICE_SCOPES: [&str; 1] = ["cert:read"];
+
+/// Кто вправе управлять сервисными аккаунтами пользователя `owner_id`.
+///
+/// Сервисные токены не допускаются вовсе: их claims наследуют роль владельца,
+/// поэтому токен админского сервиса иначе смог бы выпускать себе новые аккаунты
+/// с любыми скоупами и переживать собственный отзыв.
+fn ensure_can_manage_service_accounts(claims: &Claims, owner_id: i64) -> Result<(), ApiError> {
+    if claims.is_service() {
+        return Err(ApiError::Forbidden(None));
+    }
+    if claims.role == UserRole::Admin || claims.id == owner_id {
+        return Ok(());
+    }
+    Err(ApiError::Forbidden(None))
+}
 
 #[openapi(tag = "Service Accounts")]
 #[post("/users/<id>/service-accounts", format = "json", data = "<payload>")]
-/// Create a service account owned by a user. Requires admin. Returns the secret once.
+/// Create a service account owned by a user. Admins may target any user and any scope;
+/// a plain user may only create accounts for themselves, limited to `cert:read`.
+/// Service tokens may never manage service accounts. Returns the secret once.
 pub(crate) async fn create_service_account(
     state: &State<AppState>,
     id: i64,
     payload: Json<CreateServiceAccountRequest>,
-    authentication: AuthenticatedPrivileged,
+    authentication: Authenticated,
 ) -> Result<Json<ServiceAccountCreated>, ApiError> {
+    ensure_can_manage_service_accounts(&authentication.claims, id)?;
+    let is_admin = authentication.claims.role == UserRole::Admin;
+
     // Validate scopes
     for scope in &payload.scopes {
         if !ALLOWED_SCOPES.contains(&scope.as_str()) {
             return Err(ApiError::BadRequest(format!("Unknown scope: {scope}")));
+        }
+        // Сервис не может получить больше прав, чем есть у его владельца.
+        if !is_admin && !SELF_SERVICE_SCOPES.contains(&scope.as_str()) {
+            return Err(ApiError::Forbidden(None));
         }
     }
     // Owner must exist
@@ -1713,24 +1739,42 @@ pub(crate) async fn create_service_account(
 
 #[openapi(tag = "Service Accounts")]
 #[get("/users/<id>/service-accounts")]
-/// List a user's service accounts (no secrets). Requires admin.
+/// List a user's service accounts (no secrets). Admin sees any user's accounts,
+/// a plain user only their own. Service tokens are refused.
 pub(crate) async fn list_service_accounts(
     state: &State<AppState>,
     id: i64,
-    _authentication: AuthenticatedPrivileged,
+    authentication: Authenticated,
 ) -> Result<Json<Vec<ServiceAccount>>, ApiError> {
+    ensure_can_manage_service_accounts(&authentication.claims, id)?;
     let accounts = state.db.list_service_accounts_by_user(id).await?;
     Ok(Json(accounts))
 }
 
+/// Загрузить сервисный аккаунт и убедиться, что вызывающий вправе им управлять.
+async fn authorize_service_account(
+    state: &State<AppState>,
+    claims: &Claims,
+    sid: i64,
+) -> Result<(), ApiError> {
+    let sa = state
+        .db
+        .get_service_account_by_id(sid)
+        .await?
+        .ok_or(ApiError::NotFound(None))?;
+    ensure_can_manage_service_accounts(claims, sa.user_id)
+}
+
 #[openapi(tag = "Service Accounts")]
 #[delete("/service-accounts/<sid>")]
-/// Revoke a service account. Requires admin.
+/// Revoke a service account. Admin may revoke any; a plain user only their own.
+/// Service tokens are refused — a token must not be able to outlive its own revocation.
 pub(crate) async fn revoke_service_account(
     state: &State<AppState>,
     sid: i64,
-    authentication: AuthenticatedPrivileged,
+    authentication: Authenticated,
 ) -> Result<(), ApiError> {
+    authorize_service_account(state, &authentication.claims, sid).await?;
     state.db.revoke_service_account(sid).await?;
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
@@ -1742,12 +1786,14 @@ pub(crate) async fn revoke_service_account(
 
 #[openapi(tag = "Service Accounts")]
 #[delete("/service-accounts/<sid>/permanent")]
-/// Permanently delete a service account from the database. Requires admin.
+/// Permanently delete a service account from the database. Admin may delete any;
+/// a plain user only their own. Service tokens are refused.
 pub(crate) async fn delete_service_account(
     state: &State<AppState>,
     sid: i64,
-    authentication: AuthenticatedPrivileged,
+    authentication: Authenticated,
 ) -> Result<(), ApiError> {
+    authorize_service_account(state, &authentication.claims, sid).await?;
     state.db.delete_service_account(sid).await?;
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;

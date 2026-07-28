@@ -1081,6 +1081,22 @@ impl VaulTLSDB {
         })
     }
 
+    pub(crate) async fn get_service_account_by_id(&self, id: i64) -> Result<Option<ServiceAccount>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let result = conn.query_row(
+                "SELECT id, name, client_id, secret_hash, user_id, scopes, created_at, last_used_at, revoked \
+                 FROM service_accounts WHERE id = ?1",
+                params![id],
+                service_account_from_row,
+            );
+            match result {
+                Ok(sa) => Ok(Some(sa)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!(e)),
+            }
+        })
+    }
+
     pub(crate) async fn list_service_accounts_by_user(&self, user_id: i64) -> Result<Vec<ServiceAccount>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
