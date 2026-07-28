@@ -16,7 +16,7 @@ on:
 
 jobs:
   build:
-    #runs-on: [self-hosted, X64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
