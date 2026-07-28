@@ -16,7 +16,7 @@ on:
 
 jobs:
   build:
-    runs-on: [self-hosted, X64]
+    #runs-on: [self-hosted, X64]
     permissions:
       contents: read
       packages: write
