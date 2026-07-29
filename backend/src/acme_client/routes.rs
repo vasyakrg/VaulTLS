@@ -161,15 +161,16 @@ pub async fn issue_acme_client_order(
                     // push the superseded content into certificate_versions, mirroring
                     // the unattended ACME renewal path in
                     // notification::notifier::handle_acme_renewal — same guard, same
-                    // "leave ca_id alone" / "no human actor" reasoning, just triggered
-                    // from the UI/API instead of the expiry watcher.
+                    // "leave ca_id alone" reasoning. Unlike that path, this one runs
+                    // under AuthenticatedPrivileged: a person pressed "issue", so
+                    // attribution below is a real actor, not the system.
                     let existing = state.db.get_user_cert_by_id(renew_id).await
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                     let tmp_cert = crate::certs::common::Certificate {
                         data: crate::data::enums::CertData::Pkcs12(packed.pkcs12_der.clone()),
                         password: String::new(),
                         valid_until: packed.valid_until,
-                        ..existing
+                        ..existing.clone()
                     };
                     let fingerprint = tmp_cert.get_fingerprint()
                         .map_err(|e| anyhow::anyhow!("cannot compute fingerprint for renewed ACME cert: {e}"))?;
@@ -177,11 +178,12 @@ pub async fn issue_acme_client_order(
                         .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
                     let created_on = chrono::Utc::now().timestamp_millis();
 
-                    state.db.replace_certificate(
+                    let new_version = state.db.replace_certificate(
                         renew_id,
-                        // No human actor, exactly as the unattended ACME renewal path
-                        // does — see notifier.rs::handle_acme_renewal for the reasoning.
-                        None,
+                        // A person triggered this via the UI/API — attribute it to
+                        // them, matching what the manual replace endpoint
+                        // (api::update_certificate) records for `replaced_by`.
+                        Some(auth.claims.id),
                         crate::db::ReplaceCertificateInput {
                             data: packed.pkcs12_der,
                             // pack_issued_certificate above is always called with "".
@@ -189,13 +191,27 @@ pub async fn issue_acme_client_order(
                             created_on,
                             valid_until: packed.valid_until,
                             serial_hex,
-                            fingerprint,
+                            fingerprint: fingerprint.clone(),
                             // ACME certificates carry ca_id = NULL and must keep it;
                             // 0 means "leave the existing binding alone".
                             ca_id: 0,
                         },
                         crate::db::ReplaceGuard::AcmeRenewal,
                     ).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+                    // Same shape as api::update_certificate's audit call: real actor
+                    // via audit_actor/record_audit, AuditAction::UpdateCertificate,
+                    // detail names the version transition — just labelled as an ACME
+                    // renewal instead of a manual replace.
+                    let (aid, alabel, atype) = crate::api::audit_actor(state, &auth.claims).await;
+                    crate::api::record_audit(
+                        state, aid, alabel, atype, crate::data::enums::AuditAction::UpdateCertificate,
+                        Some("certificate".into()), Some(renew_id.to_string()), Some(existing.name.cn.clone()),
+                        crate::data::enums::AuditResult::Success,
+                        Some(format!("ACME renewal: v{} → v{new_version}, fingerprint {fingerprint}", existing.version)),
+                        None,
+                    ).await;
+
                     renew_id
                 } else {
                     let cert_name = if order.include_wildcard {
