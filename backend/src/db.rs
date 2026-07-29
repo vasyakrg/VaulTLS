@@ -2197,6 +2197,9 @@ mod tests {
         assert!(!versions[1].current);
         assert!(versions[1].version_id.is_some());
         assert_eq!(versions[1].replaced_by, Some(user.id));
+        // история хранит вытесненный (старый) fingerprint, а не новый
+        assert_eq!(versions[0].fingerprint.as_deref(), Some("bb"));
+        assert_eq!(versions[1].fingerprint.as_deref(), Some("aa"));
 
         // байты и пароль старой версии доступны
         let old = db.get_certificate_version(cert.id, 1).await.unwrap().unwrap();
@@ -2231,8 +2234,28 @@ mod tests {
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
         }).await.unwrap();
 
+        // фикстура действительно создала историческую запись — иначе постусловие ничего не доказывает
+        let conn = db.pool.get().unwrap();
+        let before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM certificate_versions WHERE cert_id = ?1",
+            params![cert.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(before, 1);
+        drop(conn);
+
         db.delete_user_cert(cert.id).await.unwrap();
         assert!(db.list_certificate_versions(cert.id).await.unwrap().is_empty());
+
+        // прямая проверка таблицы истории: каскад действительно удалил осиротевшие строки,
+        // а не просто «родителя нет — list_certificate_versions вернул пусто по другой причине»
+        let conn = db.pool.get().unwrap();
+        let after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM certificate_versions WHERE cert_id = ?1",
+            params![cert.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(after, 0);
     }
 }
 
