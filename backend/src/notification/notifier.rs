@@ -366,11 +366,24 @@ async fn handle_acme_renewal(
         let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")?;
 
         if !renewal_extends_expiry(packed.valid_until, cert.valid_until) {
-            info!(
-                "ACME renewal for cert {} skipped: issued certificate expires at {} which does not extend the current expiry {}.",
-                cert.id, packed.valid_until, cert.valid_until
+            // Заказ НЕ привёл к замене — его статус обязан это отражать, как и на
+            // ручном пути (acme_client::routes::issue_acme_client_order): `failed`
+            // с причиной в тексте, а не `valid`. `valid` означал бы «сертификат
+            // выпущен и записан», чего не произошло.
+            let reason = format!(
+                "issued certificate expires at {} which does not extend the current expiry {}; replacement refused",
+                packed.valid_until, cert.valid_until
             );
-            db.update_acme_client_order_status(order.id, "valid", Some(cert.id), None).await?;
+            info!("ACME renewal for cert {} skipped: {reason}.", cert.id);
+            // Best-effort, как и запись статуса после успешной замены ниже: падать
+            // здесь через `?` смысла нет — замены не было, ошибку записи статуса
+            // нужно видеть в логе, а не превращать в провал продления.
+            if let Err(e) = db.update_acme_client_order_status(order.id, "failed", None, Some(reason)).await {
+                tracing::error!(
+                    error = %e, cert_id = cert.id, order_id = order.id,
+                    "failed to record the refused ACME renewal on the order; it stays pending_dns"
+                );
+            }
             return Ok(());
         }
 

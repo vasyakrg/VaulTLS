@@ -124,6 +124,40 @@ pub async fn create_acme_client_order(
     Ok(Json(CreateOrderResponse { order_id: order.id, txt_records: order.txt_records }))
 }
 
+/// Выпуск состоялся, но новый сертификат не продлевает срок действия текущего,
+/// поэтому замена отклонена. Отдельный тип нужен, чтобы обработчик ниже отличил
+/// этот случай от прочих провалов и вернул 409, а не 500.
+#[derive(Debug)]
+struct RenewalDoesNotExtendExpiry(String);
+
+impl std::fmt::Display for RenewalDoesNotExtendExpiry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for RenewalDoesNotExtendExpiry {}
+
+/// Срок действия в человекочитаемом виде для текста ошибки (мс UNIX).
+fn fmt_expiry(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| ms.to_string())
+}
+
+/// Записывает провал попытки выпуска в заказ. Best-effort: провалившаяся запись
+/// статуса не должна подменять собой исходную причину отказа — она лишь логируется.
+/// Заказ при этом остаётся `pending_dns`; см. комментарий на том же месте в
+/// notifier.rs::handle_acme_renewal.
+async fn record_order_failure(state: &State<AppState>, order_id: i64, error: &str) {
+    if let Err(e) = state.db.update_acme_client_order_status(order_id, "failed", None, Some(error.to_string())).await {
+        tracing::error!(
+            error = %e, order_id,
+            "failed to record the failed ACME order status; the order stays pending_dns"
+        );
+    }
+}
+
 #[openapi(tag = "ACME Client")]
 #[post("/acme-client/orders/<id>/issue")]
 pub async fn issue_acme_client_order(
@@ -173,18 +207,22 @@ pub async fn issue_acme_client_order(
                     // Тот же guard, что в notifier::handle_acme_renewal, и та же
                     // функция: замена, не продлевающая срок, не даёт ничего, а стоит
                     // строки в certificate_versions и строки в аудите.
+                    //
+                    // Но здесь, в отличие от вотчера, кнопку нажал человек, а заказ
+                    // ACME одноразовый: выпущенный сертификат вместе с приватным
+                    // ключом будет выброшен безвозвратно. Молча вернуть 200 с
+                    // «valid» — тот же немой no-op, ради устранения которого на
+                    // ручном пути вводился force. Поэтому — типизированная ошибка:
+                    // внешний обработчик ниже проставит заказу `failed` с этим же
+                    // текстом (как и любому другому провалу) и вернёт 409.
                     if !crate::notification::notifier::renewal_extends_expiry(
                         packed.valid_until, existing.valid_until,
                     ) {
-                        tracing::info!(
-                            cert_id = renew_id, order_id = id,
-                            issued_valid_until = packed.valid_until,
-                            current_valid_until = existing.valid_until,
-                            "ACME renewal skipped: issued certificate does not extend the current expiry"
-                        );
-                        state.db.update_acme_client_order_status(id, "valid", Some(renew_id), None).await
-                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                        return Ok::<_, anyhow::Error>(());
+                        return Err(anyhow::Error::new(RenewalDoesNotExtendExpiry(format!(
+                            "issued certificate expires at {}, which does not extend the current expiry {}; \
+                             the replacement was refused and the issued material discarded",
+                            fmt_expiry(packed.valid_until), fmt_expiry(existing.valid_until)
+                        ))));
                     }
                     let tmp_cert = crate::certs::common::Certificate {
                         data: crate::data::enums::CertData::Pkcs12(packed.pkcs12_der.clone()),
@@ -268,7 +306,13 @@ pub async fn issue_acme_client_order(
                 Ok::<_, anyhow::Error>(())
             }.await;
             if let Err(e) = inner {
-                state.db.update_acme_client_order_status(id, "failed", None, Some(e.to_string())).await?;
+                record_order_failure(state, id, &e.to_string()).await;
+                // Отказ по «не продлевает срок» — это конфликт состояния (новый
+                // материал не лучше текущего), а не внутренняя ошибка: 409 с обеими
+                // датами в тексте, чтобы оператор видел, что именно произошло.
+                if let Some(refused) = e.downcast_ref::<RenewalDoesNotExtendExpiry>() {
+                    return Err(ApiError::Conflict(refused.0.clone()));
+                }
                 // Same downcast api::update_certificate performs on replace_certificate's
                 // error (backend/src/api.rs:979-987): the row stopped matching the
                 // AcmeRenewal guard between the order and this write (e.g. revoked
@@ -280,7 +324,7 @@ pub async fn issue_acme_client_order(
             }
         }
         Err(e) => {
-            state.db.update_acme_client_order_status(id, "failed", None, Some(e.to_string())).await?;
+            record_order_failure(state, id, &e.to_string()).await;
             return Err(ApiError::Other(e.to_string()));
         }
     }
