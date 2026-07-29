@@ -60,6 +60,14 @@ pub(crate) struct StoredCertVersion {
     pub password: String,
 }
 
+/// Which certificates a given replace caller is allowed to touch.
+pub(crate) enum ReplaceGuard {
+    /// Ручная замена оператором: только импортированные, не ACME.
+    ImportedManual,
+    /// Автопродление доверенным путём: любой не отозванный сертификат.
+    Renewal,
+}
+
 static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 macro_rules! db_do {
@@ -444,11 +452,13 @@ impl VaulTLSDB {
 
     /// Вытесняет текущую версию в историю и записывает новое содержимое.
     /// `id` сертификата не меняется. Возвращает номер новой версии.
+    /// `guard` определяет, какие строки вызывающей стороне разрешено трогать.
     pub(crate) async fn replace_certificate(
         &self,
         cert_id: i64,
         actor_id: i64,
         input: ReplaceCertificateInput,
+        guard: ReplaceGuard,
     ) -> Result<i64> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
         db_do!(self.pool, |conn: &Connection| {
@@ -471,13 +481,22 @@ impl VaulTLSDB {
             )?;
 
             let next = version + 1;
-            // Условие в WHERE — защита от гонки с /revoke между проверками обработчика
-            // и этой записью: если строка перестала подходить под замену, откатываемся.
+            // Условие в WHERE зависит от доверия к вызывающей стороне:
+            // - ImportedManual: оператор — только импортированные, не ACME, как раньше.
+            // - Renewal: доверенный внутренний путь — достаточно, что строка не отозвана.
+            // В обоих случаях оно же служит защитой от гонки с /revoke между проверками
+            // обработчика и этой записью: если строка перестала подходить, откатываемся.
+            let guard_clause = match guard {
+                ReplaceGuard::ImportedManual => "revoked_at IS NULL AND is_imported = 1 AND acme_provider_id IS NULL",
+                ReplaceGuard::Renewal => "revoked_at IS NULL",
+            };
             let affected = tx.execute(
-                "UPDATE user_certificates SET data = ?1, password = ?2, created_on = ?3, \
-                        valid_until = ?4, serial_hex = ?5, fingerprint = ?6, version = ?7, \
-                        ca_id = CASE WHEN ?8 > 0 THEN ?8 ELSE ca_id END \
-                  WHERE id = ?9 AND revoked_at IS NULL AND is_imported = 1 AND acme_provider_id IS NULL",
+                &format!(
+                    "UPDATE user_certificates SET data = ?1, password = ?2, created_on = ?3, \
+                            valid_until = ?4, serial_hex = ?5, fingerprint = ?6, version = ?7, \
+                            ca_id = CASE WHEN ?8 > 0 THEN ?8 ELSE ca_id END \
+                      WHERE id = ?9 AND {guard_clause}"
+                ),
                 params![
                     input.data, input.password, input.created_on, input.valid_until,
                     input.serial_hex, input.fingerprint, next, input.ca_id, cert_id
@@ -2264,7 +2283,7 @@ mod tests {
             serial_hex: Some("0b".into()),
             fingerprint: "bb".into(),
             ca_id: ca2.id,
-        }).await.unwrap();
+        }, ReplaceGuard::ImportedManual).await.unwrap();
         assert_eq!(new_version, 2);
 
         // текущая запись — новая, id прежний
@@ -2345,7 +2364,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
-        }).await.unwrap_err();
+        }, ReplaceGuard::ImportedManual).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "отозванная строка обязана отбиваться типизированной ошибкой: {err}");
 
@@ -2379,9 +2398,71 @@ mod tests {
         let err = db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
-        }).await.unwrap_err();
+        }, ReplaceGuard::ImportedManual).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "не импортированная строка обязана отбиваться: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// Автопродление доверенным путём обязано уметь заменить внутренне выпущенный
+    /// (не импортированный) сертификат — ровно тот случай, который раньше отбивал
+    /// `ImportedManual` и заставлял продление создавать новую строку.
+    #[tokio::test]
+    async fn replace_certificate_renewal_guard_allows_non_imported() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+
+        let new_version = db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+        }, ReplaceGuard::Renewal).await.unwrap();
+        assert_eq!(new_version, 2);
+
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.id, cert.id, "id обязан остаться прежним — на него смотрит внешний поллер");
+        assert_eq!(current.data.as_bytes(), b"v2");
+        assert!(!current.is_imported, "автопродление не помечает строку как импортированную");
+    }
+
+    /// Даже доверенному пути автопродления запрещено трогать отозванную строку.
+    #[tokio::test]
+    async fn replace_certificate_renewal_guard_refuses_revoked() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+        }, ReplaceGuard::Renewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "отозванная строка обязана отбиваться даже доверенным путём: {err}");
         assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
     }
 
@@ -2405,7 +2486,7 @@ mod tests {
         db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
-        }).await.unwrap();
+        }, ReplaceGuard::ImportedManual).await.unwrap();
 
         // фикстура действительно создала историческую запись — иначе постусловие ничего не доказывает
         let conn = db.pool.get().unwrap();

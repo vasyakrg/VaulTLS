@@ -975,6 +975,7 @@ pub(crate) async fn update_certificate(
             fingerprint: fingerprint.clone(),
             ca_id,
         },
+        crate::db::ReplaceGuard::ImportedManual,
     ).await.map_err(|e| {
         // Строку успели отозвать (или иначе вывести из-под замены) между проверками
         // выше и транзакцией — это конфликт состояния, а не внутренняя ошибка.

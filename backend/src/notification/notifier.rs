@@ -69,10 +69,28 @@ pub(crate) async fn watch_expiry(db: VaulTLSDB, mailer_mutex: Arc<Mutex<Option<M
                         }
                         CertificateRenewMethod::None => {}
                     }
-                } else if cert.valid_until < in_a_week
-                    && handle_expiry(cert, &db, mailer_mutex.clone()).await.is_ok()
-                {
-                    let _ = db.update_cert_renew_method(cert.id, CertificateRenewMethod::None).await;
+                } else {
+                    // Internal-CA path: Renew/RenewAndNotify now replace the certificate
+                    // in place (see handle_expiry), so the row keeps renewing on every
+                    // expiry instead of forking a new id — do NOT reset renew_method for
+                    // it, mirroring the ACME branch above. Only Notify is one-shot.
+                    match cert.renew_method {
+                        CertificateRenewMethod::Renew | CertificateRenewMethod::RenewAndNotify => {
+                            if cert.valid_until < in_a_week {
+                                if let Err(e) = handle_expiry(cert, &db, mailer_mutex.clone()).await {
+                                    info!("Renewal for cert {} failed: {e}", cert.id);
+                                }
+                            }
+                        }
+                        CertificateRenewMethod::Notify => {
+                            if cert.valid_until < in_a_week
+                                && handle_expiry(cert, &db, mailer_mutex.clone()).await.is_ok()
+                            {
+                                let _ = db.update_cert_renew_method(cert.id, CertificateRenewMethod::None).await;
+                            }
+                        }
+                        CertificateRenewMethod::None => {}
+                    }
                 }
             }
         } else {
@@ -105,13 +123,17 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
         CertificateRenewMethod::Renew | CertificateRenewMethod::RenewAndNotify => {
             info!("Renewing certificate {} for user {}.", cert.name, user.name);
 
-            let mut new_cert = match cert.certificate_type {
+            // ca_id is captured alongside the built certificate: get_latest_tls_ca may
+            // return a different CA than the one that originally signed `cert`, and the
+            // replaced row must be repointed at whoever actually signed the renewal.
+            let (new_cert, ca_id) = match cert.certificate_type {
                 TLSClient | TLSServer => {
                     let ca = db.get_latest_tls_ca().await?;
+                    let ca_id = ca.id;
                     let cert_builder = TLSCertificateBuilder::try_from(cert)?
                         .set_ca(&ca)?;
 
-                    if cert.certificate_type == TLSClient {
+                    let built = if cert.certificate_type == TLSClient {
                         cert_builder
                             .set_email_san(&user.email)?
                             .build_client()?
@@ -120,21 +142,48 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
                         cert_builder
                             .set_dns_san(&dns)?
                             .build_server()?
-                    }
+                    };
+                    (built, ca_id)
                 }
                 SSHClient | SSHServer => {
                     return Err(anyhow!("SSH not supported for renewal."));
                 }
             };
 
-            new_cert = db.insert_user_cert(new_cert).await?;
+            // Same row, new content: the renewed material replaces the current version
+            // in place and the expiring one moves into certificate_versions history, so
+            // any agent polling by cert_id keeps tracking the same id.
+            let fingerprint = new_cert.get_fingerprint()
+                .map_err(|e| anyhow!("cannot compute fingerprint for renewed cert: {e}"))?;
+            let serial_hex = new_cert.get_serial().ok()
+                .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
+            db.replace_certificate(
+                cert.id,
+                // No human actor here — the automated action is on behalf of the
+                // certificate's owner; the audit trail for renewals is the mail below,
+                // not the audit log.
+                cert.user_id,
+                crate::db::ReplaceCertificateInput {
+                    data: new_cert.data.as_bytes().to_vec(),
+                    password: new_cert.password.clone(),
+                    created_on: new_cert.created_on,
+                    valid_until: new_cert.valid_until,
+                    serial_hex,
+                    fingerprint,
+                    ca_id,
+                },
+                crate::db::ReplaceGuard::Renewal,
+            ).await?;
 
             if cert.renew_method == CertificateRenewMethod::RenewAndNotify {
+                // Re-read the row: it now carries the renewed contents under the same id.
+                let renewed_cert = db.get_user_cert_by_id(cert.id).await?;
                 info!("Notifying user {} that cert {} was renewed.", user.name, cert.name);
                 let mail = MailMessage {
                     to: format!("{} <{}>", user.name, user.email),
                     username: user.name,
-                    certificate: new_cert.clone()
+                    certificate: renewed_cert
                 };
 
                 tokio::spawn(async move {
