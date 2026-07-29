@@ -161,3 +161,52 @@ async fn service_token_needs_issue_scope_to_replace() -> Result<()> {
     assert_eq!(resp.status(), Status::Forbidden, "cert:read не даёт права заменять");
     Ok(())
 }
+
+#[tokio::test]
+async fn old_version_stays_downloadable_after_replace() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "history.example.com", 1).await;
+
+    let v1 = client.get(format!("/certificates/{id}/download")).dispatch().await
+        .into_bytes().await.unwrap();
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("history.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER7";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let v2 = client.get(format!("/certificates/{id}/download")).dispatch().await
+        .into_bytes().await.unwrap();
+    assert_ne!(v1, v2, "текущая версия сменилась");
+
+    let v1_again = client.get(format!("/certificates/{id}/download?version=1")).dispatch().await
+        .into_bytes().await.unwrap();
+    assert_eq!(v1, v1_again, "первая версия доступна по номеру");
+
+    let versions: Value = serde_json::from_str(
+        &client.get(format!("/certificates/{id}/versions")).dispatch().await
+            .into_string().await.unwrap())?;
+    let arr = versions.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["version"].as_i64(), Some(2));
+    assert_eq!(arr[0]["current"].as_bool(), Some(true));
+    assert!(arr[0]["version_id"].is_null());
+    assert_eq!(arr[1]["version"].as_i64(), Some(1));
+    assert!(arr[1]["version_id"].as_i64().unwrap() > 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_version_is_404() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (id, _ca_pem, _ca_key) = import_leaf(&client, "single.example.com", 1).await;
+    let resp = client.get(format!("/certificates/{id}/download?version=7")).dispatch().await;
+    assert_eq!(resp.status(), Status::NotFound);
+    Ok(())
+}

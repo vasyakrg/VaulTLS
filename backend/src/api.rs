@@ -1331,14 +1331,16 @@ pub(crate) async fn list_certificate_versions(
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/<id>/download?<download_format>")]
+#[get("/certificates/<id>/download?<download_format>&<version>")]
 /// Download a user-owned certificate. Requires authentication.
 /// Use `?format=pem` to download TLS certs as a PEM zip bundle (cert.pem, privkey.pem, chain.pem, fullchain.pem).
+/// Use `?version=N` to download a superseded version from history instead of the current one.
 pub(crate) async fn download_certificate(
     state: &State<AppState>,
     id: i64,
     authentication: Authenticated,
     download_format: Option<String>,
+    version: Option<i64>,
 ) -> Result<DownloadResponse, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
@@ -1346,6 +1348,22 @@ pub(crate) async fn download_certificate(
     let certificate = state.db.get_user_cert_by_id(id).await?;
     if !can_access_cert_secret(state, &authentication.claims, certificate.user_id, id).await? {
         return Err(ApiError::Forbidden(None));
+    }
+
+    // По умолчанию отдаём текущую версию; ?version=N достаёт её из истории.
+    let mut certificate = certificate;
+    if let Some(v) = version {
+        let stored = state.db.get_certificate_version(id, v).await?
+            .ok_or(ApiError::NotFound(None))?;
+        certificate.data = match certificate.certificate_type {
+            CertificateType::SSHClient | CertificateType::SSHServer => CertData::SshBundle(stored.data),
+            _ => if stored.data.starts_with(b"-----BEGIN CERTIFICATE-----") {
+                CertData::Pem(stored.data)
+            } else {
+                CertData::Pkcs12(stored.data)
+            },
+        };
+        certificate.password = stored.password;
     }
 
     // PEM zip path: only for TLS certs when ?download_format=pem
@@ -1424,12 +1442,14 @@ pub(crate) async fn download_certificate(
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/<id>/password")]
+#[get("/certificates/<id>/password?<version>")]
 /// Fetch the password for a user-owned certificate. Requires authentication.
+/// Use `?version=N` to fetch the password for a superseded version from history.
 pub(crate) async fn fetch_certificate_password(
     state: &State<AppState>,
     id: i64,
-    authentication: Authenticated
+    authentication: Authenticated,
+    version: Option<i64>,
 ) -> Result<Json<String>, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
@@ -1438,6 +1458,13 @@ pub(crate) async fn fetch_certificate_password(
     if !can_access_cert_secret(state, &authentication.claims, user_id, id).await? {
         return Err(ApiError::Forbidden(None));
     }
+
+    let password = match version {
+        None => password,
+        Some(v) => state.db.get_certificate_version(id, v).await?
+            .ok_or(ApiError::NotFound(None))?
+            .password,
+    };
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::FetchCertificatePassword,
