@@ -69,6 +69,10 @@ pub(crate) enum ReplaceGuard {
     /// автопродление отсекается на уровне вызывающей стороны (`watch_expiry`),
     /// не здесь: строка не отозвана и это её единственный подходящий инвариант в БД.
     Renewal,
+    /// Продление ACME-сертификата: зеркало `Renewal` — не отозван и обязательно ACME.
+    /// Это гарантирует то же самое разделение с другой стороны: путь ACME-продления
+    /// не может случайно тронуть внутренне выпущенную или импортированную строку.
+    AcmeRenewal,
 }
 
 static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
@@ -497,6 +501,7 @@ impl VaulTLSDB {
             let guard_clause = match guard {
                 ReplaceGuard::ImportedManual => "revoked_at IS NULL AND is_imported = 1 AND acme_provider_id IS NULL",
                 ReplaceGuard::Renewal => "revoked_at IS NULL AND acme_provider_id IS NULL",
+                ReplaceGuard::AcmeRenewal => "revoked_at IS NULL AND acme_provider_id IS NOT NULL",
             };
             let affected = tx.execute(
                 &format!(
@@ -1597,26 +1602,6 @@ impl VaulTLSDB {
         Ok(id)
     }
 
-    pub(crate) async fn update_acme_client_certificate_in_place(
-        &self,
-        cert_id: i64,
-        pkcs12_der: Vec<u8>,
-        valid_until: i64,
-    ) -> Result<()> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
-        db_do!(self.pool, |conn: &Connection| {
-            let affected = conn.execute(
-                "UPDATE user_certificates SET data = ?1, valid_until = ?2, created_on = ?3 WHERE id = ?4",
-                params![pkcs12_der, valid_until, now, cert_id],
-            )?;
-            if affected != 1 {
-                return Err(anyhow::anyhow!("renew target certificate {cert_id} not found"));
-            }
-            Ok::<(), anyhow::Error>(())
-        })?;
-        Ok(())
-    }
-
     pub(crate) async fn get_acme_client_order_by_cert_id(&self, cert_id: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
@@ -1979,12 +1964,6 @@ mod tests {
             provider.id, "example.com".into(), false, Some("https://o/2".into()), &[], None, Some(cert_id),
         ).await.unwrap();
         assert_eq!(db.get_active_renewal_order_for_cert(cert_id, 1).await.unwrap().map(|o| o.id), Some(ren.id));
-
-        // In-place update keeps the id, bumps valid_until.
-        db.update_acme_client_certificate_in_place(cert_id, vec![9, 9], 5_000).await.unwrap();
-        let certs = db.get_user_certs(None, None, None).await.unwrap();
-        let c = certs.iter().find(|c| c.id == cert_id).unwrap();
-        assert_eq!(c.valid_until, 5_000);
     }
 
     #[tokio::test]
@@ -2536,6 +2515,111 @@ mod tests {
         }, ReplaceGuard::Renewal).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "отозванная строка обязана отбиваться даже доверенным путём: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// Зеркало `replace_certificate_renewal_guard_allows_non_imported`: путь ACME-продления
+    /// обязан уметь заменить строку с проставленным `acme_provider_id` и обязан оставить
+    /// `ca_id` пустым — ACME-сертификаты не привязаны к внутреннему CA.
+    #[tokio::test]
+    async fn replace_certificate_acme_renewal_guard_allows_acme_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        // insert_user_cert не пишет acme_provider_id — проставляем её напрямую, как и
+        // в соседних ACME-тестах выше.
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+
+        // actor_id = None: как в реальном пути ACME-продления — нет человека-актёра.
+        let new_version = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap();
+        assert_eq!(new_version, 2);
+
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.id, cert.id, "id обязан остаться прежним — на него смотрит внешний поллер");
+        assert_eq!(current.data.as_bytes(), b"v2");
+        assert_eq!(current.ca_id, None, "ACME-сертификаты не привязаны к внутреннему CA");
+
+        let versions = db.list_certificate_versions(cert.id).await.unwrap();
+        let history = versions.iter().find(|v| !v.current).expect("вытесненная версия обязана быть в истории");
+        assert_eq!(history.replaced_by, None, "ACME-продление не имеет человека-актёра");
+    }
+
+    /// Зеркало guard'а `ImportedManual`/`Renewal`: `AcmeRenewal` обязан отбивать строку
+    /// без `acme_provider_id` — иначе ACME-путь смог бы тронуть внутренне выпущенный
+    /// или импортированный сертификат.
+    #[tokio::test]
+    async fn replace_certificate_acme_renewal_guard_refuses_non_acme_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "не-ACME строка обязана отбиваться ACME-путём продления: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// Даже ACME-пути продления запрещено трогать отозванную строку.
+    #[tokio::test]
+    async fn replace_certificate_acme_renewal_guard_refuses_revoked() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "отозванная ACME-строка обязана отбиваться даже своим путём продления: {err}");
         assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
     }
 

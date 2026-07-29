@@ -157,9 +157,45 @@ pub async fn issue_acme_client_order(
                 let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
                 let result_cert_id = if let Some(renew_id) = order.renews_cert_id {
-                    // Renewal: update the existing certificate in place (same id).
-                    state.db.update_acme_client_certificate_in_place(renew_id, packed.pkcs12_der, packed.valid_until)
-                        .await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    // Renewal: replace the existing certificate in place (same id) and
+                    // push the superseded content into certificate_versions, mirroring
+                    // the unattended ACME renewal path in
+                    // notification::notifier::handle_acme_renewal — same guard, same
+                    // "leave ca_id alone" / "no human actor" reasoning, just triggered
+                    // from the UI/API instead of the expiry watcher.
+                    let existing = state.db.get_user_cert_by_id(renew_id).await
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    let tmp_cert = crate::certs::common::Certificate {
+                        data: crate::data::enums::CertData::Pkcs12(packed.pkcs12_der.clone()),
+                        password: String::new(),
+                        valid_until: packed.valid_until,
+                        ..existing
+                    };
+                    let fingerprint = tmp_cert.get_fingerprint()
+                        .map_err(|e| anyhow::anyhow!("cannot compute fingerprint for renewed ACME cert: {e}"))?;
+                    let serial_hex = tmp_cert.get_serial().ok()
+                        .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                    let created_on = chrono::Utc::now().timestamp_millis();
+
+                    state.db.replace_certificate(
+                        renew_id,
+                        // No human actor, exactly as the unattended ACME renewal path
+                        // does — see notifier.rs::handle_acme_renewal for the reasoning.
+                        None,
+                        crate::db::ReplaceCertificateInput {
+                            data: packed.pkcs12_der,
+                            // pack_issued_certificate above is always called with "".
+                            password: String::new(),
+                            created_on,
+                            valid_until: packed.valid_until,
+                            serial_hex,
+                            fingerprint,
+                            // ACME certificates carry ca_id = NULL and must keep it;
+                            // 0 means "leave the existing binding alone".
+                            ca_id: 0,
+                        },
+                        crate::db::ReplaceGuard::AcmeRenewal,
+                    ).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
                     renew_id
                 } else {
                     let cert_name = if order.include_wildcard {

@@ -1,6 +1,6 @@
 use crate::acme_client::client;
 use crate::certs::tls_cert::{get_dns_names, TLSCertificateBuilder};
-use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CertificateRenewMethod, UserRole};
+use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CertData, CertificateRenewMethod, UserRole};
 use crate::data::enums::CertificateType::*;
 use crate::data::objects::AuditEntry;
 use crate::db::VaulTLSDB;
@@ -319,8 +319,70 @@ async fn handle_acme_renewal(
         )
         .await?;
         let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")?;
-        db.update_acme_client_certificate_in_place(cert.id, packed.pkcs12_der, packed.valid_until).await?;
+
+        // Same shape as the internal-CA renewal above: same row, new content, old
+        // content moves into certificate_versions instead of being overwritten in
+        // place, so material that may still be deployed somewhere stays recoverable.
+        // Fingerprint/serial need a Certificate value holding the new bytes to read
+        // off of — build one from `cert` (correct id/type/etc.) with the freshly
+        // packed data/password substituted in, mirroring how `new_cert` above is used.
+        let tmp_cert = Certificate {
+            data: CertData::Pkcs12(packed.pkcs12_der.clone()),
+            password: String::new(),
+            valid_until: packed.valid_until,
+            ..cert.clone()
+        };
+        let fingerprint = tmp_cert.get_fingerprint()
+            .map_err(|e| anyhow!("cannot compute fingerprint for renewed ACME cert: {e}"))?;
+        let serial_hex = tmp_cert.get_serial().ok()
+            .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
+        let created_on = chrono::Utc::now().timestamp_millis();
+
+        let new_version = db.replace_certificate(
+            cert.id,
+            // Unattended renewal — no human actor, same reasoning as the internal-CA
+            // path just above.
+            None,
+            crate::db::ReplaceCertificateInput {
+                data: packed.pkcs12_der,
+                // pack_issued_certificate is always called with "" above.
+                password: String::new(),
+                created_on,
+                valid_until: packed.valid_until,
+                serial_hex,
+                fingerprint,
+                // ACME certificates carry ca_id = NULL and must keep it; 0 means
+                // "leave the existing binding alone".
+                ca_id: 0,
+            },
+            crate::db::ReplaceGuard::AcmeRenewal,
+        ).await?;
+
         db.update_acme_client_order_status(order.id, "valid", Some(cert.id), None).await?;
+
+        // Mirrors the internal-CA renewal audit entry above: same action, same system
+        // attribution (no human actor performed this), detail line names the version
+        // transition instead of "internal CA".
+        let audit_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if let Err(e) = db.insert_audit(AuditEntry {
+            ts: audit_ts,
+            actor_id: None,
+            actor_label: "system (automatic renewal)".to_string(),
+            actor_type: AuditActorType::Anonymous,
+            action: AuditAction::UpdateCertificate,
+            target_type: Some("certificate".into()),
+            target_id: Some(cert.id.to_string()),
+            target_label: Some(cert.name.cn.clone()),
+            result: AuditResult::Success,
+            detail: Some(format!("automatic ACME renewal: v{} → v{new_version}", cert.version)),
+            ip: None,
+        }).await {
+            tracing::warn!(error = %e, cert_id = cert.id, "failed to write audit log entry for ACME certificate renewal");
+        }
 
         if cert.renew_method == CertificateRenewMethod::RenewAndNotify {
             let user = db.get_user(cert.user_id).await?;
