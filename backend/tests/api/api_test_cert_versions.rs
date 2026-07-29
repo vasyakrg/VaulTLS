@@ -227,9 +227,10 @@ async fn only_local_admin_deletes_historical_versions() -> Result<()> {
         "purge.example.com", &ca_pem, &ca_key_pem, 0, 200);
     let boundary = "VER8";
     let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 2);
-    client.put(format!("/certificates/{id}"))
+    let replace_resp = client.put(format!("/certificates/{id}"))
         .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
         .body(body).dispatch().await;
+    assert_eq!(replace_resp.status(), Status::Ok, "замена обязана пройти — иначе второй версии не будет");
 
     // текущую версию удалить нельзя
     assert_eq!(client.delete(format!("/certificates/{id}/versions/2")).dispatch().await.status(),
@@ -378,6 +379,9 @@ async fn replacing_with_non_improving_leaf_is_rejected() -> Result<()> {
         .dispatch()
         .await;
     assert_eq!(resp.status(), Status::BadRequest, "замена без улучшения срока действия отклоняется");
+    let msg = resp.into_string().await.unwrap();
+    assert!(msg.contains("no later than"),
+        "сообщение обязано указывать на отсутствие улучшения срока действия (а не на другую причину отказа): {msg}");
     Ok(())
 }
 
@@ -422,9 +426,10 @@ async fn superseded_serial_still_validates() -> Result<()> {
         "validate.example.com", &ca_pem, &ca_key_pem, 0, 200);
     let boundary = "VER9";
     let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
-    client.put(format!("/certificates/{id}"))
+    let replace_resp = client.put(format!("/certificates/{id}"))
         .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
         .body(body).dispatch().await;
+    assert_eq!(replace_resp.status(), Status::Ok, "замена обязана пройти — иначе серийник не станет superseded");
 
     let status: Value = serde_json::from_str(
         &client.get(format!("/certificates/validate?serial={old_serial}")).dispatch().await
