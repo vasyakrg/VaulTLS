@@ -18,13 +18,31 @@ use tracing::{debug, info, trace, warn};
 use crate::acme::types::{AcmeAccount, AcmeIdentifier, AdminAcmeOrder, AcmeOrderRow};
 use crate::acme_client::types::{AcmeClientOrder, AcmeClientProvider, TxtRecord};
 use crate::auth::password_auth::Password;
-use crate::certs::common::{Certificate, CA};
+use crate::certs::common::{Certificate, CertificateVersionEntry, CA};
 
 pub(crate) struct CertStatusRow {
     pub created_on: i64,
     pub valid_until: i64,
     pub revoked_at: Option<i64>,
     pub ca_id: Option<i64>,
+}
+
+/// Новое содержимое сертификата при замене.
+pub(crate) struct ReplaceCertificateInput {
+    pub data: Vec<u8>,
+    pub password: String,
+    pub created_on: i64,
+    pub valid_until: i64,
+    pub serial_hex: Option<String>,
+    pub fingerprint: String,
+    /// 0 означает «не менять привязку к CA».
+    pub ca_id: i64,
+}
+
+/// Байты и пароль конкретной версии.
+pub(crate) struct StoredCertVersion {
+    pub data: Vec<u8>,
+    pub password: String,
 }
 
 static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
@@ -405,6 +423,134 @@ impl VaulTLSDB {
                 "DELETE FROM user_certificates WHERE id=?1",
                 params![id]
             ).map(|_| ())?)
+        })
+    }
+
+    /// Вытесняет текущую версию в историю и записывает новое содержимое.
+    /// `id` сертификата не меняется. Возвращает номер новой версии.
+    pub(crate) async fn replace_certificate(
+        &self,
+        cert_id: i64,
+        actor_id: i64,
+        input: ReplaceCertificateInput,
+    ) -> Result<i64> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        db_do!(self.pool, |conn: &Connection| {
+            let tx = conn.unchecked_transaction()?;
+
+            let (version, fingerprint): (i64, Option<String>) = tx.query_row(
+                "SELECT version, fingerprint FROM user_certificates WHERE id = ?1",
+                params![cert_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+
+            tx.execute(
+                "INSERT INTO certificate_versions \
+                   (cert_id, version, data, password, created_on, valid_until, serial_hex, fingerprint, replaced_at, replaced_by) \
+                 SELECT id, version, data, password, created_on, valid_until, serial_hex, ?2, ?3, ?4 \
+                   FROM user_certificates WHERE id = ?1",
+                params![cert_id, fingerprint.unwrap_or_default(), now, actor_id],
+            )?;
+
+            let next = version + 1;
+            tx.execute(
+                "UPDATE user_certificates SET data = ?1, password = ?2, created_on = ?3, \
+                        valid_until = ?4, serial_hex = ?5, fingerprint = ?6, version = ?7, \
+                        ca_id = CASE WHEN ?8 > 0 THEN ?8 ELSE ca_id END \
+                  WHERE id = ?9",
+                params![
+                    input.data, input.password, input.created_on, input.valid_until,
+                    input.serial_hex, input.fingerprint, next, input.ca_id, cert_id
+                ],
+            )?;
+
+            tx.commit()?;
+            Ok::<i64, anyhow::Error>(next)
+        })
+    }
+
+    /// Все версии сертификата, новые сверху. Текущая — с `version_id = None`.
+    pub(crate) async fn list_certificate_versions(&self, cert_id: i64) -> Result<Vec<CertificateVersionEntry>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let current = conn.query_row(
+                "SELECT version, created_on, valid_until, serial_hex, fingerprint \
+                   FROM user_certificates WHERE id = ?1",
+                params![cert_id],
+                |r| Ok(CertificateVersionEntry {
+                    version: r.get(0)?,
+                    version_id: None,
+                    current: true,
+                    created_on: r.get(1)?,
+                    valid_until: r.get(2)?,
+                    serial_hex: r.get(3)?,
+                    fingerprint: r.get(4)?,
+                    replaced_at: None,
+                    replaced_by: None,
+                }),
+            );
+            let mut out = match current {
+                Ok(entry) => vec![entry],
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            };
+
+            let mut stmt = conn.prepare(
+                "SELECT id, version, created_on, valid_until, serial_hex, fingerprint, replaced_at, replaced_by \
+                   FROM certificate_versions WHERE cert_id = ?1 ORDER BY version DESC",
+            )?;
+            let rows = stmt.query_map(params![cert_id], |r| Ok(CertificateVersionEntry {
+                version: r.get(1)?,
+                version_id: Some(r.get(0)?),
+                current: false,
+                created_on: r.get(2)?,
+                valid_until: r.get(3)?,
+                serial_hex: r.get(4)?,
+                fingerprint: r.get(5)?,
+                replaced_at: r.get(6)?,
+                replaced_by: r.get(7)?,
+            }))?;
+            out.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            Ok(out)
+        })
+    }
+
+    /// Байты запрошенной версии: текущей — из user_certificates, иначе из истории.
+    pub(crate) async fn get_certificate_version(&self, cert_id: i64, version: i64) -> Result<Option<StoredCertVersion>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let current: i64 = match conn.query_row(
+                "SELECT version FROM user_certificates WHERE id = ?1",
+                params![cert_id],
+                |r| r.get(0),
+            ) {
+                Ok(v) => v,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            };
+
+            let sql = if version == current {
+                "SELECT data, password FROM user_certificates WHERE id = ?1 AND version = ?2"
+            } else {
+                "SELECT data, password FROM certificate_versions WHERE cert_id = ?1 AND version = ?2"
+            };
+            let result = conn.query_row(sql, params![cert_id, version], |r| {
+                Ok(StoredCertVersion { data: r.get(0)?, password: r.get(1)? })
+            });
+            match result {
+                Ok(v) => Ok(Some(v)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!(e)),
+            }
+        })
+    }
+
+    /// Удаляет историческую версию. False — если такой версии в истории нет.
+    pub(crate) async fn delete_certificate_version(&self, cert_id: i64, version: i64) -> Result<bool> {
+        db_do!(self.pool, |conn: &Connection| {
+            let affected = conn.execute(
+                "DELETE FROM certificate_versions WHERE cert_id = ?1 AND version = ?2",
+                params![cert_id, version],
+            )?;
+            Ok(affected > 0)
         })
     }
 
@@ -1996,6 +2142,97 @@ mod tests {
         let left = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
         assert_eq!(left.total, 1);
         assert_eq!(left.rows[0].ts, 3000);
+    }
+
+    #[tokio::test]
+    async fn replace_certificate_moves_old_row_into_history() {
+        use crate::data::enums::{CAType, CertData, CertificateRenewMethod, CertificateType};
+        use crate::certs::common::CA;
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let ca = db.insert_ca(CA {
+            id: -1, name: "ca".into(), created_on: 0, valid_until: 0,
+            ca_type: CAType::TLS, cert: vec![2], key: vec![], crl_number: 0, is_imported: true,
+        }).await.unwrap();
+
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 100, valid_until: 200,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: Some(ca.id),
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"old".to_vec()), password: "oldpw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+        db.set_cert_serial(cert.id, "0a".into()).await.unwrap();
+
+        let new_version = db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
+            data: b"new".to_vec(),
+            password: "newpw".into(),
+            created_on: 300,
+            valid_until: 400,
+            serial_hex: Some("0b".into()),
+            fingerprint: "bb".into(),
+            ca_id: ca.id,
+        }).await.unwrap();
+        assert_eq!(new_version, 2);
+
+        // текущая запись — новая, id прежний
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.id, cert.id);
+        assert_eq!(current.version, 2);
+        assert_eq!(current.fingerprint.as_deref(), Some("bb"));
+        assert_eq!(current.valid_until, 400);
+
+        // история содержит обе версии, вытесненная — со своим id
+        let versions = db.list_certificate_versions(cert.id).await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, 2);
+        assert!(versions[0].current);
+        assert_eq!(versions[0].version_id, None);
+        assert_eq!(versions[1].version, 1);
+        assert!(!versions[1].current);
+        assert!(versions[1].version_id.is_some());
+        assert_eq!(versions[1].replaced_by, Some(user.id));
+
+        // байты и пароль старой версии доступны
+        let old = db.get_certificate_version(cert.id, 1).await.unwrap().unwrap();
+        assert_eq!(old.data, b"old".to_vec());
+        assert_eq!(old.password, "oldpw");
+
+        // удаление исторической версии
+        assert!(db.delete_certificate_version(cert.id, 1).await.unwrap());
+        assert_eq!(db.list_certificate_versions(cert.id).await.unwrap().len(), 1);
+        assert!(!db.delete_certificate_version(cert.id, 1).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn deleting_certificate_cascades_versions() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+        db.replace_certificate(cert.id, user.id, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+        }).await.unwrap();
+
+        db.delete_user_cert(cert.id).await.unwrap();
+        assert!(db.list_certificate_versions(cert.id).await.unwrap().is_empty());
     }
 }
 
