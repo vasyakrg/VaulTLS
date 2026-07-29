@@ -1,0 +1,163 @@
+use crate::common::test_client::VaulTLSClient;
+use anyhow::Result;
+use rocket::http::{ContentType, Header, Status};
+use serde_json::Value;
+
+/// Импортирует leaf и возвращает (id сертификата, ca_pem, ca_key_pem).
+/// Ключ CA возвращается, чтобы тест мог подписать им новый leaf для замены.
+async fn import_leaf(client: &VaulTLSClient, cn: &str, user_id: i64) -> (i64, Vec<u8>, Vec<u8>) {
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Versions CA");
+    let (leaf_pem, leaf_key_pem) = crate::common::helper::leaf_signed_by_pem(cn, &ca_pem, &ca_key_pem);
+
+    let boundary = "VER1";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_pem, &leaf_key_pem, &ca_pem, user_id);
+    let resp = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+    let v: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    (v["id"].as_i64().unwrap(), ca_pem, ca_key_pem)
+}
+
+/// Формирует multipart-тело для PUT: cert + key + chain.
+fn multipart_replace(boundary: &str, cert_pem: &[u8], key_pem: &[u8], chain_pem: &[u8], user_id: i64) -> Vec<u8> {
+    crate::common::helper::multipart_import_leaf(boundary, cert_pem, key_pem, chain_pem, user_id)
+}
+
+#[tokio::test]
+async fn replacing_imported_cert_keeps_id_and_bumps_version() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "rotate.example.com", 1).await;
+
+    let before: Value = serde_json::from_str(
+        &client.get("/certificates").dispatch().await.into_string().await.unwrap())?;
+    let old_fp = before.as_array().unwrap().iter()
+        .find(|c| c["id"].as_i64() == Some(id)).unwrap()["fingerprint"].as_str().unwrap().to_string();
+
+    // новый leaf с тем же CN, подписанный тем же CA
+    let (new_leaf, new_key) =
+        crate::common::helper::leaf_signed_by_pem("rotate.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "VER2";
+    let body = multipart_replace(boundary, &new_leaf, &new_key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let updated: Value = serde_json::from_str(&resp.into_string().await.unwrap())?;
+    assert_eq!(updated["id"].as_i64(), Some(id), "id обязан сохраниться");
+    assert_eq!(updated["version"].as_i64(), Some(2));
+    assert_ne!(updated["fingerprint"].as_str().unwrap(), old_fp, "отпечаток обязан смениться");
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacing_with_different_cn_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "same.example.com", 1).await;
+
+    let (other_leaf, other_key) =
+        crate::common::helper::leaf_signed_by_pem("other.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "VER3";
+    let body = multipart_replace(boundary, &other_leaf, &other_key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest);
+    Ok(())
+}
+
+#[tokio::test]
+async fn replacing_internally_issued_cert_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    // выпущен внутренним CA — is_imported = 0
+    let cert = client.create_client_cert(Some(1), Some("pw".into()), None).await?;
+
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Foreign CA");
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("whatever", &ca_pem, &ca_key_pem);
+
+    let boundary = "VER4";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{}", cert.id))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest);
+    Ok(())
+}
+
+#[tokio::test]
+async fn group_member_may_read_but_not_replace() -> Result<()> {
+    use serde_json::json;
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    client.create_user().await?;                           // user id=2
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "shared.example.com", 1).await;
+
+    let gid: i64 = serde_json::from_str(
+        &client.post("/groups").header(ContentType::JSON)
+            .body(json!({"name":"Shared"}).to_string())
+            .dispatch().await.into_string().await.unwrap())?;
+    client.put(format!("/groups/{gid}/users")).header(ContentType::JSON)
+        .body(json!({"ids":[2]}).to_string()).dispatch().await;
+    client.put(format!("/groups/{gid}/certificates")).header(ContentType::JSON)
+        .body(json!({"ids":[id]}).to_string()).dispatch().await;
+
+    client.switch_user().await?; // под user id=2
+
+    assert_eq!(client.get(format!("/certificates/{id}/versions")).dispatch().await.status(), Status::Ok);
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("shared.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER5";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 2);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Forbidden, "участник группы читает, но не заменяет");
+    Ok(())
+}
+
+#[tokio::test]
+async fn service_token_needs_issue_scope_to_replace() -> Result<()> {
+    let admin = VaulTLSClient::new_authenticated().await; // local admin id=1
+    let (id, ca_pem, ca_key_pem) = import_leaf(&admin, "svc.example.com", 1).await;
+
+    let created: Value = serde_json::from_str(
+        &admin.post("/users/1/service-accounts").header(ContentType::JSON)
+            .body(r#"{"name":"rot","scopes":["cert:read"]}"#)
+            .dispatch().await.into_string().await.unwrap())?;
+    let token: Value = serde_json::from_str(
+        &admin.post("/auth/token").header(ContentType::JSON)
+            .body(format!(r#"{{"client_id":"{}","secret":"{}"}}"#,
+                created["client_id"].as_str().unwrap(), created["secret"].as_str().unwrap()))
+            .dispatch().await.into_string().await.unwrap())?;
+    let bearer = format!("Bearer {}", token["access_token"].as_str().unwrap());
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("svc.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER6";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = admin
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .header(Header::new("Authorization", bearer))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Forbidden, "cert:read не даёт права заменять");
+    Ok(())
+}
