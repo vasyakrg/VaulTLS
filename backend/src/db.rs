@@ -1796,6 +1796,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_17_backfill_marks_only_imported_ca_certs() {
+        // mem_db() уже применил миграцию 17 (в т.ч. её UPDATE) к пустой базе.
+        // Здесь мы вставляем строки вручную и повторно прогоняем ровно тот же
+        // UPDATE (скопированный дословно из up.sql), чтобы проверить само
+        // правило бэкфилла, а не только факт применения миграции.
+        let db = mem_db().await;
+        let pool = db.pool.clone();
+
+        let (imported_ca_flag, internal_ca_flag, acme_flag) = tokio::task::spawn_blocking(move || {
+            let conn = pool.get().unwrap();
+
+            // Две CA: внутренняя (is_imported = 0) и импортированная (is_imported = 1).
+            conn.execute(
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported) VALUES (0, 1, 0)",
+                [],
+            ).unwrap();
+            let internal_ca_id = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported) VALUES (0, 1, 1)",
+                [],
+            ).unwrap();
+            let imported_ca_id = conn.last_insert_rowid();
+
+            // Три сертификата, все стартуют с is_imported = 0:
+            // - под импортированной CA (после бэкфилла должен стать 1),
+            // - под внутренней CA (должен остаться 0),
+            // - ACME-сертификат: ca_id NULL, acme_provider_id задан (должен остаться 0).
+            // provider id=1 существует — это пресет Let's Encrypt из миграции 13.
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-imported-ca', 0, 1, ?1, NULL, 0)",
+                rusqlite::params![imported_ca_id],
+            ).unwrap();
+            let cert_under_imported_ca = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-internal-ca', 0, 1, ?1, NULL, 0)",
+                rusqlite::params![internal_ca_id],
+            ).unwrap();
+            let cert_under_internal_ca = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, acme_provider_id, is_imported) VALUES ('acme-cert', 0, 1, NULL, NULL, 1, 0)",
+                [],
+            ).unwrap();
+            let acme_cert = conn.last_insert_rowid();
+
+            // Бэкфилл — дословная копия из backend/migrations/17-certversions/up.sql.
+            conn.execute_batch(
+                "UPDATE user_certificates SET is_imported = 1
+ WHERE acme_provider_id IS NULL
+   AND ca_id IN (SELECT id FROM ca_certificates WHERE is_imported = 1);",
+            ).unwrap();
+
+            let get_flag = |id: i64| -> i64 {
+                conn.query_row(
+                    "SELECT is_imported FROM user_certificates WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                ).unwrap()
+            };
+
+            (
+                get_flag(cert_under_imported_ca),
+                get_flag(cert_under_internal_ca),
+                get_flag(acme_cert),
+            )
+        }).await.unwrap();
+
+        assert_eq!(imported_ca_flag, 1, "сертификат под импортированной CA должен получить is_imported = 1");
+        assert_eq!(internal_ca_flag, 0, "сертификат под внутренней CA должен остаться is_imported = 0");
+        assert_eq!(acme_flag, 0, "ACME-сертификат не должен помечаться как импортированный");
+    }
+
+    #[tokio::test]
     async fn group_crud_and_membership() {
         let db = mem_db().await;
         let admin = db.insert_user(User { id: -1, name: "a".into(), email: "a@b.c".into(), password_hash: None, oidc_id: None, role: UserRole::Admin, is_local: false }).await.unwrap();
