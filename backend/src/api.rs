@@ -741,7 +741,7 @@ pub(crate) async fn import_certificate(
     };
     let valid_until = asn1_to_unix_ms(leaf.not_after())?;
     let created_on = asn1_to_unix_ms(leaf.not_before())?;
-    let cert = Certificate {
+    let mut cert = Certificate {
         id: -1,
         name: crate::data::objects::Name::from(cn_from_cert(&leaf)),
         created_on,
@@ -756,8 +756,11 @@ pub(crate) async fn import_certificate(
         password: form.password.clone().unwrap_or_default(),
         version: 1,
         fingerprint: None,
-        is_imported: false,
+        is_imported: true,
     };
+    // Best-effort: if the fingerprint can't be computed right now, leave it None —
+    // the startup backfill (later task) will fill it in rather than failing the import.
+    cert.fingerprint = cert.get_fingerprint().ok();
     let saved = state.db.insert_user_cert(cert).await?;
     Ok(Json(saved))
 }

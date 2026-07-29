@@ -781,6 +781,34 @@ async fn import_leaf_auto_imports_ca_case_b() {
 }
 
 #[tokio::test]
+async fn imported_certificate_is_marked_importable_with_fingerprint() {
+    let client = VaulTLSClient::new_authenticated().await;
+
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Fingerprint CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("svc-fingerprint.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "FPBND";
+    let body = crate::common::helper::multipart_import_leaf(
+        boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1,
+    );
+    let response = client
+        .post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::Ok);
+
+    let cert: Certificate = serde_json::from_str(&response.into_string().await.unwrap()).unwrap();
+    assert!(cert.is_imported, "imported certificate must be marked importable");
+    let fingerprint = cert.fingerprint.expect("imported certificate must carry a fingerprint");
+    assert_eq!(fingerprint.len(), 64, "sha256 hex — 64 characters");
+    assert!(fingerprint.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert_eq!(fingerprint, fingerprint.to_lowercase());
+}
+
+#[tokio::test]
 async fn import_leaf_with_fullchain_in_cert_auto_imports_ca() {
     // The cert file carries leaf + CA (a full chain), and NO separate chain
     // field is sent. The issuing CA must still be auto-imported.
