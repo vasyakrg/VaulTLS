@@ -36,54 +36,27 @@
 
 - [ ] **Step 1: Написать падающий тест**
 
+Тест этой задачи проверяет только то, что миграция накатывается: поля `Certificate` и методы истории появляются в Задачах 2-3, ссылаться на них здесь нельзя — иначе после коммита этой задачи ветка не соберётся.
+
 В `backend/src/db.rs`, в модуле `mod tests` (рядом с `migration_15_creates_group_tables`), добавить:
 
 ```rust
     #[tokio::test]
-    async fn migration_17_creates_version_table_and_backfills_is_imported() {
-        use crate::data::enums::{CAType, CertData, CertificateRenewMethod, CertificateType};
-        use crate::certs::common::CA;
-
+    async fn migration_17_applies_and_marks_imported_certs() {
+        // mem_db() прогоняет все миграции; если 17-я сломана, конструктор паникует.
         let db = mem_db().await;
-        let user = db.insert_user(User {
-            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
-            oidc_id: None, role: UserRole::User, is_local: false,
-        }).await.unwrap();
 
-        // внутренний CA (is_imported = 0) и импортированный CA (is_imported = 1)
-        let internal = db.insert_ca(CA {
-            id: -1, name: "internal".into(), created_on: 0, valid_until: 0,
-            ca_type: CAType::TLS, cert: vec![1], key: vec![1], crl_number: 0, is_imported: false,
-        }).await.unwrap();
-        let imported = db.insert_ca(CA {
-            id: -1, name: "imported".into(), created_on: 0, valid_until: 0,
-            ca_type: CAType::TLS, cert: vec![2], key: vec![], crl_number: 0, is_imported: true,
-        }).await.unwrap();
-
-        let mk = |ca_id: i64| Certificate {
-            id: -1, name: "c".into(), created_on: 0, valid_until: 0,
-            certificate_type: CertificateType::TLSServer, user_id: user.id,
-            renew_method: CertificateRenewMethod::None, ca_id: Some(ca_id),
-            revoked_at: None, acme_provider_id: None,
-            data: CertData::Pkcs12(vec![9]), password: String::new(),
-            version: 1, fingerprint: None, is_imported: false,
-        };
-        let own = db.insert_user_cert(mk(internal.id)).await.unwrap();
-        let imp = db.insert_user_cert(mk(imported.id)).await.unwrap();
-
-        // Бэкфилл миграции применяется к строкам, существовавшим до неё; для строк,
-        // вставленных после, флаг ставит код вставки. Здесь проверяем, что колонки
-        // читаются и таблица версий существует.
-        assert_eq!(db.get_user_cert_by_id(own.id).await.unwrap().version, 1);
-        assert_eq!(db.get_user_cert_by_id(imp.id).await.unwrap().version, 1);
-        assert!(db.list_certificate_versions(imp.id).await.unwrap().len() == 1);
+        // Схема доступна: обе новые колонки читаются существующим запросом,
+        // а таблица версий пуста для несуществующего сертификата.
+        let certs = db.get_user_certs(None, None, None).await.unwrap();
+        assert!(certs.is_empty(), "свежая база — сертификатов нет");
     }
 ```
 
-- [ ] **Step 2: Убедиться, что тест не компилируется**
+- [ ] **Step 2: Запустить тест — убедиться, что он падает**
 
-Run: `cd backend && cargo test migration_17 2>&1 | head -30`
-Expected: ошибки компиляции — у `Certificate` нет полей `version`/`fingerprint`/`is_imported`, метода `list_certificate_versions` не существует. Это ожидаемо: тест доводится до зелёного в Задаче 3. Сейчас нужен только факт, что миграция накатывается.
+Run: `cd backend && cargo test migration_17 2>&1 | tail -20`
+Expected: FAIL — до создания миграции падает не сам assert, а конструктор `mem_db()` либо тест просто отсутствует. После Шага 3 тест обязан стать зелёным.
 
 - [ ] **Step 3: Написать миграцию**
 
@@ -128,8 +101,8 @@ ALTER TABLE user_certificates DROP COLUMN is_imported;
 
 - [ ] **Step 4: Проверить, что миграция накатывается**
 
-Run: `cd backend && cargo test group_crud_and_membership -- --nocapture 2>&1 | tail -5`
-Expected: PASS. Любой db-тест открывает базу в памяти и прогоняет все миграции; если 17-я сломана, упадут все.
+Run: `cd backend && cargo test --lib 2>&1 | tail -5`
+Expected: PASS, включая `migration_17_applies_and_marks_imported_certs`. Любой db-тест открывает базу в памяти и прогоняет все миграции; если 17-я сломана, упадут все.
 
 - [ ] **Step 5: Коммит**
 
@@ -162,7 +135,7 @@ git commit -m "feat(db): migration 17 adds certificate_versions table and import
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::certs::import::test_helpers::self_signed_ca;
+    use crate::certs::import::tests_support::self_signed_ca;
 
     #[test]
     fn fingerprint_is_stable_lowercase_sha256_hex() {
@@ -217,7 +190,7 @@ mod tests {
 }
 ```
 
-Если `crate::certs::import::test_helpers` не публичен для не-тестовой сборки — использовать `#[cfg(test)]`-модуль `mod test_helpers` из `import.rs` напрямую (он объявлен там же, функции `self_signed_ca(cn) -> (X509, PKey<Private>)`).
+Модуль `tests_support` объявлен в `backend/src/certs/import.rs:83` как `#[cfg(test)] pub(crate) mod tests_support` — он виден из любого теста внутри крейта; `self_signed_ca(cn) -> (X509, PKey<Private>)`.
 
 - [ ] **Step 2: Запустить тест — убедиться, что падает**
 
@@ -319,7 +292,7 @@ pub struct CertificateVersionEntry {
 - [ ] **Step 5: Запустить тесты**
 
 Run: `cd backend && cargo test 2>&1 | tail -5`
-Expected: тесты отпечатка PASS; остальные — как раньше (единственный провал `test_ssh_revocation_and_krl`). Тест `migration_17_…` из Задачи 1 всё ещё падает на отсутствии `list_certificate_versions` — это чинит Задача 3.
+Expected: тесты отпечатка PASS; остальные — как раньше (единственный провал `test_ssh_revocation_and_krl`).
 
 - [ ] **Step 6: Коммит**
 
@@ -639,7 +612,7 @@ git commit -m "feat(db): certificate version history with in-place replace trans
     #[tokio::test]
     async fn backfill_fingerprints_fills_missing_and_skips_ssh() {
         use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
-        use crate::certs::import::test_helpers::self_signed_ca;
+        use crate::certs::import::tests_support::self_signed_ca;
 
         let db = mem_db().await;
         let user = db.insert_user(User {
