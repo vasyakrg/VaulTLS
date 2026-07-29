@@ -208,6 +208,7 @@ impl AuditResult {
 pub enum AuditAction {
     Login, Logout, DownloadCertificate, FetchCertificatePassword,
     CreateCa, ImportCa, DeleteCa, RevokeCertificate, DeleteCertificate,
+    UpdateCertificate, DeleteCertificateVersion,
     CreateUser, UpdateUser, DeleteUser,
     CreateGroup, UpdateGroup, DeleteGroup,
     CreateServiceAccount, RevokeServiceAccount, DeleteServiceAccount,
@@ -226,6 +227,8 @@ impl AuditAction {
             AuditAction::DeleteCa => "delete_ca",
             AuditAction::RevokeCertificate => "revoke_certificate",
             AuditAction::DeleteCertificate => "delete_certificate",
+            AuditAction::UpdateCertificate => "update_certificate",
+            AuditAction::DeleteCertificateVersion => "delete_certificate_version",
             AuditAction::CreateUser => "create_user",
             AuditAction::UpdateUser => "update_user",
             AuditAction::DeleteUser => "delete_user",
@@ -254,6 +257,8 @@ impl std::str::FromStr for AuditAction {
             "delete_ca" => Ok(AuditAction::DeleteCa),
             "revoke_certificate" => Ok(AuditAction::RevokeCertificate),
             "delete_certificate" => Ok(AuditAction::DeleteCertificate),
+            "update_certificate" => Ok(AuditAction::UpdateCertificate),
+            "delete_certificate_version" => Ok(AuditAction::DeleteCertificateVersion),
             "create_user" => Ok(AuditAction::CreateUser),
             "update_user" => Ok(AuditAction::UpdateUser),
             "delete_user" => Ok(AuditAction::DeleteUser),
@@ -266,5 +271,21 @@ impl std::str::FromStr for AuditAction {
             "update_settings" => Ok(AuditAction::UpdateSettings),
             _ => Err(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod audit_action_roundtrip {
+    use super::AuditAction;
+    use std::str::FromStr;
+
+    #[test]
+    fn new_certificate_actions_roundtrip() {
+        for action in [AuditAction::UpdateCertificate, AuditAction::DeleteCertificateVersion] {
+            let s = action.as_str();
+            assert_eq!(AuditAction::from_str(s).unwrap().as_str(), s);
+        }
+        assert_eq!(AuditAction::UpdateCertificate.as_str(), "update_certificate");
+        assert_eq!(AuditAction::DeleteCertificateVersion.as_str(), "delete_certificate_version");
     }
 }

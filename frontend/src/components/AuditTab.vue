@@ -71,6 +71,7 @@ const { t } = useI18n();
 const ACTIONS = [
   'login','logout','download_certificate','fetch_certificate_password',
   'create_ca','import_ca','delete_ca','revoke_certificate','delete_certificate',
+  'update_certificate','delete_certificate_version',
   'create_user','update_user','delete_user','create_group','update_group','delete_group',
   'create_service_account','revoke_service_account','delete_service_account','update_settings',
 ];
