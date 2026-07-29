@@ -11,6 +11,7 @@ CREATE TABLE certificate_versions (
     created_on  INTEGER NOT NULL,
     valid_until INTEGER NOT NULL,
     serial_hex  TEXT,
+    ca_id       INTEGER,
     fingerprint TEXT NOT NULL,
     replaced_at INTEGER NOT NULL,
     replaced_by INTEGER,
@@ -18,6 +19,7 @@ CREATE TABLE certificate_versions (
 );
 
 CREATE INDEX idx_cert_versions_cert ON certificate_versions(cert_id);
+CREATE INDEX idx_cert_versions_serial ON certificate_versions(serial_hex);
 
 UPDATE user_certificates SET is_imported = 1
  WHERE acme_provider_id IS NULL

@@ -248,6 +248,60 @@ async fn only_local_admin_deletes_historical_versions() -> Result<()> {
     Ok(())
 }
 
+/// Отозванный сертификат заменять нельзя: иначе CRL перечислит новый серийник,
+/// а скомпрометированный старый молча снова станет валидным.
+/// Гонку `/revoke` с `PUT` тест не воспроизводит — её закрывает условие в UPDATE
+/// (см. db::tests::replace_certificate_refuses_revoked_row); здесь проверяется
+/// предварительная проверка обработчика.
+#[tokio::test]
+async fn revoked_cert_cannot_be_replaced() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+
+    // CA импортируется вместе с ключом: без него /revoke упирается в «нет ключа — нет CRL»
+    // и до интересующей нас проверки дело не доходит.
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Revoke CA");
+    let ca_body = crate::common::helper::multipart_two_files(
+        "CAB1", "ca_cert", "ca.pem", &ca_pem, "ca_key", "ca.key", &ca_key_pem);
+    assert_eq!(
+        client.post("/certificates/ca/import")
+            .header(ContentType::new("multipart", "form-data").with_params(("boundary", "CAB1")))
+            .body(ca_body).dispatch().await.status(),
+        Status::Ok);
+
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("revoked.example.com", &ca_pem, &ca_key_pem);
+    let import_body = crate::common::helper::multipart_import_leaf("VER10I", &leaf_pem, &leaf_key_pem, &ca_pem, 1);
+    let imported = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", "VER10I")))
+        .body(import_body).dispatch().await;
+    assert_eq!(imported.status(), Status::Ok);
+    let id = serde_json::from_str::<Value>(&imported.into_string().await.unwrap())?["id"]
+        .as_i64().unwrap();
+
+    let revoke = client.post(format!("/certificates/{id}/revoke")).dispatch().await;
+    assert_eq!(revoke.status(), Status::Ok);
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("revoked.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER10";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest, "отозванный сертификат не подлежит замене");
+
+    // содержимое осталось прежним: версия не выросла, история пуста
+    let versions: Value = serde_json::from_str(
+        &client.get(format!("/certificates/{id}/versions")).dispatch().await
+            .into_string().await.unwrap())?;
+    let arr = versions.as_array().unwrap();
+    assert_eq!(arr.len(), 1, "замена не должна была создать историческую версию");
+    assert_eq!(arr[0]["version"].as_i64(), Some(1));
+    Ok(())
+}
+
 #[tokio::test]
 async fn superseded_serial_still_validates() -> Result<()> {
     let client = VaulTLSClient::new_authenticated().await;

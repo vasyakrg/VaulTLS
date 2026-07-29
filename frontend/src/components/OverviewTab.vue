@@ -216,7 +216,7 @@
         </Column>
         <Column field="revoked_at" :header="$t('overview.colRevoked')">
           <template #body="{ data }">
-            {{ data.revoked_at ? new Date(data.revoked_at * 1000).toLocaleDateString() : 'Unknown' }}
+            {{ data.revoked_at ? new Date(data.revoked_at).toLocaleDateString() : 'Unknown' }}
           </template>
         </Column>
         <Column field="ca_id" :header="$t('common.colCaName')">

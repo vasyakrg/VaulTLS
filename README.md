@@ -157,10 +157,15 @@ The previous contents move into a version history instead of being discarded:
 `GET /api/certificates/<id>/versions` lists every version, newest first, and appending
 `?version=N` to the download and password endpoints serves a historical version instead of the
 current one. Superseded versions can be pruned with `DELETE /api/certificates/<id>/versions/<version>`
-(local admin only; the current version can't be removed this way). The certificate list also
-exposes a `fingerprint` (SHA-256 of the leaf certificate), so a caller can detect that content
-changed before downloading the private material again. Both actions are available from the
-certificate table in the web interface via the update button and the version history dialog.
+(local admin only; the current version can't be removed this way). The certificate list
+exposes a `version` counter that increments on every replacement — this is the authoritative
+signal that the stored content changed, so an agent polling by `cert_id` should compare
+`version` and re-download whenever it grew. The list also exposes a `fingerprint` (SHA-256 of
+the leaf certificate), which identifies the leaf specifically; it is useful for confirming
+which leaf is currently deployed, but it is not sufficient to detect every replacement — a
+replacement that only fixes the chain or changes the PKCS#12 password keeps the same leaf and
+therefore the same fingerprint. Both actions are available from the certificate table in the
+web interface via the update button and the version history dialog.
 
 ### Certificate Revocation Lists (CRL)
 TLS certificates cannot be simply deleted since their validity period is cryptographically encoded in the certificate. VaulTLS provides the CRL mechanism to revoke certificates. This file is used by the validation side (such as the server for client certificates) to check if the certificate has been revoked. CRLs are stored as files under `/app/data/crl/`. They can be downloaded in the CA tab of the frontend and can be retrieved from the API under `/api/certificates/ca/<id>/crl`. They do not require authentication to be accessed.

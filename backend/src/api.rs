@@ -782,7 +782,7 @@ pub(crate) async fn import_certificate(
 pub(crate) async fn update_certificate(
     state: &State<AppState>,
     id: i64,
-    mut form: rocket::form::Form<ImportCertForm<'_>>,
+    form: rocket::form::Form<ImportCertForm<'_>>,
     authentication: Authenticated,
 ) -> Result<Json<Certificate>, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key, parse_pkcs12, parse_pem_bundle, find_issuing_ca, verify_signed_by};
@@ -802,7 +802,7 @@ pub(crate) async fn update_certificate(
     } else if !authentication.claims.is_local_admin() && existing.user_id != authentication.claims.id {
         return Err(ApiError::Forbidden(None));
     }
-    form.user_id = existing.user_id; // владелец записи не меняется
+    // Владелец записи не меняется: UPDATE в replace_certificate не трогает user_id.
 
     // Что вообще подлежит замене
     if existing.acme_provider_id.is_some() {
@@ -943,7 +943,15 @@ pub(crate) async fn update_certificate(
             fingerprint: fingerprint.clone(),
             ca_id,
         },
-    ).await?;
+    ).await.map_err(|e| {
+        // Строку успели отозвать (или иначе вывести из-под замены) между проверками
+        // выше и транзакцией — это конфликт состояния, а не внутренняя ошибка.
+        if e.downcast_ref::<crate::db::CertificateNotReplaceable>().is_some() {
+            ApiError::Conflict("certificate state changed and it can no longer be replaced".into())
+        } else {
+            ApiError::from(e)
+        }
+    })?;
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::UpdateCertificate,
@@ -1387,6 +1395,9 @@ pub(crate) async fn download_certificate(
     }
 
     // По умолчанию отдаём текущую версию; ?version=N достаёт её из истории.
+    // Номер отданной версии попадает в аудит: выдача вытесненной версии обязана
+    // отличаться в журнале от рядовой выгрузки текущей.
+    let served_version = version.unwrap_or(certificate.version);
     let mut certificate = certificate;
     if let Some(v) = version {
         let stored = state.db.get_certificate_version(id, v).await?
@@ -1452,7 +1463,7 @@ pub(crate) async fn download_certificate(
                 let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
                 record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
                     Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-                    Some(download_format.clone().unwrap_or_else(|| "pkcs12".into())), None).await;
+                    Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), None).await;
 
                 return Ok(DownloadResponse::new_typed(
                     zip_bytes,
@@ -1472,7 +1483,7 @@ pub(crate) async fn download_certificate(
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
         Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-        Some(download_format.clone().unwrap_or_else(|| "pkcs12".into())), None).await;
+        Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), None).await;
 
     Ok(DownloadResponse::new(certificate.data.into_bytes(), &file_name))
 }
@@ -1490,7 +1501,7 @@ pub(crate) async fn fetch_certificate_password(
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
     }
-    let (user_id, password) = state.db.get_user_cert_password(id).await?;
+    let (user_id, password, current_version) = state.db.get_user_cert_password(id).await?;
     if !can_access_cert_secret(state, &authentication.claims, user_id, id).await? {
         return Err(ApiError::Forbidden(None));
     }
@@ -1501,10 +1512,13 @@ pub(crate) async fn fetch_certificate_password(
             .ok_or(ApiError::NotFound(None))?
             .password,
     };
+    // Ключ вытесненной версии обязан отличаться в журнале от рядовой выдачи текущей.
+    let served_version = version.unwrap_or(current_version);
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::FetchCertificatePassword,
-        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
+        Some(format!("v{served_version}")), None).await;
 
     Ok(Json(password))
 }
