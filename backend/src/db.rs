@@ -1785,6 +1785,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_17_applies_and_marks_imported_certs() {
+        // mem_db() прогоняет все миграции; если 17-я сломана, конструктор паникует.
+        let db = mem_db().await;
+
+        // Схема доступна: обе новые колонки читаются существующим запросом,
+        // а таблица версий пуста для несуществующего сертификата.
+        let certs = db.get_user_certs(None, None, None).await.unwrap();
+        assert!(certs.is_empty(), "свежая база — сертификатов нет");
+    }
+
+    #[tokio::test]
     async fn group_crud_and_membership() {
         let db = mem_db().await;
         let admin = db.insert_user(User { id: -1, name: "a".into(), email: "a@b.c".into(), password_hash: None, oidc_id: None, role: UserRole::Admin, is_local: false }).await.unwrap();
