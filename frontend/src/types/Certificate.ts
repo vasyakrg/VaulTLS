@@ -26,4 +26,7 @@ export interface Certificate {
     ca_id: number | null;                 // Cert ID used to create the certificate (null for ACME/LE certs)
     acme_provider_id?: number | null;     // ACME provider ID for LE certs (set when ca_id is null)
     revoked_at?: number;                  // Date when the certificate was revoked (UNIX timestamp in ms)
+    version: number;                      // номер текущей версии содержимого
+    fingerprint?: string | null;          // SHA-256 текущей версии в hex
+    is_imported: boolean;                 // только импортированные можно заменять
 }
