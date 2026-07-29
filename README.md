@@ -144,6 +144,24 @@ openssl pkcs12 -in INFILE.p12 -out OUTFILE.crt -nokeys
 openssl pkcs12 -in INFILE.p12 -out OUTFILE.key -nodes -nocerts
 ```
 
+### Updating imported certificates
+An imported certificate can be replaced with a newer file while keeping its database `id`, so
+agents or scripts that poll it by `cert_id` pick up the change automatically. Use
+`PUT /api/certificates/<id>` with the same fields as import (`p12` + `password`, or `cert` +
+`key` and an optional `chain`); the new leaf's Common Name must match the existing record
+exactly. This is only allowed for imported certificates that are not revoked — certificates
+issued by the internal CA and ACME certificates are not editable this way, since their renewal
+is handled by their own flow.
+
+The previous contents move into a version history instead of being discarded:
+`GET /api/certificates/<id>/versions` lists every version, newest first, and appending
+`?version=N` to the download and password endpoints serves a historical version instead of the
+current one. Superseded versions can be pruned with `DELETE /api/certificates/<id>/versions/<version>`
+(local admin only; the current version can't be removed this way). The certificate list also
+exposes a `fingerprint` (SHA-256 of the leaf certificate), so a caller can detect that content
+changed before downloading the private material again. Both actions are available from the
+certificate table in the web interface via the update button and the version history dialog.
+
 ### Certificate Revocation Lists (CRL)
 TLS certificates cannot be simply deleted since their validity period is cryptographically encoded in the certificate. VaulTLS provides the CRL mechanism to revoke certificates. This file is used by the validation side (such as the server for client certificates) to check if the certificate has been revoked. CRLs are stored as files under `/app/data/crl/`. They can be downloaded in the CA tab of the frontend and can be retrieved from the API under `/api/certificates/ca/<id>/crl`. They do not require authentication to be accessed.
 
