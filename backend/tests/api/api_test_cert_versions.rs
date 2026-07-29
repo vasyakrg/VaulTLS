@@ -438,3 +438,181 @@ async fn superseded_serial_still_validates() -> Result<()> {
     assert_eq!(status["superseded"].as_bool(), Some(true));
     Ok(())
 }
+
+/// Импортированный сертификат, уже отдавший своё единственное предупреждение
+/// (watch_expiry гасит renew_method после уведомления), обязан снова начать
+/// предупреждать после ручной замены: именно ради этой замены endpoint и создан,
+/// и другого способа переставить renew_method у существующей записи в API нет.
+#[tokio::test]
+async fn replace_rearms_a_muted_imported_certificate() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    // import_leaf не передаёт renew_method — запись создаётся с None (0), ровно как
+    // строка, которую watch_expiry уже погасил после единственного письма.
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "muted.example.com", 1).await;
+
+    let renew_method_of = |v: &Value, id: i64| -> i64 {
+        v.as_array().unwrap().iter()
+            .find(|c| c["id"].as_i64() == Some(id)).unwrap()["renew_method"].as_i64().unwrap()
+    };
+    let before: Value = serde_json::from_str(
+        &client.get("/certificates").dispatch().await.into_string().await.unwrap())?;
+    assert_eq!(renew_method_of(&before, id), 0, "исходная запись немая — это и есть баг-сценарий");
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "muted.example.com", &ca_pem, &ca_key_pem, 0, 200);
+    let boundary = "VER15";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let after: Value = serde_json::from_str(
+        &client.get("/certificates").dispatch().await.into_string().await.unwrap())?;
+    assert_eq!(renew_method_of(&after, id), 1,
+        "замена обязана перевзвести уведомления (None → Notify), иначе серт молчит навсегда");
+
+    // Явно присланный renew_method побеждает: оператор ставит RenewAndNotify (3).
+    let (leaf2, key2) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "muted.example.com", &ca_pem, &ca_key_pem, 0, 300);
+    let boundary = "VER16";
+    let body = crate::common::helper::multipart_import_leaf_with_fields(
+        boundary, &leaf2, &key2, &ca_pem, 1, &[("renew_method", "3")]);
+    let resp = client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let after2: Value = serde_json::from_str(
+        &client.get("/certificates").dispatch().await.into_string().await.unwrap())?;
+    assert_eq!(renew_method_of(&after2, id), 3, "явный renew_method обязан быть учтён");
+    Ok(())
+}
+
+/// История отозванного сертификата — источник его серийников для CRL и для
+/// /certificates/validate. Удалить старую версию значит снять скомпрометированный
+/// серийник с отзыва.
+#[tokio::test]
+async fn revoked_certificate_history_cannot_be_deleted() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+
+    // CA с ключом: без него /revoke упирается в «нет ключа — нет CRL».
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Revoke History CA");
+    let ca_body = crate::common::helper::multipart_two_files(
+        "CAB2", "ca_cert", "ca.pem", &ca_pem, "ca_key", "ca.key", &ca_key_pem);
+    assert_eq!(
+        client.post("/certificates/ca/import")
+            .header(ContentType::new("multipart", "form-data").with_params(("boundary", "CAB2")))
+            .body(ca_body).dispatch().await.status(),
+        Status::Ok);
+
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("revoked-history.example.com", &ca_pem, &ca_key_pem);
+    let import_body = crate::common::helper::multipart_import_leaf("VER17I", &leaf_pem, &leaf_key_pem, &ca_pem, 1);
+    let imported = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", "VER17I")))
+        .body(import_body).dispatch().await;
+    assert_eq!(imported.status(), Status::Ok);
+    let id = serde_json::from_str::<Value>(&imported.into_string().await.unwrap())?["id"]
+        .as_i64().unwrap();
+
+    // Замена — чтобы появилась историческая версия 1.
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "revoked-history.example.com", &ca_pem, &ca_key_pem, 0, 200);
+    let boundary = "VER17";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    assert_eq!(client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await.status(), Status::Ok);
+
+    assert_eq!(client.post(format!("/certificates/{id}/revoke")).dispatch().await.status(), Status::Ok);
+
+    let resp = client.delete(format!("/certificates/{id}/versions/1")).dispatch().await;
+    assert_eq!(resp.status(), Status::BadRequest, "историю отозванного сертификата удалять нельзя");
+    let msg = resp.into_string().await.unwrap();
+    assert!(msg.contains("revoked"), "сообщение обязано объяснять причину: {msg}");
+
+    let versions: Value = serde_json::from_str(
+        &client.get(format!("/certificates/{id}/versions")).dispatch().await
+            .into_string().await.unwrap())?;
+    assert_eq!(versions.as_array().unwrap().len(), 2, "обе версии обязаны остаться на месте");
+    Ok(())
+}
+
+/// Сознательный «даунгрейд» срока: годовой сертификат меняют на свежий 90-дневный
+/// после компрометации. Строка не отозвана, другого пути заменить её на месте нет —
+/// поэтому локальному админу разрешён обход через force=true.
+#[tokio::test]
+async fn local_admin_may_force_a_shorter_lived_replacement() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "downgrade.example.com", 1).await;
+
+    // Валиден сейчас, но истекает раньше существующего (+90d) — обычно это отказ.
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "downgrade.example.com", &ca_pem, &ca_key_pem, 0, 30);
+
+    let boundary = "VER18";
+    let body = crate::common::helper::multipart_import_leaf_with_fields(
+        boundary, &leaf, &key, &ca_pem, 1, &[("force", "true")]);
+    let resp = client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok, "локальный админ вправе сократить срок осознанно");
+    let updated: Value = serde_json::from_str(&resp.into_string().await.unwrap())?;
+    assert_eq!(updated["version"].as_i64(), Some(2));
+
+    // Обход обязан быть виден в аудите.
+    let audit: Value = serde_json::from_str(
+        &client.get("/audit?action=update_certificate").dispatch().await
+            .into_string().await.unwrap())?;
+    let detail = audit["rows"].as_array().unwrap().iter()
+        .find(|r| r["target_id"].as_str() == Some(id.to_string().as_str()))
+        .and_then(|r| r["detail"].as_str()).unwrap_or_default().to_string();
+    assert!(detail.contains("FORCED"), "обход обязан быть записан в аудит: {detail}");
+    Ok(())
+}
+
+/// force доступен только локальному админу: владельцу-обычному пользователю он
+/// ничего не даёт, отказ остаётся обычным.
+#[tokio::test]
+async fn owner_cannot_force_a_shorter_lived_replacement() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    client.create_user().await?;                           // user id=2 — обычный
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "owner-force.example.com", 2).await;
+
+    client.switch_user().await?; // под владельцем id=2
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "owner-force.example.com", &ca_pem, &ca_key_pem, 0, 30);
+    let boundary = "VER19";
+    let body = crate::common::helper::multipart_import_leaf_with_fields(
+        boundary, &leaf, &key, &ca_pem, 2, &[("force", "true")]);
+    let resp = client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::BadRequest, "force у не-локального-админа игнорируется");
+    let msg = resp.into_string().await.unwrap();
+    assert!(msg.contains("no later than"), "отказ обязан остаться прежним: {msg}");
+    Ok(())
+}
+
+/// force снимает ТОЛЬКО требование продлить срок. Просроченный материал ломает
+/// сервис немедленно — эта проверка абсолютна для всех, включая локального админа.
+#[tokio::test]
+async fn force_does_not_bypass_the_expired_check() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "force-expired.example.com", 1).await;
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "force-expired.example.com", &ca_pem, &ca_key_pem, -10, -1);
+    let boundary = "VER20";
+    let body = crate::common::helper::multipart_import_leaf_with_fields(
+        boundary, &leaf, &key, &ca_pem, 1, &[("force", "true")]);
+    let resp = client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::BadRequest, "force не отменяет проверку на истечение срока");
+    let msg = resp.into_string().await.unwrap();
+    assert!(msg.contains("expired"), "сообщение обязано указывать на истечение срока: {msg}");
+    Ok(())
+}

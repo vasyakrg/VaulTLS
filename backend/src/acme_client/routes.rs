@@ -170,6 +170,22 @@ pub async fn issue_acme_client_order(
                     // attribution below is a real actor, not the system.
                     let existing = state.db.get_user_cert_by_id(renew_id).await
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    // Тот же guard, что в notifier::handle_acme_renewal, и та же
+                    // функция: замена, не продлевающая срок, не даёт ничего, а стоит
+                    // строки в certificate_versions и строки в аудите.
+                    if !crate::notification::notifier::renewal_extends_expiry(
+                        packed.valid_until, existing.valid_until,
+                    ) {
+                        tracing::info!(
+                            cert_id = renew_id, order_id = id,
+                            issued_valid_until = packed.valid_until,
+                            current_valid_until = existing.valid_until,
+                            "ACME renewal skipped: issued certificate does not extend the current expiry"
+                        );
+                        state.db.update_acme_client_order_status(id, "valid", Some(renew_id), None).await
+                            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                        return Ok::<_, anyhow::Error>(());
+                    }
                     let tmp_cert = crate::certs::common::Certificate {
                         data: crate::data::enums::CertData::Pkcs12(packed.pkcs12_der.clone()),
                         password: String::new(),
@@ -205,6 +221,8 @@ pub async fn issue_acme_client_order(
                             // ACME certificates carry ca_id = NULL and must keep it;
                             // 0 means "leave the existing binding alone".
                             ca_id: 0,
+                            // Продление не меняет способ продления — он и так работает.
+                            renew_method: None,
                         },
                         crate::db::ReplaceGuard::AcmeRenewal,
                     ).await?;

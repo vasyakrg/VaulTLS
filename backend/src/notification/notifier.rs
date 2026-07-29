@@ -58,6 +58,7 @@ pub(crate) async fn watch_expiry(db: VaulTLSDB, mailer_mutex: Arc<Mutex<Option<M
                                 // Do NOT reset renew_method — auto-renew must keep firing.
                                 if let Err(e) = handle_acme_renewal(cert, &db, &settings, mailer_mutex.clone()).await {
                                     info!("ACME renewal for cert {} failed: {e}", cert.id);
+                                    audit_renewal_failure(&db, cert, "automatic ACME renewal", &e).await;
                                 }
                             }
                         }
@@ -93,6 +94,7 @@ pub(crate) async fn watch_expiry(db: VaulTLSDB, mailer_mutex: Arc<Mutex<Option<M
                             if cert.valid_until < in_a_week {
                                 if let Err(e) = handle_expiry(cert, &db, mailer_mutex.clone()).await {
                                     info!("Renewal for cert {} failed: {e}", cert.id);
+                                    audit_renewal_failure(&db, cert, "automatic renewal by internal CA", &e).await;
                                 }
                             }
                         }
@@ -112,6 +114,50 @@ pub(crate) async fn watch_expiry(db: VaulTLSDB, mailer_mutex: Arc<Mutex<Option<M
         }
 
         ticker.tick().await;
+    }
+}
+
+/// Стоит ли вообще выполнять замену выпущенным сертификатом.
+///
+/// У автопродления ACME нет нижней границы: триггер «истекает раньше чем через 30
+/// дней» для короткоживущего профиля (6-дневные сертификаты Let's Encrypt) истинен
+/// всегда. Прежняя перезапись на месте была нейтральна по объёму, а замена — нет:
+/// каждый тик добавлял бы строку в `certificate_versions` и строку в аудит. Если
+/// новый сертификат не продлевает срок — заменять нечего.
+pub(crate) fn renewal_extends_expiry(issued_valid_until: i64, current_valid_until: i64) -> bool {
+    issued_valid_until > current_valid_until
+}
+
+/// Текущее время в секундах — та же шкала, что у остальных записей аудита.
+fn audit_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// Зеркало успешной записи об автопродлении: успех оставляет audit-запись, провал
+/// обязан оставлять её тоже. Иначе продление, падающее на каждом тике (например,
+/// `get_latest_tls_ca` вернул импортированную CA без ключа), молча доводит
+/// сертификат до истечения — ни в аудите, ни в UI никакого следа.
+/// Атрибуция ровно та же, что у успешного пути: человека-актёра нет, actor_id
+/// остаётся NULL, actor_type — Anonymous (конвенция кодовой базы для системных
+/// действий), а текст ошибки уходит в detail.
+async fn audit_renewal_failure(db: &VaulTLSDB, cert: &Certificate, kind: &str, err: &anyhow::Error) {
+    if let Err(e) = db.insert_audit(AuditEntry {
+        ts: audit_now_secs(),
+        actor_id: None,
+        actor_label: "system (automatic renewal)".to_string(),
+        actor_type: AuditActorType::Anonymous,
+        action: AuditAction::UpdateCertificate,
+        target_type: Some("certificate".into()),
+        target_id: Some(cert.id.to_string()),
+        target_label: Some(cert.name.cn.clone()),
+        result: AuditResult::Failure,
+        detail: Some(format!("{kind} failed: {err}")),
+        ip: None,
+    }).await {
+        tracing::warn!(error = %e, cert_id = cert.id, "failed to write audit log entry for failed certificate renewal");
     }
 }
 
@@ -214,6 +260,8 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
                     serial_hex,
                     fingerprint,
                     ca_id,
+                    // Автопродление не трогает способ продления — он и так работает.
+                    renew_method: None,
                 },
                 crate::db::ReplaceGuard::Renewal,
             ).await?;
@@ -227,10 +275,7 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
             // follows the codebase's existing convention that pairs actor_id: None with
             // Anonymous (see the failed-login audit call in backend/src/api.rs) rather
             // than the misleading User/Some(id)-shaped alternative.
-            let audit_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
+            let audit_ts = audit_now_secs();
             if let Err(e) = db.insert_audit(AuditEntry {
                 ts: audit_ts,
                 actor_id: None,
@@ -320,6 +365,15 @@ async fn handle_acme_renewal(
         .await?;
         let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")?;
 
+        if !renewal_extends_expiry(packed.valid_until, cert.valid_until) {
+            info!(
+                "ACME renewal for cert {} skipped: issued certificate expires at {} which does not extend the current expiry {}.",
+                cert.id, packed.valid_until, cert.valid_until
+            );
+            db.update_acme_client_order_status(order.id, "valid", Some(cert.id), None).await?;
+            return Ok(());
+        }
+
         // Same shape as the internal-CA renewal above: same row, new content, old
         // content moves into certificate_versions instead of being overwritten in
         // place, so material that may still be deployed somewhere stays recoverable.
@@ -355,19 +409,27 @@ async fn handle_acme_renewal(
                 // ACME certificates carry ca_id = NULL and must keep it; 0 means
                 // "leave the existing binding alone".
                 ca_id: 0,
+                // Автопродление не трогает способ продления — он и так работает.
+                renew_method: None,
             },
             crate::db::ReplaceGuard::AcmeRenewal,
         ).await?;
 
-        db.update_acme_client_order_status(order.id, "valid", Some(cert.id), None).await?;
+        // Замена уже закоммичена, откатить её нельзя — падать здесь через `?`
+        // означало бы потерять и запись в аудит. Сам «зависший» заказ больше не
+        // блокирует будущие продления: get_active_renewal_order_for_cert считает
+        // активным только заказ, который сертификат ещё не обогнал по created_on.
+        if let Err(e) = db.update_acme_client_order_status(order.id, "valid", Some(cert.id), None).await {
+            tracing::error!(
+                error = %e, cert_id = cert.id, order_id = order.id,
+                "ACME certificate was replaced but writing the order status failed; the order stays pending_dns"
+            );
+        }
 
         // Mirrors the internal-CA renewal audit entry above: same action, same system
         // attribution (no human actor performed this), detail line names the version
         // transition instead of "internal CA".
-        let audit_ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let audit_ts = audit_now_secs();
         if let Err(e) = db.insert_audit(AuditEntry {
             ts: audit_ts,
             actor_id: None,
@@ -417,4 +479,59 @@ async fn handle_acme_renewal(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::certs::common::Certificate;
+    use crate::data::enums::CertificateType;
+    use crate::data::objects::{AuditFilter, Name};
+
+    /// Продление имеет смысл только если новый сертификат живёт дольше текущего.
+    /// Для 6-дневных сертификатов Let's Encrypt триггер «истекает меньше чем через
+    /// 30 дней» истинен всегда, и без этой проверки каждый тик писал бы новую
+    /// версию и новую строку аудита.
+    #[test]
+    fn renewal_is_skipped_when_expiry_is_not_extended() {
+        assert!(renewal_extends_expiry(2_000, 1_000), "срок продлён — заменяем");
+        assert!(!renewal_extends_expiry(1_000, 1_000), "тот же срок — заменять нечего");
+        assert!(!renewal_extends_expiry(500, 1_000), "срок короче — заменять нечего");
+    }
+
+    /// Провал автопродления обязан оставлять след в аудите — так же, как успех.
+    #[tokio::test]
+    async fn failed_renewal_is_recorded_in_the_audit_log() {
+        let db = VaulTLSDB::new_in_memory().await.unwrap();
+        let user = db.insert_user(crate::data::objects::User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: Name::from("renew-me.example.com"), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: None, is_imported: false,
+        }).await.unwrap();
+
+        audit_renewal_failure(
+            &db, &cert, "automatic renewal by internal CA",
+            &anyhow!("CA has no private key"),
+        ).await;
+
+        let page = db.query_audit(AuditFilter {
+            result: Some("failure".into()),
+            ..Default::default()
+        }, 10, 0).await.unwrap();
+        assert_eq!(page.total, 1, "провал продления обязан быть виден в аудите");
+        let row = &page.rows[0];
+        assert_eq!(row.target_id.as_deref(), Some(cert.id.to_string().as_str()));
+        assert_eq!(row.actor_id, None, "у автопродления нет человека-актёра");
+        assert_eq!(row.actor_label, "system (automatic renewal)",
+                   "атрибуция обязана совпадать с успешным путём");
+        assert!(row.detail.as_deref().unwrap_or_default().contains("CA has no private key"),
+                "текст ошибки обязан попасть в detail: {:?}", row.detail);
+    }
 }

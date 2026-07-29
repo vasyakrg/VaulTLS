@@ -21,6 +21,15 @@ CREATE TABLE certificate_versions (
 CREATE INDEX idx_cert_versions_cert ON certificate_versions(cert_id);
 CREATE INDEX idx_cert_versions_serial ON certificate_versions(serial_hex);
 
+-- Backfill: mark a leaf as imported only when it could not possibly have been
+-- issued here. An imported CA that carries a private key CAN issue locally
+-- (get_latest_tls_ca happily signs with it), so leaves under it may well be
+-- internally issued and must keep auto-renewing. Only an imported CA WITHOUT a
+-- usable key proves every leaf under it came from outside. Absent key follows
+-- the codebase convention CA::has_private_key() == !key.is_empty().
 UPDATE user_certificates SET is_imported = 1
  WHERE acme_provider_id IS NULL
-   AND ca_id IN (SELECT id FROM ca_certificates WHERE is_imported = 1);
+   AND ca_id IN (
+       SELECT id FROM ca_certificates
+        WHERE is_imported = 1 AND (key IS NULL OR length(key) = 0)
+   );

@@ -52,6 +52,10 @@ pub(crate) struct ReplaceCertificateInput {
     pub fingerprint: String,
     /// 0 означает «не менять привязку к CA».
     pub ca_id: i64,
+    /// `None` — оставить текущий способ продления как есть. `Some` — установить
+    /// новый в той же транзакции, что и содержимое: замена — единственный момент,
+    /// когда оператор может перевзвести уведомления по импортированной строке.
+    pub renew_method: Option<CertificateRenewMethod>,
 }
 
 /// Байты и пароль конкретной версии.
@@ -64,10 +68,11 @@ pub(crate) struct StoredCertVersion {
 pub(crate) enum ReplaceGuard {
     /// Ручная замена оператором: только импортированные, не ACME.
     ImportedManual,
-    /// Автопродление доверенным путём: любой не отозванный, не ACME сертификат.
-    /// Импортированные сертификаты тоже подпадают под это условие — от них
-    /// автопродление отсекается на уровне вызывающей стороны (`watch_expiry`),
-    /// не здесь: строка не отозвана и это её единственный подходящий инвариант в БД.
+    /// Автопродление внутренним CA: не отозван, не ACME и не импортирован.
+    /// Импортированные строки исключены здесь, а не только в `watch_expiry`:
+    /// внутренний CA не имеет права молча подменить материал, полученный извне,
+    /// и это должно держаться, даже если вызывающая сторона ошибётся или
+    /// проиграет гонку с импортом.
     Renewal,
     /// Продление ACME-сертификата: зеркало `Renewal` — не отозван и обязательно ACME.
     /// Это гарантирует то же самое разделение с другой стороны: путь ACME-продления
@@ -492,27 +497,31 @@ impl VaulTLSDB {
             let next = version + 1;
             // Условие в WHERE зависит от доверия к вызывающей стороне:
             // - ImportedManual: оператор — только импортированные, не ACME, как раньше.
-            // - Renewal: доверенный внутренний путь — не отозвана и не ACME. ACME-строки
-            //   обслуживает свой собственный путь продления; исключение здесь — не
-            //   опция вызывающей стороны, а гарантия на уровне БД, которая обязана
-            //   держаться даже если caller ошибётся или проиграет гонку.
+            // - Renewal: внутренний CA — не отозвана, не ACME и не импортирована.
+            //   ACME-строки обслуживает свой собственный путь продления, а материал
+            //   импортированных строк внутренний CA подменять не вправе вовсе;
+            //   исключение здесь — не опция вызывающей стороны, а гарантия на уровне
+            //   БД, которая обязана держаться даже если caller ошибётся или проиграет
+            //   гонку.
             // В обоих случаях оно же служит защитой от гонки с /revoke между проверками
             // обработчика и этой записью: если строка перестала подходить, откатываемся.
             let guard_clause = match guard {
                 ReplaceGuard::ImportedManual => "revoked_at IS NULL AND is_imported = 1 AND acme_provider_id IS NULL",
-                ReplaceGuard::Renewal => "revoked_at IS NULL AND acme_provider_id IS NULL",
+                ReplaceGuard::Renewal => "revoked_at IS NULL AND acme_provider_id IS NULL AND is_imported = 0",
                 ReplaceGuard::AcmeRenewal => "revoked_at IS NULL AND acme_provider_id IS NOT NULL",
             };
             let affected = tx.execute(
                 &format!(
                     "UPDATE user_certificates SET data = ?1, password = ?2, created_on = ?3, \
                             valid_until = ?4, serial_hex = ?5, fingerprint = ?6, version = ?7, \
-                            ca_id = CASE WHEN ?8 > 0 THEN ?8 ELSE ca_id END \
-                      WHERE id = ?9 AND {guard_clause}"
+                            ca_id = CASE WHEN ?8 > 0 THEN ?8 ELSE ca_id END, \
+                            renew_method = COALESCE(?9, renew_method) \
+                      WHERE id = ?10 AND {guard_clause}"
                 ),
                 params![
                     input.data, input.password, input.created_on, input.valid_until,
-                    input.serial_hex, input.fingerprint, next, input.ca_id, cert_id
+                    input.serial_hex, input.fingerprint, next, input.ca_id,
+                    input.renew_method.map(|m| m as u8), cert_id
                 ],
             )?;
             if affected == 0 {
@@ -1616,11 +1625,25 @@ impl VaulTLSDB {
         })
     }
 
+    /// Заказ, который сейчас реально продлевает `cert_id` — то есть блокирует
+    /// создание ещё одного.
+    ///
+    /// Заказ без `expires_at` (CA не сообщил срок) сам по себе не истекает никогда,
+    /// поэтому одного статуса мало: если запись статуса после успешной замены не
+    /// прошла, заказ навсегда остаётся `pending_dns` и глушит всё будущее
+    /// автопродление этого сертификата. Поэтому активным считается только заказ,
+    /// который сертификат ещё не «обогнал»: при замене `created_on` строки
+    /// переписывается моментом замены, так что `created_on` сертификата позже
+    /// `created_on` заказа означает, что замена уже состоялась и заказ отработан
+    /// (или брошен) — блокировать им нечего.
     pub(crate) async fn get_active_renewal_order_for_cert(&self, cert_id: i64, now_ms: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
-                 FROM acme_client_orders WHERE renews_cert_id = ?1 AND status IN ('pending_dns','ready') AND (expires_at IS NULL OR expires_at > ?2) ORDER BY id DESC LIMIT 1",
+                "SELECT o.id, o.provider_id, o.domain, o.include_wildcard, o.status, o.order_url, o.txt_records, o.cert_id, o.error, o.created_on, o.expires_at, o.renews_cert_id \
+                 FROM acme_client_orders o WHERE o.renews_cert_id = ?1 AND o.status IN ('pending_dns','ready') \
+                   AND (o.expires_at IS NULL OR o.expires_at > ?2) \
+                   AND NOT EXISTS (SELECT 1 FROM user_certificates c WHERE c.id = o.renews_cert_id AND c.created_on > o.created_on) \
+                 ORDER BY o.id DESC LIMIT 1",
             )?;
             let mut rows = stmt.query(params![cert_id, now_ms])?;
             match rows.next()? {
@@ -2062,24 +2085,35 @@ mod tests {
         let db = mem_db().await;
         let pool = db.pool.clone();
 
-        let (imported_ca_flag, internal_ca_flag, acme_flag) = tokio::task::spawn_blocking(move || {
+        let (imported_ca_flag, imported_ca_with_key_flag, internal_ca_flag, acme_flag) =
+            tokio::task::spawn_blocking(move || {
             let conn = pool.get().unwrap();
 
-            // Две CA: внутренняя (is_imported = 0) и импортированная (is_imported = 1).
+            // Три CA: внутренняя (is_imported = 0), импортированная БЕЗ ключа
+            // (key пуст — конвенция CA::has_private_key) и импортированная С ключом.
             conn.execute(
-                "INSERT INTO ca_certificates (created_on, valid_until, is_imported) VALUES (0, 1, 0)",
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported, key) VALUES (0, 1, 0, X'00ff')",
                 [],
             ).unwrap();
             let internal_ca_id = conn.last_insert_rowid();
 
             conn.execute(
-                "INSERT INTO ca_certificates (created_on, valid_until, is_imported) VALUES (0, 1, 1)",
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported, key) VALUES (0, 1, 1, NULL)",
                 [],
             ).unwrap();
             let imported_ca_id = conn.last_insert_rowid();
 
-            // Три сертификата, все стартуют с is_imported = 0:
-            // - под импортированной CA (после бэкфилла должен стать 1),
+            conn.execute(
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported, key) VALUES (0, 1, 1, X'00ff')",
+                [],
+            ).unwrap();
+            let imported_ca_with_key_id = conn.last_insert_rowid();
+
+            // Четыре сертификата, все стартуют с is_imported = 0:
+            // - под импортированной CA без ключа (после бэкфилла должен стать 1),
+            // - под импортированной CA С ключом: такая CA умеет выпускать локально
+            //   (get_latest_tls_ca подписывает ею), значит лист мог быть выпущен здесь
+            //   и обязан продолжать автопродлеваться — должен остаться 0,
             // - под внутренней CA (должен остаться 0),
             // - ACME-сертификат: ca_id NULL, acme_provider_id задан (должен остаться 0).
             // provider id=1 существует — это пресет Let's Encrypt из миграции 13.
@@ -2088,6 +2122,12 @@ mod tests {
                 rusqlite::params![imported_ca_id],
             ).unwrap();
             let cert_under_imported_ca = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-imported-ca-with-key', 0, 1, ?1, NULL, 0)",
+                rusqlite::params![imported_ca_with_key_id],
+            ).unwrap();
+            let cert_under_imported_ca_with_key = conn.last_insert_rowid();
 
             conn.execute(
                 "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-internal-ca', 0, 1, ?1, NULL, 0)",
@@ -2105,7 +2145,10 @@ mod tests {
             conn.execute_batch(
                 "UPDATE user_certificates SET is_imported = 1
  WHERE acme_provider_id IS NULL
-   AND ca_id IN (SELECT id FROM ca_certificates WHERE is_imported = 1);",
+   AND ca_id IN (
+       SELECT id FROM ca_certificates
+        WHERE is_imported = 1 AND (key IS NULL OR length(key) = 0)
+   );",
             ).unwrap();
 
             let get_flag = |id: i64| -> i64 {
@@ -2118,12 +2161,15 @@ mod tests {
 
             (
                 get_flag(cert_under_imported_ca),
+                get_flag(cert_under_imported_ca_with_key),
                 get_flag(cert_under_internal_ca),
                 get_flag(acme_cert),
             )
         }).await.unwrap();
 
-        assert_eq!(imported_ca_flag, 1, "сертификат под импортированной CA должен получить is_imported = 1");
+        assert_eq!(imported_ca_flag, 1, "сертификат под импортированной CA без ключа должен получить is_imported = 1");
+        assert_eq!(imported_ca_with_key_flag, 0,
+            "под импортированной CA С ключом лист мог быть выпущен внутри — он обязан остаться is_imported = 0 и продолжать автопродлеваться");
         assert_eq!(internal_ca_flag, 0, "сертификат под внутренней CA должен остаться is_imported = 0");
         assert_eq!(acme_flag, 0, "ACME-сертификат не должен помечаться как импортированный");
     }
@@ -2294,6 +2340,7 @@ mod tests {
             serial_hex: Some("0b".into()),
             fingerprint: "bb".into(),
             ca_id: ca2.id,
+            renew_method: None,
         }, ReplaceGuard::ImportedManual).await.unwrap();
         assert_eq!(new_version, 2);
 
@@ -2375,6 +2422,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::ImportedManual).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "отозванная строка обязана отбиваться типизированной ошибкой: {err}");
@@ -2409,6 +2457,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::ImportedManual).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "не импортированная строка обязана отбиваться: {err}");
@@ -2444,6 +2493,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::ImportedManual).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "ACME-строка обязана отбиваться даже если помечена is_imported: {err}");
@@ -2475,6 +2525,7 @@ mod tests {
         let new_version = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::Renewal).await.unwrap();
         assert_eq!(new_version, 2);
 
@@ -2487,6 +2538,131 @@ mod tests {
         let versions = db.list_certificate_versions(cert.id).await.unwrap();
         let history = versions.iter().find(|v| !v.current).expect("вытесненная версия обязана быть в истории");
         assert_eq!(history.replaced_by, None, "автопродление не имеет человека-актёра");
+    }
+
+    /// Внутреннее автопродление обязано отбиваться от импортированной строки на
+    /// уровне БД, а не только на уровне `watch_expiry`: материал, полученный извне,
+    /// внутренний CA подменять не вправе, даже если вызывающая сторона ошиблась.
+    #[tokio::test]
+    async fn replace_certificate_renewal_guard_refuses_imported_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::Renewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "импортированная строка обязана отбиваться внутренним автопродлением: {err}");
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.version, 1);
+        assert_eq!(current.data.as_bytes(), b"v1", "содержимое импортированной строки не тронуто");
+    }
+
+    /// Замена обязана уметь перевзвести способ продления в той же транзакции:
+    /// `Some(..)` — установить, `None` — оставить как было.
+    #[tokio::test]
+    async fn replace_certificate_sets_renew_method_when_requested() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+
+        db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: Some(CertificateRenewMethod::Notify),
+        }, ReplaceGuard::ImportedManual).await.unwrap();
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().renew_method,
+                   CertificateRenewMethod::Notify);
+
+        // None — не трогать: способ продления остаётся прежним.
+        db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v3".to_vec(), password: "pw".into(), created_on: 5, valid_until: 6,
+            serial_hex: None, fingerprint: "cc".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap();
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().renew_method,
+                   CertificateRenewMethod::Notify);
+    }
+
+    /// Заказ без `expires_at`, у которого не прошла запись статуса, не имеет права
+    /// глушить автопродление навсегда: сертификат его уже «обогнал» (created_on
+    /// строки переписан моментом замены), значит заказ отработан.
+    #[tokio::test]
+    async fn active_renewal_order_ignores_order_the_certificate_moved_past() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1_000, valid_until: 9_000,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        // insert_user_cert не пишет acme_provider_id — проставляем её напрямую,
+        // как и в соседних ACME-тестах.
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+
+        // Заказ на продление: expires_at не сообщён (NULL) — сам он не протухнет.
+        let order = db.insert_acme_client_order(
+            1, "example.com".into(), false, Some("https://acme.example/o/1".into()),
+            &[], None, Some(cert.id),
+        ).await.unwrap();
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+
+        // Пока сертификат не заменён — заказ активен и блокирует второй.
+        assert_eq!(
+            db.get_active_renewal_order_for_cert(cert.id, now_ms).await.unwrap().map(|o| o.id),
+            Some(order.id),
+        );
+
+        // Замена прошла, а запись статуса — нет: заказ остался pending_dns.
+        db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(),
+            created_on: now_ms + 1_000, valid_until: now_ms + 100_000,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap();
+        assert_eq!(db.get_acme_client_order(order.id).await.unwrap().status, "pending_dns");
+
+        assert!(
+            db.get_active_renewal_order_for_cert(cert.id, now_ms + 2_000).await.unwrap().is_none(),
+            "зависший заказ не имеет права блокировать автопродление навсегда",
+        );
     }
 
     /// Даже доверенному пути автопродления запрещено трогать отозванную строку.
@@ -2512,6 +2688,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::Renewal).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "отозванная строка обязана отбиваться даже доверенным путём: {err}");
@@ -2552,6 +2729,7 @@ mod tests {
         let new_version = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::AcmeRenewal).await.unwrap();
         assert_eq!(new_version, 2);
 
@@ -2591,6 +2769,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::AcmeRenewal).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "не-ACME строка обязана отбиваться ACME-путём продления: {err}");
@@ -2623,6 +2802,7 @@ mod tests {
         let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::AcmeRenewal).await.unwrap_err();
         assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
                 "отозванная ACME-строка обязана отбиваться даже своим путём продления: {err}");
@@ -2649,6 +2829,7 @@ mod tests {
         db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
             data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::ImportedManual).await.unwrap();
 
         // фикстура действительно создала историческую запись — иначе постусловие ничего не доказывает
@@ -2745,6 +2926,7 @@ mod tests {
         db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: Some("0b".into()), fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::Renewal).await.unwrap();
 
         db.revoke_user_cert(cert.id).await.unwrap();
@@ -2801,6 +2983,7 @@ mod tests {
         db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
             serial_hex: Some("0b".into()), fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
         }, ReplaceGuard::Renewal).await.unwrap();
         db.revoke_user_cert(cert.id).await.unwrap();
 

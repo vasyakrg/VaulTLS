@@ -566,6 +566,11 @@ pub struct ImportCertForm<'r> {
     pub cert_type: Option<u8>,
     /// CertificateRenewMethod as u8: 0=None, 1=Notify, 2=Renew, 3=RenewAndNotify
     pub renew_method: Option<u8>,
+    /// PUT /certificates/<id> only: allow a replacement that does NOT extend the
+    /// expiry (deliberate downgrade, e.g. rotating a compromised one-year cert to a
+    /// fresh 90-day one). Local admins only; ignored for everyone else. Never
+    /// bypasses the expired / not-yet-valid checks.
+    pub force: Option<bool>,
 }
 
 impl<'r> rocket_okapi::JsonSchema for ImportCertForm<'r> {
@@ -892,12 +897,36 @@ pub(crate) async fn update_certificate(
             format_ts(new_not_before)?, format_ts(now)?
         )));
     }
-    if new_not_after <= existing.valid_until {
+    // `force` снимает ТОЛЬКО требование продлить срок — сознательный «даунгрейд»
+    // (например, ротация скомпрометированного годового сертификата свежим
+    // 90-дневным: строка не отозвана, другого пути заменить её на месте нет).
+    // Проверки «просрочен» и «ещё не вступил в силу» выше абсолютны для всех:
+    // такой материал ломает сервис немедленно, кто бы его ни присылал.
+    // Право на обход — только у локального админа; всем остальным (владелец,
+    // OIDC-админ, сервисный токен) force игнорируется и отказ остаётся обычным.
+    let force_no_improvement = form.force.unwrap_or(false)
+        && authentication.claims.is_local_admin();
+    if new_not_after <= existing.valid_until && !force_no_improvement {
         return Err(ApiError::BadRequest(format!(
             "certificate expires at {}, which is no later than the current one's expiry at {}; replacement must extend validity",
             format_ts(new_not_after)?, format_ts(existing.valid_until)?
         )));
     }
+    let forced_downgrade = force_no_improvement && new_not_after <= existing.valid_until;
+
+    // Способ продления: если оператор прислал его явно — он и становится новым.
+    // Если нет — сохраняем прежний, НО `None` (0) перевзводим в `Notify` (1):
+    // замена — ровно тот момент, когда на строке снова появился сертификат,
+    // о котором стоит предупреждать. Иначе импортированный сертификат, уже
+    // отдавший своё единственное предупреждение (watch_expiry гасит renew_method
+    // после уведомления), навсегда остаётся немым — а API-пути сменить
+    // renew_method у существующей записи нет вовсе.
+    let renew_method = match form.renew_method {
+        Some(v) => CertificateRenewMethod::try_from(v)
+            .map_err(|_| ApiError::BadRequest(format!("invalid renew_method: {v}")))?,
+        None if existing.renew_method == CertificateRenewMethod::None => CertificateRenewMethod::Notify,
+        None => existing.renew_method,
+    };
 
     // 3) Цепочка: сначала пробуем прежний CA записи, иначе ищем издателя в цепочке
     //    — ровно та же логика, что в import_certificate (api.rs:695-728).
@@ -948,7 +977,7 @@ pub(crate) async fn update_certificate(
         valid_until: asn1_to_unix_ms(leaf.not_after())?,
         certificate_type: existing.certificate_type,
         user_id: existing.user_id,
-        renew_method: existing.renew_method,
+        renew_method,
         ca_id: Some(ca_id),
         revoked_at: None,
         acme_provider_id: None,
@@ -974,6 +1003,9 @@ pub(crate) async fn update_certificate(
             serial_hex,
             fingerprint: fingerprint.clone(),
             ca_id,
+            // Пишется той же транзакцией, что и содержимое: перевзведение
+            // уведомлений не должно «потеряться», если замена откатится.
+            renew_method: Some(renew_method),
         },
         crate::db::ReplaceGuard::ImportedManual,
     ).await.map_err(|e| {
@@ -987,10 +1019,20 @@ pub(crate) async fn update_certificate(
     })?;
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    // Обход проверки на продление срока обязан быть виден в аудите: иначе
+    // сокращение срока действия выглядит как обычная замена.
+    let forced_note = if forced_downgrade {
+        format!(
+            ", FORCED validity downgrade by local admin: new expiry {} is not later than previous {}",
+            format_ts(candidate.valid_until)?, format_ts(existing.valid_until)?
+        )
+    } else {
+        String::new()
+    };
     record_audit(state, aid, alabel, atype, AuditAction::UpdateCertificate,
         Some("certificate".into()), Some(id.to_string()), Some(existing.name.cn.clone()),
         AuditResult::Success,
-        Some(format!("v{} → v{}, fingerprint {}", existing.version, new_version, fingerprint)),
+        Some(format!("v{} → v{}, fingerprint {}{}", existing.version, new_version, fingerprint, forced_note)),
         None).await;
 
     Ok(Json(state.db.get_user_cert_by_id(id).await?))
@@ -1394,6 +1436,15 @@ pub(crate) async fn delete_certificate_version(
         .map_err(|_| ApiError::NotFound(None))?;
     if certificate.version == version {
         return Err(ApiError::BadRequest("current version cannot be deleted".into()));
+    }
+    // История отозванного сертификата — это и есть источник его серийников для CRL
+    // и для /certificates/validate. Удалить старую версию значит снять её серийник
+    // с отзыва: скомпрометированный сертификат, возможно ещё живой по сроку, снова
+    // начнёт приниматься. Отзыв необратим — история отозванной строки тоже.
+    if certificate.revoked_at.is_some() {
+        return Err(ApiError::BadRequest(
+            "certificate is revoked: its version history is what keeps the superseded serials on the CRL, so it cannot be deleted".into()
+        ));
     }
     if !state.db.delete_certificate_version(id, version).await? {
         return Err(ApiError::NotFound(None));

@@ -183,6 +183,34 @@ pub(crate) fn leaf_signed_by_pem_with_validity(
     (leaf_pem, leaf_key_pem)
 }
 
+/// Same as `multipart_import_leaf`, plus arbitrary extra text fields
+/// (`renew_method`, `force`, ...). Used by the PUT /certificates/<id> tests.
+pub(crate) fn multipart_import_leaf_with_fields(
+    boundary: &str,
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    chain_pem: &[u8],
+    user_id: i64,
+    extra: &[(&str, &str)],
+) -> Vec<u8> {
+    let mut body = multipart_import_leaf(boundary, cert_pem, key_pem, chain_pem, user_id);
+    // Drop the closing delimiter, append the extra fields, close again.
+    let closing = format!("--{}--\r\n", boundary);
+    let keep = body.len() - closing.len();
+    body.truncate(keep);
+    for (name, value) in extra {
+        body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n").as_bytes(),
+        );
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(closing.as_bytes());
+    body
+}
+
 /// Build a multipart body for POST /certificates/import
 /// Fields: cert (file), key (file), chain (file), user_id (text)
 pub(crate) fn multipart_import_leaf(
