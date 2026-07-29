@@ -965,7 +965,7 @@ pub(crate) async fn update_certificate(
 
     let new_version = state.db.replace_certificate(
         id,
-        authentication.claims.id,
+        Some(authentication.claims.id),
         crate::db::ReplaceCertificateInput {
             data: candidate.data.as_bytes().to_vec(),
             password,
@@ -1598,6 +1598,19 @@ pub(crate) async fn delete_user_cert(
     Ok(())
 }
 
+/// Decodes a lowercase-hex serial (as stored in `serial_hex` columns) into raw bytes.
+/// Malformed input returns `None` rather than panicking — a corrupt historical serial
+/// must not take down CRL generation for every other certificate.
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if s.is_empty() || s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 async fn create_crl_params(state: &State<AppState>, ca: &CA) -> Result<(Vec<(Vec<u8>, i64)>, i64), ApiError>{
     assert_eq!(ca.ca_type, CAType::TLS);
 
@@ -1609,6 +1622,19 @@ async fn create_crl_params(state: &State<AppState>, ca: &CA) -> Result<(Vec<(Vec
             .map_err(|_| ApiError::Other("Could not retrieve serial number from certificate to create CRL".to_string()))?;
 
         revoked_params.push((serial, cert.revoked_at.unwrap_or(0)));
+    }
+
+    // Renewal replaces the current row's contents in place before expiry; if the
+    // certificate is later revoked, the serial it wore before that last renewal is
+    // still inside its own validity window and must show up on the CRL too, or a
+    // client that cached it keeps treating it as valid (RFC 5280).
+    let historical = state.db.get_revoked_history_serials_for_ca(ca.id).await
+        .map_err(|e| ApiError::Other(e.to_string()))?;
+    for (serial_hex, revoked_at) in historical {
+        match hex_decode(&serial_hex) {
+            Some(bytes) => revoked_params.push((bytes, revoked_at)),
+            None => tracing::warn!(serial_hex = %serial_hex, ca_id = ca.id, "skipping malformed historical serial while building CRL"),
+        }
     }
 
     let crl_next_update_hours = state.settings.get_crl_next_update_hours();

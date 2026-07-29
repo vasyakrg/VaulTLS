@@ -1,7 +1,8 @@
 use crate::acme_client::client;
 use crate::certs::tls_cert::{get_dns_names, TLSCertificateBuilder};
-use crate::data::enums::{CertificateRenewMethod, UserRole};
+use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CertificateRenewMethod, UserRole};
 use crate::data::enums::CertificateType::*;
+use crate::data::objects::AuditEntry;
 use crate::db::VaulTLSDB;
 use crate::notification::mail::{MailMessage, Mailer};
 use std::sync::Arc;
@@ -69,6 +70,19 @@ pub(crate) async fn watch_expiry(db: VaulTLSDB, mailer_mutex: Arc<Mutex<Option<M
                         }
                         CertificateRenewMethod::None => {}
                     }
+                } else if cert.is_imported {
+                    // Imported certificates carry material the operator obtained
+                    // elsewhere (Let's Encrypt, corporate PKI, ...) — the internal CA
+                    // must never silently overwrite it in place, no matter what
+                    // renew_method says. Route it through the expiry notice instead
+                    // (same as Notify below) and reset renew_method afterwards so the
+                    // mail fires once; the owner replaces it by hand via PUT
+                    // /certificates/<id>, which is exactly what that endpoint is for.
+                    if cert.valid_until < in_a_week
+                        && handle_imported_expiry(cert, &db, mailer_mutex.clone()).await.is_ok()
+                    {
+                        let _ = db.update_cert_renew_method(cert.id, CertificateRenewMethod::None).await;
+                    }
                 } else {
                     // Internal-CA path: Renew/RenewAndNotify now replace the certificate
                     // in place (see handle_expiry), so the row keeps renewing on every
@@ -99,6 +113,33 @@ pub(crate) async fn watch_expiry(db: VaulTLSDB, mailer_mutex: Arc<Mutex<Option<M
 
         ticker.tick().await;
     }
+}
+
+/// Notifies the owner that an imported certificate is expiring. Never renews it — an
+/// imported row's material came from outside VaulTLS, and the internal CA overwriting
+/// it in place would be a silent, unwanted substitution. This is the safety net for
+/// `is_imported` certificates regardless of what their `renew_method` says; the actual
+/// `Renew`/`RenewAndNotify`/`Notify` distinction only applies to internally-issued rows
+/// handled by `handle_expiry` below.
+async fn handle_imported_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mutex<Option<Mailer>>>) -> Result<(), anyhow::Error> {
+    let user = db.get_user(cert.user_id).await?;
+    info!(
+        "Imported certificate {} owned by user {} is about to expire; internal CA will not renew it, notifying instead.",
+        cert.name, user.name
+    );
+    let mail = MailMessage {
+        to: format!("{} <{}>", user.name, user.email),
+        username: user.name,
+        certificate: cert.clone()
+    };
+
+    tokio::spawn(async move {
+        if let Some(mailer) = &mut *mailer_mutex.lock().await {
+            let _ = mailer.notify_old_certificate(mail).await;
+        }
+    });
+
+    Ok(())
 }
 
 async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mutex<Option<Mailer>>>) -> Result<(), anyhow::Error> {
@@ -158,12 +199,13 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
             let serial_hex = new_cert.get_serial().ok()
                 .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
 
-            db.replace_certificate(
+            let new_version = db.replace_certificate(
                 cert.id,
-                // No human actor here — the automated action is on behalf of the
-                // certificate's owner; the audit trail for renewals is the mail below,
-                // not the audit log.
-                cert.user_id,
+                // No human actor performed this replacement — it's unattended. NULL
+                // here (not cert.user_id) so `replaced_by`, which the version-history
+                // API and UI expose as "who did this", does not falsely attribute an
+                // automatic renewal to the owner.
+                None,
                 crate::db::ReplaceCertificateInput {
                     data: new_cert.data.as_bytes().to_vec(),
                     password: new_cert.password.clone(),
@@ -175,6 +217,31 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
                 },
                 crate::db::ReplaceGuard::Renewal,
             ).await?;
+
+            // The action still needs to be visible somewhere audit-relevant. VaulTLS has
+            // no "system" actor concept (AuditActorType is User | Service | Anonymous —
+            // see backend/src/data/enums.rs), so this records the certificate's owner as
+            // actor and says explicitly in `detail` that it was an unattended renewal,
+            // rather than inventing a new actor-type variant here.
+            let audit_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            if let Err(e) = db.insert_audit(AuditEntry {
+                ts: audit_ts,
+                actor_id: Some(cert.user_id),
+                actor_label: user.name.clone(),
+                actor_type: AuditActorType::User,
+                action: AuditAction::UpdateCertificate,
+                target_type: Some("certificate".into()),
+                target_id: Some(cert.id.to_string()),
+                target_label: Some(cert.name.cn.clone()),
+                result: AuditResult::Success,
+                detail: Some(format!("automatic renewal by internal CA: v{} → v{new_version}", cert.version)),
+                ip: None,
+            }).await {
+                tracing::warn!(error = %e, cert_id = cert.id, "failed to write audit log entry for certificate renewal");
+            }
 
             if cert.renew_method == CertificateRenewMethod::RenewAndNotify {
                 // Re-read the row: it now carries the renewed contents under the same id.
