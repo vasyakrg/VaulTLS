@@ -220,18 +220,22 @@ async fn handle_expiry(cert: &Certificate, db: &VaulTLSDB, mailer_mutex: Arc<Mut
 
             // The action still needs to be visible somewhere audit-relevant. VaulTLS has
             // no "system" actor concept (AuditActorType is User | Service | Anonymous —
-            // see backend/src/data/enums.rs), so this records the certificate's owner as
-            // actor and says explicitly in `detail` that it was an unattended renewal,
-            // rather than inventing a new actor-type variant here.
+            // see backend/src/data/enums.rs) and we're not inventing one here. actor_id
+            // stays NULL — attributing it to cert.user_id would make an "everything this
+            // user did" query (filter by actor_id) surface an action they never
+            // performed. actor_label says plainly what happened instead; actor_type
+            // follows the codebase's existing convention that pairs actor_id: None with
+            // Anonymous (see the failed-login audit call in backend/src/api.rs) rather
+            // than the misleading User/Some(id)-shaped alternative.
             let audit_ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
             if let Err(e) = db.insert_audit(AuditEntry {
                 ts: audit_ts,
-                actor_id: Some(cert.user_id),
-                actor_label: user.name.clone(),
-                actor_type: AuditActorType::User,
+                actor_id: None,
+                actor_label: "system (automatic renewal)".to_string(),
+                actor_type: AuditActorType::Anonymous,
                 action: AuditAction::UpdateCertificate,
                 target_type: Some("certificate".into()),
                 target_id: Some(cert.id.to_string()),

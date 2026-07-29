@@ -1599,16 +1599,59 @@ pub(crate) async fn delete_user_cert(
 }
 
 /// Decodes a lowercase-hex serial (as stored in `serial_hex` columns) into raw bytes.
-/// Malformed input returns `None` rather than panicking — a corrupt historical serial
-/// must not take down CRL generation for every other certificate.
+/// Total: never panics, including on non-ASCII input. Works over the byte slice rather
+/// than slicing the `&str` by character index — a naive `&s[i..i+2]` would panic on a
+/// non-ASCII string whose even byte length still passes the length check but cuts a
+/// UTF-8 codepoint in half (e.g. `"aäb"`, 4 bytes). Malformed input, ASCII or not,
+/// returns `None` — a corrupt historical serial must not take down CRL generation for
+/// every other certificate.
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.is_empty() || s.len() % 2 != 0 {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| -> Option<u8> {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some(((hi << 4) | lo) as u8)
+        })
         .collect()
+}
+
+#[cfg(test)]
+mod hex_decode_tests {
+    use super::hex_decode;
+
+    #[test]
+    fn decodes_valid_lowercase_hex() {
+        assert_eq!(hex_decode("0a2f"), Some(vec![0x0a, 0x2f]));
+    }
+
+    #[test]
+    fn rejects_odd_length() {
+        assert_eq!(hex_decode("abc"), None);
+    }
+
+    #[test]
+    fn rejects_empty_input() {
+        assert_eq!(hex_decode(""), None);
+    }
+
+    #[test]
+    fn rejects_non_hex_ascii() {
+        assert_eq!(hex_decode("zz11"), None);
+    }
+
+    /// The regression this guards: a naive `&s[i..i+2]` byte-index slice panics here
+    /// because 'ä' is a 2-byte UTF-8 codepoint — the even *byte* length ("aäb" is 4
+    /// bytes) passes the length check, but slicing at byte offset 2 lands mid-codepoint.
+    /// Iterating over bytes instead of str-slicing must return None, not panic.
+    #[test]
+    fn rejects_non_ascii_without_panicking() {
+        assert_eq!(hex_decode("aäb"), None);
+    }
 }
 
 async fn create_crl_params(state: &State<AppState>, ca: &CA) -> Result<(Vec<(Vec<u8>, i64)>, i64), ApiError>{
