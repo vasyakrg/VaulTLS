@@ -82,7 +82,10 @@
         <template #body="{ data }"><span :id="'CertId-' + data.id">{{ data.id }}</span></template>
       </Column>
       <Column field="name.cn" :header="$t('common.colName')" sortable>
-        <template #body="{ data }">{{ data.name.cn }}</template>
+        <template #body="{ data }">
+          <span>{{ data.name.cn }}</span>
+          <Tag v-if="data.version > 1" :value="'v' + data.version" severity="secondary" />
+        </template>
       </Column>
       <Column v-if="hasAnyOU" field="name.ou" :header="$t('common.colGroup')">
         <template #body="{ data }">{{ data.name.ou ?? '' }}</template>
@@ -131,6 +134,28 @@
               v-tooltip.top="$t('certs.downloadPem')"
               :aria-label="$t('certs.downloadPem')"
               @click="downloadCertificatePem(data.id)"
+            />
+            <Button
+              :id="'UpdateCertButton-' + data.id"
+              v-if="canUpdate(data)"
+              icon="pi pi-upload"
+              severity="secondary"
+              outlined
+              size="small"
+              v-tooltip.top="$t('certVersions.update')"
+              :aria-label="$t('certVersions.update')"
+              @click="openUpdate(data)"
+            />
+            <Button
+              :id="'CertHistoryButton-' + data.id"
+              v-if="canDownload() && data.version > 1"
+              icon="pi pi-history"
+              severity="secondary"
+              outlined
+              size="small"
+              v-tooltip.top="$t('certVersions.history')"
+              :aria-label="$t('certVersions.history')"
+              @click="openHistory(data)"
             />
             <Button
               v-if="canManage(data)"
@@ -413,6 +438,19 @@
       <p>{{ $t('overview.deleteModal.confirm', { name: certToDelete?.name.cn }) }}</p>
       <p class="vt-disclaimer">{{ $t('overview.deleteModal.disclaimer') }}</p>
     </BaseModal>
+
+    <!-- Update Certificate Dialog -->
+    <UpdateCertificateModal
+      v-model:visible="isUpdateVisible"
+      :certificate="selectedCertificate"
+      @updated="onCertificateUpdated"
+    />
+
+    <!-- Version History Dialog -->
+    <CertificateVersionsModal
+      v-model:visible="isHistoryVisible"
+      :certificate="selectedCertificate"
+    />
   </div>
 </template>
 
@@ -442,8 +480,12 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import { FilterMatchMode } from '@primevue/core/api'
 import ImportCertificateDialog from '@/components/dialogs/ImportCertificateDialog.vue'
 import BaseModal from '@/components/BaseModal.vue'
+import UpdateCertificateModal from '@/components/UpdateCertificateModal.vue'
+import CertificateVersionsModal from '@/components/CertificateVersionsModal.vue'
+import { useToast } from 'primevue/usetoast'
 
 const { t } = useI18n()
+const toast = useToast()
 
 const vTooltip = Tooltip
 
@@ -509,6 +551,17 @@ const canManage = (cert: Certificate): boolean => {
   return cert.user_id === authStore.current_user?.id
 }
 
+// Whether the current user may replace a certificate's contents. Mirrors the backend's
+// rejection rules so the button (and its inevitable 400) never even appears: only
+// imported, non-revoked, non-ACME TLS certificates are eligible, and only for someone
+// who can already manage the certificate.
+const canUpdate = (cert: Certificate): boolean => {
+  if (!canManage(cert)) return false
+  if (!cert.is_imported || cert.revoked_at) return false
+  if (isAcmeCert(cert)) return false
+  return cert.certificate_type === CertificateType.TLSClient || cert.certificate_type === CertificateType.TLSServer
+}
+
 const caName = (cert: Certificate): string => {
   if (cert.acme_provider_id != null) {
     const p = acmeClientStore.providers.find(x => x.id === cert.acme_provider_id)
@@ -522,11 +575,14 @@ const caName = (cert: Certificate): string => {
 const isDeleteModalVisible = ref(false)
 const isGenerateModalVisible = ref(false)
 const isRevokeModalVisible = ref(false)
+const isUpdateVisible = ref(false)
+const isHistoryVisible = ref(false)
 const showRevoked = ref(false)
 const showOUField = ref(false)
 
 const certToDelete = ref<Certificate | null>(null)
 const certToRevoke = ref<Certificate | null>(null)
+const selectedCertificate = ref<Certificate | null>(null)
 
 const passwordRule = computed(() => settings.value?.common.password_rule ?? PasswordRule.Optional)
 
@@ -721,6 +777,24 @@ const revokeCertificate = async () => {
     const certId = certToRevoke.value.id
     await certificateStore.revokeCertificate(certId)
     closeRevokeModal()
+  }
+}
+
+const openUpdate = (cert: Certificate) => {
+  selectedCertificate.value = cert
+  isUpdateVisible.value = true
+}
+
+const openHistory = (cert: Certificate) => {
+  selectedCertificate.value = cert
+  isHistoryVisible.value = true
+}
+
+const onCertificateUpdated = async (certId: number) => {
+  await certificateStore.fetchCertificates()
+  const updated = certificateStore.certificates.get(certId)
+  if (updated) {
+    toast.add({ severity: 'success', summary: t('certVersions.updated', { version: updated.version }), life: 4000 })
   }
 }
 

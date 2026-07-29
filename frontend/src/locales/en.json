@@ -300,6 +300,27 @@
     "downloadPem": "Download PEM bundle",
     "downloadP12": "Download PKCS#12"
   },
+  "certVersions": {
+    "update": "Update certificate",
+    "updateTitle": "Update certificate",
+    "updateHint": "Upload a new certificate for the same common name. The record keeps its id; the current contents move into history.",
+    "history": "Version history",
+    "historyTitle": "Version history",
+    "version": "Version",
+    "current": "Current",
+    "fingerprint": "Fingerprint",
+    "replacedAt": "Replaced",
+    "replacedBy": "Replaced by",
+    "downloadP12": "Download .p12",
+    "downloadPem": "Download PEM",
+    "showPassword": "Show password",
+    "deleteVersion": "Delete version",
+    "deleteConfirm": "Delete version {version}? This cannot be undone.",
+    "updated": "Updated to version {version}",
+    "noHistory": "No previous versions yet.",
+    "downloadFailed": "Failed to download this version.",
+    "passwordFailed": "Failed to fetch the password for this version."
+  },
   "importCert": {
     "title": "Import Certificate",
     "mode": "Import Mode",
