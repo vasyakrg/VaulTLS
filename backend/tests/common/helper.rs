@@ -125,6 +125,64 @@ pub(crate) fn leaf_signed_by_pem(cn: &str, ca_pem: &[u8], ca_key_pem: &[u8]) -> 
     (leaf_pem, leaf_key_pem)
 }
 
+/// Generate a leaf cert signed by `ca_pem`/`ca_key_pem` with given CN, with an
+/// explicit validity window instead of the fixed "now .. +90d" one `leaf_signed_by_pem`
+/// hardcodes. Offsets are in days from now and may be negative (past) or zero.
+/// Returns (leaf_pem, leaf_key_pem).
+pub(crate) fn leaf_signed_by_pem_with_validity(
+    cn: &str,
+    ca_pem: &[u8],
+    ca_key_pem: &[u8],
+    not_before_days_offset: i64,
+    not_after_days_offset: i64,
+) -> (Vec<u8>, Vec<u8>) {
+    let ca = openssl::x509::X509::from_pem(ca_pem).unwrap();
+    let ca_key = PKey::private_key_from_pem(ca_key_pem).unwrap();
+
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let ec_key = EcKey::generate(&group).unwrap();
+    let leaf_key = PKey::from_ec_key(ec_key).unwrap();
+
+    let mut name_builder = X509NameBuilder::new().unwrap();
+    name_builder.append_entry_by_text("CN", cn).unwrap();
+    let name = name_builder.build();
+
+    let mut builder = X509Builder::new().unwrap();
+    builder.set_version(2).unwrap();
+    // Each generated leaf must carry a distinct serial — real CAs never reuse one,
+    // and version-history tests rely on the pre-rotation and post-rotation serials
+    // being different so a superseded serial can still be told apart from the current one.
+    static NEXT_LEAF_SERIAL: AtomicU32 = AtomicU32::new(100_000);
+    let serial_value = NEXT_LEAF_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let serial = BigNum::from_u32(serial_value).unwrap().to_asn1_integer().unwrap();
+    builder.set_serial_number(&serial).unwrap();
+    builder.set_subject_name(&name).unwrap();
+    builder.set_issuer_name(ca.subject_name()).unwrap();
+    builder.set_pubkey(&leaf_key).unwrap();
+
+    let now_s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let not_before = now_s + not_before_days_offset * 86_400;
+    let not_after = now_s + not_after_days_offset * 86_400;
+    builder.set_not_before(&Asn1Time::from_unix(not_before).unwrap()).unwrap();
+    builder.set_not_after(&Asn1Time::from_unix(not_after).unwrap()).unwrap();
+
+    // SKI for the leaf
+    let ski = SubjectKeyIdentifier::new().build(&builder.x509v3_context(Some(&ca), None)).unwrap();
+    builder.append_extension(ski).unwrap();
+    // AKI referencing CA
+    let aki = AuthorityKeyIdentifier::new()
+        .keyid(true)
+        .build(&builder.x509v3_context(Some(&ca), None))
+        .unwrap();
+    builder.append_extension(aki).unwrap();
+    builder.sign(&ca_key, MessageDigest::sha256()).unwrap();
+    let leaf_cert = builder.build();
+
+    let leaf_pem = leaf_cert.to_pem().unwrap();
+    let leaf_key_pem = leaf_key.private_key_to_pem_pkcs8().unwrap();
+    (leaf_pem, leaf_key_pem)
+}
+
 /// Build a multipart body for POST /certificates/import
 /// Fields: cert (file), key (file), chain (file), user_id (text)
 pub(crate) fn multipart_import_leaf(

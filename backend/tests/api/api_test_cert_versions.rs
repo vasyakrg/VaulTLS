@@ -37,9 +37,10 @@ async fn replacing_imported_cert_keeps_id_and_bumps_version() -> Result<()> {
     let old_fp = before.as_array().unwrap().iter()
         .find(|c| c["id"].as_i64() == Some(id)).unwrap()["fingerprint"].as_str().unwrap().to_string();
 
-    // новый leaf с тем же CN, подписанный тем же CA
-    let (new_leaf, new_key) =
-        crate::common::helper::leaf_signed_by_pem("rotate.example.com", &ca_pem, &ca_key_pem);
+    // новый leaf с тем же CN, подписанный тем же CA; живёт дольше исходного (+90d),
+    // иначе замена отклоняется как «не улучшение» (см. новую проверку в update_certificate).
+    let (new_leaf, new_key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "rotate.example.com", &ca_pem, &ca_key_pem, 0, 200);
 
     let boundary = "VER2";
     let body = multipart_replace(boundary, &new_leaf, &new_key, &ca_pem, 1);
@@ -170,7 +171,9 @@ async fn old_version_stays_downloadable_after_replace() -> Result<()> {
     let v1 = client.get(format!("/certificates/{id}/download")).dispatch().await
         .into_bytes().await.unwrap();
 
-    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("history.example.com", &ca_pem, &ca_key_pem);
+    // живёт дольше исходного (+90d), иначе замена отклоняется как «не улучшение».
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "history.example.com", &ca_pem, &ca_key_pem, 0, 200);
     let boundary = "VER7";
     let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
     let resp = client
@@ -219,7 +222,9 @@ async fn only_local_admin_deletes_historical_versions() -> Result<()> {
     client.create_user().await?;                           // user id=2
     let (id, ca_pem, ca_key_pem) = import_leaf(&client, "purge.example.com", 2).await;
 
-    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("purge.example.com", &ca_pem, &ca_key_pem);
+    // живёт дольше исходного (+90d), иначе замена отклоняется как «не улучшение».
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "purge.example.com", &ca_pem, &ca_key_pem, 0, 200);
     let boundary = "VER8";
     let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 2);
     client.put(format!("/certificates/{id}"))
@@ -302,6 +307,106 @@ async fn revoked_cert_cannot_be_replaced() -> Result<()> {
     Ok(())
 }
 
+/// Заменять живой сертификат уже истёкшим нельзя: агент задеплоит его на
+/// следующем поллинге, и сервис на этом хосте перестанет работать сразу же.
+#[tokio::test]
+async fn replacing_with_expired_leaf_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "expired.example.com", 1).await;
+
+    // not_before = -10d, not_after = -1d: уже истёк.
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "expired.example.com", &ca_pem, &ca_key_pem, -10, -1);
+
+    let boundary = "VER11";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest, "просроченный сертификат не подлежит замене");
+    let msg = resp.into_string().await.unwrap();
+    assert!(msg.contains("expired"), "сообщение обязано упоминать истечение срока: {msg}");
+    Ok(())
+}
+
+/// Заменять сертификат тем, что ещё не вступил в силу, нельзя: агент задеплоит
+/// его на следующем поллинге, и сервис будет падать до наступления not_before.
+#[tokio::test]
+async fn replacing_with_not_yet_valid_leaf_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "future.example.com", 1).await;
+
+    // not_before = +10d, not_after = +100d: ещё не наступил.
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "future.example.com", &ca_pem, &ca_key_pem, 10, 100);
+
+    let boundary = "VER12";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest, "ещё не вступивший в силу сертификат не подлежит замене");
+    let msg = resp.into_string().await.unwrap();
+    assert!(msg.contains("valid"), "сообщение обязано упоминать момент вступления в силу: {msg}");
+    Ok(())
+}
+
+/// Заменять сертификат тем, что не продлевает срок действия, бессмысленно и почти
+/// всегда — ошибка оператора (случайно взят несвежий файл).
+#[tokio::test]
+async fn replacing_with_non_improving_leaf_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    // import_leaf использует leaf_signed_by_pem: valid_until = +90d от текущего момента.
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "same-expiry.example.com", 1).await;
+
+    // Валиден (not_before <= now < not_after), но истекает раньше существующего (+90d).
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "same-expiry.example.com", &ca_pem, &ca_key_pem, 0, 30);
+
+    let boundary = "VER13";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::BadRequest, "замена без улучшения срока действия отклоняется");
+    Ok(())
+}
+
+/// Положительный контроль: leaf, который валиден и живёт дольше текущего,
+/// обязан пройти все три новые проверки и заменить сертификат успешно.
+#[tokio::test]
+async fn replacing_with_longer_lived_leaf_succeeds() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    // import_leaf: valid_until = +90d от текущего момента.
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "longer.example.com", 1).await;
+
+    // Валиден сейчас и живёт дольше (+200d > +90d).
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "longer.example.com", &ca_pem, &ca_key_pem, 0, 200);
+
+    let boundary = "VER14";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Ok, "более долгоживущий валидный сертификат обязан пройти замену");
+    let updated: Value = serde_json::from_str(&resp.into_string().await.unwrap())?;
+    assert_eq!(updated["version"].as_i64(), Some(2));
+    Ok(())
+}
+
 #[tokio::test]
 async fn superseded_serial_still_validates() -> Result<()> {
     let client = VaulTLSClient::new_authenticated().await;
@@ -312,7 +417,9 @@ async fn superseded_serial_still_validates() -> Result<()> {
             .into_string().await.unwrap())?;
     let old_serial = versions.as_array().unwrap()[0]["serial_hex"].as_str().unwrap().to_string();
 
-    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("validate.example.com", &ca_pem, &ca_key_pem);
+    // живёт дольше исходного (+90d), иначе замена отклоняется как «не улучшение».
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "validate.example.com", &ca_pem, &ca_key_pem, 0, 200);
     let boundary = "VER9";
     let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
     client.put(format!("/certificates/{id}"))

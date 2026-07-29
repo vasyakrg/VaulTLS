@@ -867,6 +867,38 @@ pub(crate) async fn update_certificate(
         )));
     }
 
+    // 2a) Окно валидности нового листа: не протух, уже вступил в силу и является
+    //     улучшением по сравнению с тем, что заменяет — иначе агент задеплоит
+    //     на следующем поллинге неработающий сертификат.
+    fn format_ts(ms: i64) -> Result<String, ApiError> {
+        chrono::DateTime::from_timestamp_millis(ms)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .ok_or_else(|| ApiError::BadRequest("certificate has an unrenderable timestamp".into()))
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let new_not_before = asn1_to_unix_ms(leaf.not_before())?;
+    let new_not_after = asn1_to_unix_ms(leaf.not_after())?;
+
+    if new_not_after <= now {
+        return Err(ApiError::BadRequest(format!(
+            "certificate expired at {}, it cannot replace a live one (current time {})",
+            format_ts(new_not_after)?, format_ts(now)?
+        )));
+    }
+    if new_not_before > now {
+        return Err(ApiError::BadRequest(format!(
+            "certificate only becomes valid at {} (current time {})",
+            format_ts(new_not_before)?, format_ts(now)?
+        )));
+    }
+    if new_not_after <= existing.valid_until {
+        return Err(ApiError::BadRequest(format!(
+            "certificate expires at {}, which is no later than the current one's expiry at {}; replacement must extend validity",
+            format_ts(new_not_after)?, format_ts(existing.valid_until)?
+        )));
+    }
+
     // 3) Цепочка: сначала пробуем прежний CA записи, иначе ищем издателя в цепочке
     //    — ровно та же логика, что в import_certificate (api.rs:695-728).
     let same_ca = match existing.ca_id {
