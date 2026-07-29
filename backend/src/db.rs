@@ -2544,7 +2544,11 @@ mod tests {
         conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
         drop(conn);
 
-        // actor_id = None: как в реальном пути ACME-продления — нет человека-актёра.
+        // actor_id = None: как в пути автопродления от вотчера истечения
+        // (notifier.rs::handle_acme_renewal) — там нет человека-актёра, событие
+        // безусловно системное. UI-путь (acme_client/routes.rs::issue_acme_client_order)
+        // работает по-другому: там есть авторизованный пользователь, и он передаёт
+        // actor_id = Some(auth.claims.id) — этот тест его не покрывает.
         let new_version = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
             data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
             serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
@@ -2558,7 +2562,9 @@ mod tests {
 
         let versions = db.list_certificate_versions(cert.id).await.unwrap();
         let history = versions.iter().find(|v| !v.current).expect("вытесненная версия обязана быть в истории");
-        assert_eq!(history.replaced_by, None, "ACME-продление не имеет человека-актёра");
+        assert_eq!(history.replaced_by, None,
+                   "здесь актёра нет только потому, что тест воспроизводит вотчер истечения; \
+                    UI-путь (issue_acme_client_order) передаёт Some(actor_id) и это не покрывается этим тестом");
     }
 
     /// Зеркало guard'а `ImportedManual`/`Renewal`: `AcmeRenewal` обязан отбивать строку
