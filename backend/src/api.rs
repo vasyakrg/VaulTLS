@@ -754,6 +754,9 @@ pub(crate) async fn import_certificate(
         acme_provider_id: None,
         data: stored,
         password: form.password.clone().unwrap_or_default(),
+        version: 1,
+        fingerprint: None,
+        is_imported: false,
     };
     let saved = state.db.insert_user_cert(cert).await?;
     Ok(Json(saved))

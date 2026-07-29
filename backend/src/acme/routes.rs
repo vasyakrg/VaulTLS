@@ -455,6 +455,9 @@ pub(crate) async fn finalize_order(
         acme_provider_id: None,
         data: CertData::Pem(chain_pem),
         password: String::new(),
+        version: 1,
+        fingerprint: None,
+        is_imported: false,
     };
 
     let saved_cert = state.db.insert_user_cert(cert).await

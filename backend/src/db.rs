@@ -297,7 +297,7 @@ impl VaulTLSDB {
     /// If filter_revoked is Some, only certificates that are (not) revoked are returned
     pub(crate) async fn get_user_certs(&self, user_id: Option<i64>, ca_id: Option<i64>, filter_revoked: Option<bool>) -> Result<Vec<Certificate>> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut query = String::from("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id FROM user_certificates WHERE 1=1");
+            let mut query = String::from("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id, version, fingerprint, is_imported FROM user_certificates WHERE 1=1");
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
             if let Some(id) = user_id {
@@ -331,7 +331,7 @@ impl VaulTLSDB {
     pub(crate) async fn get_visible_certs(&self, user_id: i64) -> Result<Vec<Certificate>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT c.id, c.name, c.created_on, c.valid_until, c.data, c.password, c.user_id, c.type, c.renew_method, c.ca_id, c.revoked_at, c.acme_provider_id \
+                "SELECT DISTINCT c.id, c.name, c.created_on, c.valid_until, c.data, c.password, c.user_id, c.type, c.renew_method, c.ca_id, c.revoked_at, c.acme_provider_id, c.version, c.fingerprint, c.is_imported \
                  FROM user_certificates c \
                  WHERE c.user_id = ?1 \
                     OR c.id IN ( \
@@ -362,7 +362,7 @@ impl VaulTLSDB {
     /// Returns the id of the user the certificate belongs to and the cert data
     pub(crate) async fn get_user_cert_by_id(&self, id: i64) -> Result<Certificate> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id FROM user_certificates WHERE id = ?1")?;
+            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id, version, fingerprint, is_imported FROM user_certificates WHERE id = ?1")?;
 
             let cert = stmt.query_row(rusqlite::params_from_iter([id]), Certificate::from_row)?;
 
@@ -388,8 +388,8 @@ impl VaulTLSDB {
     pub(crate) async fn insert_user_cert(&self, mut cert: Certificate) -> Result<Certificate> {
         db_do!(self.pool, |conn: &Connection| {
             conn.execute(
-                "INSERT INTO user_certificates (name, created_on, valid_until, data, password, type, renew_method, ca_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![cert.name, cert.created_on, cert.valid_until, cert.data.as_bytes(), cert.password, cert.certificate_type as u8, cert.renew_method as u8, cert.ca_id, cert.user_id],
+                "INSERT INTO user_certificates (name, created_on, valid_until, data, password, type, renew_method, ca_id, user_id, is_imported, fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![cert.name, cert.created_on, cert.valid_until, cert.data.as_bytes(), cert.password, cert.certificate_type as u8, cert.renew_method as u8, cert.ca_id, cert.user_id, if cert.is_imported { 1 } else { 0 }, cert.fingerprint],
             )?;
 
             cert.id = conn.last_insert_rowid();
@@ -1929,6 +1929,9 @@ mod tests {
             acme_provider_id: None,
             data: CertData::Pkcs12(vec![7, 8, 9]),
             password: "".into(),
+            version: 1,
+            fingerprint: None,
+            is_imported: false,
         }).await.unwrap();
 
         // viewer не видит чужой серт без группы

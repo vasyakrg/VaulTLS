@@ -172,6 +172,9 @@ impl SSHCertificateBuilder {
             password: self.password.unwrap_or_default(),
             revoked_at: None,
             acme_provider_id: None,
+            version: 1,
+            fingerprint: None,
+            is_imported: false,
         })
     }
 
@@ -217,6 +220,9 @@ impl SSHCertificateBuilder {
             password: self.password.unwrap_or_default(),
             revoked_at: None,
             acme_provider_id: None,
+            version: 1,
+            fingerprint: None,
+            is_imported: false,
         })
     }
 
