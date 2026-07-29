@@ -1120,6 +1120,39 @@ impl VaulTLSDB {
         Ok(())
     }
 
+    pub(crate) async fn set_cert_fingerprint(&self, cert_id: i64, fingerprint: String) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "UPDATE user_certificates SET fingerprint = ?1 WHERE id = ?2",
+                params![fingerprint, cert_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Досчитывает отпечатки записям, появившимся до миграции 17.
+    /// Сертификаты, у которых отпечаток не вычисляется (SSH, битый PKCS#12),
+    /// молча пропускаются — это не повод ронять старт приложения.
+    pub(crate) async fn backfill_fingerprints(&self) -> Result<()> {
+        let ids: Vec<i64> = db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM user_certificates WHERE fingerprint IS NULL OR fingerprint = ''"
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+            Ok::<Vec<i64>, anyhow::Error>(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+        })?;
+
+        for id in ids {
+            let cert = self.get_user_cert_by_id(id).await?;
+            if let Ok(fp) = cert.get_fingerprint() {
+                if !fp.is_empty() {
+                    self.set_cert_fingerprint(id, fp).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn get_cert_id_by_serial_hex(&self, serial_hex: String) -> Result<Option<i64>> {
         db_do!(self.pool, |conn: &Connection| {
             let result = conn.query_row(
@@ -2256,6 +2289,44 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert_eq!(after, 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_fingerprints_fills_missing_and_skips_ssh() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+        use crate::certs::import::tests_support::self_signed_ca;
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+
+        let (x509, _key) = self_signed_ca("backfill-test");
+        let tls = db.insert_user_cert(Certificate {
+            id: -1, name: "tls".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pem(x509.to_pem().unwrap()), password: String::new(),
+            version: 1, fingerprint: None, is_imported: true,
+        }).await.unwrap();
+
+        let ssh = db.insert_user_cert(Certificate {
+            id: -1, name: "ssh".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::SSHServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::SshBundle(vec![1, 2, 3]), password: String::new(),
+            version: 1, fingerprint: None, is_imported: false,
+        }).await.unwrap();
+
+        db.backfill_fingerprints().await.unwrap();
+
+        let filled = db.get_user_cert_by_id(tls.id).await.unwrap();
+        assert_eq!(filled.fingerprint.as_deref().map(str::len), Some(64));
+        let untouched = db.get_user_cert_by_id(ssh.id).await.unwrap();
+        assert_eq!(untouched.fingerprint, None, "SSH пропускается без ошибки");
     }
 }
 
