@@ -206,6 +206,9 @@ pub struct CertStatusResponse {
     pub not_after: Option<i64>,
     pub revoked_at: Option<i64>,
     pub ca_id: Option<i64>,
+    /// True, если серийник найден в истории версий, а не в текущей записи.
+    #[serde(default)]
+    pub superseded: bool,
 }
 
 #[cfg(test)]

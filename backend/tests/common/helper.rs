@@ -1,4 +1,5 @@
 use std::io::{Cursor, Read};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use ssh_key::{Certificate, PrivateKey};
@@ -95,7 +96,12 @@ pub(crate) fn leaf_signed_by_pem(cn: &str, ca_pem: &[u8], ca_key_pem: &[u8]) -> 
 
     let mut builder = X509Builder::new().unwrap();
     builder.set_version(2).unwrap();
-    let serial = BigNum::from_u32(42).unwrap().to_asn1_integer().unwrap();
+    // Each generated leaf must carry a distinct serial — real CAs never reuse one,
+    // and version-history tests rely on the pre-rotation and post-rotation serials
+    // being different so a superseded serial can still be told apart from the current one.
+    static NEXT_LEAF_SERIAL: AtomicU32 = AtomicU32::new(42);
+    let serial_value = NEXT_LEAF_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let serial = BigNum::from_u32(serial_value).unwrap().to_asn1_integer().unwrap();
     builder.set_serial_number(&serial).unwrap();
     builder.set_subject_name(&name).unwrap();
     builder.set_issuer_name(ca.subject_name()).unwrap();

@@ -25,6 +25,8 @@ pub(crate) struct CertStatusRow {
     pub valid_until: i64,
     pub revoked_at: Option<i64>,
     pub ca_id: Option<i64>,
+    /// True, если строка найдена в истории версий, а не в текущей записи.
+    pub superseded: bool,
 }
 
 /// Новое содержимое сертификата при замене.
@@ -1170,7 +1172,7 @@ impl VaulTLSDB {
 
     pub(crate) async fn get_cert_status_by_serial_hex(&self, serial_hex: String) -> Result<Option<CertStatusRow>> {
         db_do!(self.pool, |conn: &Connection| {
-            let result = conn.query_row(
+            let current = conn.query_row(
                 "SELECT created_on, valid_until, revoked_at, ca_id FROM user_certificates WHERE serial_hex = ?1",
                 params![serial_hex],
                 |row| Ok(CertStatusRow {
@@ -1178,9 +1180,32 @@ impl VaulTLSDB {
                     valid_until: row.get(1)?,
                     revoked_at: row.get(2)?,
                     ca_id: row.get(3)?,
+                    superseded: false,
                 }),
             );
-            match result {
+            match current {
+                Ok(r) => return Ok(Some(r)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            }
+
+            // Серийник вытесненной версии: сертификат, выданный клиенту раньше,
+            // не должен становиться «неизвестным» после ротации.
+            let historical = conn.query_row(
+                "SELECT v.created_on, v.valid_until, c.revoked_at, c.ca_id \
+                   FROM certificate_versions v \
+                   JOIN user_certificates c ON c.id = v.cert_id \
+                  WHERE v.serial_hex = ?1",
+                params![serial_hex],
+                |row| Ok(CertStatusRow {
+                    created_on: row.get(0)?,
+                    valid_until: row.get(1)?,
+                    revoked_at: row.get(2)?,
+                    ca_id: row.get(3)?,
+                    superseded: true,
+                }),
+            );
+            match historical {
                 Ok(r) => Ok(Some(r)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(anyhow::anyhow!(e)),

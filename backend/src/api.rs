@@ -762,6 +762,16 @@ pub(crate) async fn import_certificate(
     // the startup backfill (later task) will fill it in rather than failing the import.
     cert.fingerprint = cert.get_fingerprint().ok();
     let saved = state.db.insert_user_cert(cert).await?;
+
+    // Best-effort: populate the serial so /certificates/validate recognizes this cert
+    // immediately, without waiting on the startup backfill.
+    if let Ok(serial) = saved.get_serial() {
+        let serial_hex: String = serial.iter().map(|b| format!("{b:02x}")).collect();
+        if !serial_hex.is_empty() {
+            let _ = state.db.set_cert_serial(saved.id, serial_hex).await;
+        }
+    }
+
     Ok(Json(saved))
 }
 
@@ -1331,6 +1341,32 @@ pub(crate) async fn list_certificate_versions(
 }
 
 #[openapi(tag = "Certificates")]
+#[delete("/certificates/<id>/versions/<version>")]
+/// Permanently delete one historical version. The current version cannot be deleted.
+pub(crate) async fn delete_certificate_version(
+    state: &State<AppState>,
+    id: i64,
+    version: i64,
+    authentication: AuthenticatedLocalAdmin,
+) -> Result<(), ApiError> {
+    let certificate = state.db.get_user_cert_by_id(id).await
+        .map_err(|_| ApiError::NotFound(None))?;
+    if certificate.version == version {
+        return Err(ApiError::BadRequest("current version cannot be deleted".into()));
+    }
+    if !state.db.delete_certificate_version(id, version).await? {
+        return Err(ApiError::NotFound(None));
+    }
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteCertificateVersion,
+        Some("certificate".into()), Some(id.to_string()), Some(certificate.name.cn.clone()),
+        AuditResult::Success, Some(format!("version {version}")), None).await;
+
+    Ok(())
+}
+
+#[openapi(tag = "Certificates")]
 #[get("/certificates/<id>/download?<download_format>&<version>")]
 /// Download a user-owned certificate. Requires authentication.
 /// Use `?format=pem` to download TLS certs as a PEM zip bundle (cert.pem, privkey.pem, chain.pem, fullchain.pem).
@@ -1843,6 +1879,7 @@ pub(crate) async fn validate_certificate(
             not_after: None,
             revoked_at: None,
             ca_id: None,
+            superseded: false,
         })),
         Some(row) => {
             let now = chrono::Utc::now().timestamp_millis();
@@ -1854,6 +1891,7 @@ pub(crate) async fn validate_certificate(
                 not_after: Some(row.valid_until),
                 revoked_at: row.revoked_at,
                 ca_id: row.ca_id,
+                superseded: row.superseded,
             }))
         }
     }

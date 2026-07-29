@@ -210,3 +210,65 @@ async fn unknown_version_is_404() -> Result<()> {
     assert_eq!(resp.status(), Status::NotFound);
     Ok(())
 }
+
+#[tokio::test]
+async fn only_local_admin_deletes_historical_versions() -> Result<()> {
+    use crate::common::constants::{TEST_PASSWORD, TEST_USER_EMAIL};
+
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    client.create_user().await?;                           // user id=2
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "purge.example.com", 2).await;
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("purge.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER8";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 2);
+    client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+
+    // текущую версию удалить нельзя
+    assert_eq!(client.delete(format!("/certificates/{id}/versions/2")).dispatch().await.status(),
+               Status::BadRequest);
+
+    // владелец без прав локального админа — 403
+    client.switch_user().await?; // user id=2, он же владелец
+    assert_eq!(client.delete(format!("/certificates/{id}/versions/1")).dispatch().await.status(),
+               Status::Forbidden);
+
+    // локальный админ — 200, версия исчезает из истории
+    client.logout().await?;
+    client.login(TEST_USER_EMAIL, TEST_PASSWORD).await?;
+    assert_eq!(client.delete(format!("/certificates/{id}/versions/1")).dispatch().await.status(),
+               Status::Ok);
+
+    let versions: Value = serde_json::from_str(
+        &client.get(format!("/certificates/{id}/versions")).dispatch().await
+            .into_string().await.unwrap())?;
+    assert_eq!(versions.as_array().unwrap().len(), 1, "осталась только текущая версия");
+    Ok(())
+}
+
+#[tokio::test]
+async fn superseded_serial_still_validates() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "validate.example.com", 1).await;
+
+    let versions: Value = serde_json::from_str(
+        &client.get(format!("/certificates/{id}/versions")).dispatch().await
+            .into_string().await.unwrap())?;
+    let old_serial = versions.as_array().unwrap()[0]["serial_hex"].as_str().unwrap().to_string();
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("validate.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER9";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 1);
+    client.put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+
+    let status: Value = serde_json::from_str(
+        &client.get(format!("/certificates/validate?serial={old_serial}")).dispatch().await
+            .into_string().await.unwrap())?;
+    assert_ne!(status["status"].as_str(), Some("unknown"), "вытесненный серийник обязан находиться");
+    assert_eq!(status["superseded"].as_bool(), Some(true));
+    Ok(())
+}
