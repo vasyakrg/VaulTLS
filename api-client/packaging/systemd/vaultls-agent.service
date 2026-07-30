@@ -11,10 +11,11 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=yes
-# ProtectSystem=full makes /usr, /boot, /etc read-only except the paths below.
+# ProtectSystem=full makes /usr, /boot and /etc read-only except the paths below.
 # A domain out_dir outside these locations fails to write at runtime — add it
 # here via a drop-in override, e.g. ReadWritePaths+=/your/path
-ReadWritePaths=/etc/ssl/vaultls /etc/vaultls
+# The trust-store paths are prefixed with '-' so a host without them still starts.
+ReadWritePaths=/etc/ssl/vaultls /etc/vaultls -/usr/local/share/ca-certificates -/etc/ssl/certs -/etc/pki/ca-trust/source/anchors -/etc/pki/ca-trust/extracted
 AmbientCapabilities=
 
 [Install]
