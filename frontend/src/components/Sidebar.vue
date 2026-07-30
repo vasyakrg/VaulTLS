@@ -166,7 +166,12 @@ const items = computed(() => [
   ...(auth.isAdmin ? [
     { name: 'letsencrypt', to: '/letsencrypt', icon: 'pi pi-verified', label: 'sidebar.letsencrypt' },
   ] : []),
-  { name: 'settings', to: '/settings', icon: 'pi pi-cog', label: 'sidebar.settings' },
+  { name: 'profile', to: '/profile', icon: 'pi pi-user', label: 'sidebar.profile' },
+  // Настройки — только приложение; всё пользовательское живёт в Профиле,
+  // поэтому не-админу этот раздел показывать нечем.
+  ...(auth.isAdmin ? [
+    { name: 'settings', to: '/settings', icon: 'pi pi-cog', label: 'sidebar.settings' },
+  ] : []),
 ])
 </script>
 

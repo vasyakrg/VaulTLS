@@ -249,105 +249,8 @@
       </div>
     </div>
 
-    <!-- User Section -->
-    <div class="vt-section">
-      <div class="vt-section-title">{{ $t('settings.user.heading') }}</div>
-
-      <!-- Change Password -->
-      <div class="vt-subsection">
-        <div class="vt-subsection-title">{{ $t('settings.user.changePassword') }}</div>
-        <form class="vt-form" @submit.prevent="changePassword">
-
-          <div v-if="authStore.current_user?.has_password" class="vt-field">
-            <label for="old-password">{{ $t('settings.user.oldPassword') }}</label>
-            <Password
-              id="old-password"
-              v-model="changePasswordReq.oldPassword"
-              :feedback="false"
-              toggleMask
-              class="vt-select"
-            />
-          </div>
-
-          <div class="vt-field">
-            <label for="new-password">{{ $t('settings.user.newPassword') }}</label>
-            <Password
-              id="new-password"
-              v-model="changePasswordReq.newPassword"
-              :feedback="false"
-              toggleMask
-              class="vt-select"
-            />
-          </div>
-
-          <div class="vt-field">
-            <label for="confirm-password">{{ $t('settings.user.confirmPassword') }}</label>
-            <Password
-              id="confirm-password"
-              v-model="confirmPassword"
-              :feedback="false"
-              toggleMask
-              class="vt-select"
-            />
-          </div>
-
-          <div v-if="password_error" class="vt-error">{{ password_error }}</div>
-
-          <Button
-            type="submit"
-            :label="$t('settings.user.changePassword')"
-            :disabled="!canChangePassword"
-          />
-        </form>
-      </div>
-
-      <!-- Profile -->
-      <div v-if="editableUser" class="vt-subsection">
-        <div class="vt-subsection-title">{{ $t('settings.user.profile') }}</div>
-        <div class="vt-form">
-
-          <div class="vt-field">
-            <label for="user_name">{{ $t('common.username') }}</label>
-            <InputText
-              id="user_name"
-              v-model="editableUser.name"
-            />
-          </div>
-
-          <div class="vt-field">
-            <label for="user_email">{{ $t('common.email') }}</label>
-            <InputText
-              id="user_email"
-              v-model="editableUser.email"
-              type="email"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- Service Accounts (собственные, доступны любому пользователю) -->
-      <div class="vt-subsection">
-        <div class="vt-subsection-title">{{ $t('serviceAccounts.title') }}</div>
-        <p class="vt-sub">{{ $t('serviceAccounts.selfSubtitle') }}</p>
-        <Button
-          id="OwnServiceAccountsButton"
-          icon="pi pi-key"
-          severity="secondary"
-          outlined
-          :label="$t('serviceAccounts.openButton')"
-          @click="isServiceAccountsVisible = true"
-        />
-      </div>
-    </div>
-
-    <ServiceAccountsModal
-      v-model:visible="isServiceAccountsVisible"
-      :user="current_user ?? null"
-    />
-
     <!-- Feedback messages -->
     <div v-if="settings_error" class="vt-error">{{ settings_error }}</div>
-    <div v-if="user_error" class="vt-error">{{ user_error }}</div>
     <div v-if="saved_successfully" class="vt-success">{{ $t('settings.savedSuccessfully') }}</div>
   </div>
 </template>
@@ -356,8 +259,7 @@
 import { computed, ref, onMounted } from 'vue';
 import { useSettingsStore } from '@/stores/settings';
 import { useAuthStore } from '@/stores/auth';
-import { type User, UserRole } from "@/types/User.ts";
-import { useUserStore } from "@/stores/users.ts";
+import { UserRole } from "@/types/User.ts";
 import { useSetupStore } from "@/stores/setup.ts";
 import { Encryption, PasswordRule, type Settings } from "@/types/Settings.ts";
 import { SUPPORTED_LOCALES } from '@/plugins/i18n';
@@ -365,37 +267,23 @@ import { useI18n } from 'vue-i18n';
 import Button from 'primevue/button';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
-import Password from 'primevue/password';
 import Select from 'primevue/select';
 import ToggleSwitch from 'primevue/toggleswitch';
-import ServiceAccountsModal from '@/components/ServiceAccountsModal.vue';
 
 const { t } = useI18n();
 
 // Stores
 const settingsStore = useSettingsStore();
 const authStore = useAuthStore();
-const userStore = useUserStore();
 const setupStore = useSetupStore();
 
 // Local copy of settings — not committed to the store until Save is clicked
 const settings = ref<Settings | null>(null);
 const current_user = computed(() => authStore.current_user);
-const isServiceAccountsVisible = ref(false);
 const settings_error = computed(() => settingsStore.error);
-const user_error = computed(() => userStore.error);
-const password_error = computed(() => authStore.error);
-
-const canChangePassword = computed(() =>
-    changePasswordReq.value.newPassword === confirmPassword.value &&
-    changePasswordReq.value.newPassword.length > 0
-);
 
 // Local state
 const saving = ref(false);
-const changePasswordReq = ref({ oldPassword: '', newPassword: '' });
-const confirmPassword = ref('');
-const editableUser = ref<User | null>(null);
 const saved_successfully = ref(false);
 
 const crlNextUpdateValue = ref<number | null>(7);
@@ -434,12 +322,6 @@ const updateCrlNextUpdate = () => {
 };
 
 // Methods
-const changePassword = async () => {
-  await authStore.changePassword(changePasswordReq.value.oldPassword, changePasswordReq.value.newPassword);
-  changePasswordReq.value = { oldPassword: '', newPassword: '' };
-  confirmPassword.value = '';
-};
-
 const saveSettings = async () => {
   saving.value = true;
   saved_successfully.value = false;
@@ -449,11 +331,6 @@ const saveSettings = async () => {
     settingsStore.$patch({ settings: JSON.parse(JSON.stringify(settings.value)) });
     success &&= await settingsStore.saveSettings();
     await setupStore.reload();
-  }
-
-  if (editableUser.value) {
-    success &&= await userStore.updateUser(editableUser.value);
-    await authStore.fetchCurrentUser();
   }
 
   saved_successfully.value = success;
@@ -479,9 +356,6 @@ onMounted(async () => {
         crlNextUpdateValue.value = hours;
       }
     }
-  }
-  if (current_user.value) {
-    editableUser.value = { ...current_user.value };
   }
 });
 </script>
