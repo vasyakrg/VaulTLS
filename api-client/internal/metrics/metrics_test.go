@@ -117,3 +117,21 @@ func TestLatestVersionNeverEmptyUnderConcurrency(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestExposesCATrustMetrics(t *testing.T) {
+	m := New()
+	m.SetCATrustCerts(2)
+	m.MarkCATrustSync(1753848000)
+	m.IncCATrustError("update")
+
+	body := scrape(m)
+	for _, want := range []string{
+		"vaultls_agent_ca_trust_certs 2",
+		"vaultls_agent_ca_trust_last_sync_timestamp_seconds 1.753848e+09",
+		`vaultls_agent_ca_trust_errors_total{stage="update"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q\n%s", want, body)
+		}
+	}
+}
