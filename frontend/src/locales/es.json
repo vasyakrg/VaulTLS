@@ -36,6 +36,7 @@
     "ca": "Autoridades de Certificación",
     "users": "Usuarios",
     "acme": "ACME",
+    "profile": "Perfil",
     "settings": "Configuración",
     "apiDocs": "Documentación API",
     "logout": "Cerrar sesión",
@@ -222,6 +223,10 @@
     "copied": "Copiado",
     "scopeCertRead": "Leer y descargar certificados (cert:read)",
     "scopeCertIssue": "Emitir certificados (cert:issue)"
+  },
+  "profile": {
+    "title": "Perfil",
+    "subtitle": "Tu cuenta, contraseña y cuentas de servicio"
   },
   "settings": {
     "title": "Configuración",
