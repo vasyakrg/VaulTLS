@@ -194,3 +194,45 @@ func TestBadCredentials(t *testing.T) {
 		t.Fatalf("expected auth error, got %v", err)
 	}
 }
+
+func TestCABundle(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok123", "token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	mux.HandleFunc("/api/certificates/ca/bundle", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	raw, err := New(srv.URL, "svc_abc", "pw", false).CABundle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "BEGIN CERTIFICATE") {
+		t.Fatalf("CABundle = %q", raw)
+	}
+}
+
+func TestCABundleNotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok123", "token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	mux.HandleFunc("/api/certificates/ca/bundle", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	c.retryBase = time.Millisecond
+	if _, err := c.CABundle(context.Background()); err == nil {
+		t.Fatal("expected error on 404")
+	}
+}

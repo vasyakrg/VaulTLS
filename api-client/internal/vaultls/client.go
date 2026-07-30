@@ -215,6 +215,13 @@ func (c *Client) Download(ctx context.Context, id int64) ([]byte, error) {
 	return c.do(ctx, fmt.Sprintf("/api/certificates/%d/download", id))
 }
 
+// CABundle downloads every TLS CA certificate as one concatenated PEM. The
+// endpoint is public, but the call goes through do() anyway so it inherits the
+// bounded retry and the single forced re-auth on 401.
+func (c *Client) CABundle(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, "/api/certificates/ca/bundle")
+}
+
 // SelectForName returns the non-revoked cert with the given name and the
 // greatest ValidUntil.
 func SelectForName(certs []Cert, name string) (Cert, bool) {
