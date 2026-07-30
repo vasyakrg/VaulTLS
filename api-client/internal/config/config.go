@@ -34,12 +34,32 @@ type Log struct {
 	File   string `yaml:"file"`   // optional path; when set, logs go here instead of stderr
 }
 
+// CATrust configures publishing the VaulTLS root CAs into the host's system
+// trust store. Disabled by default: the agent must never change host-wide trust
+// without an explicit opt-in.
+type CATrust struct {
+	Enabled       bool   `yaml:"enabled"`
+	AnchorDir     string `yaml:"anchor_dir"`
+	UpdateCommand string `yaml:"update_command"`
+}
+
+// FileExt is the anchor file extension implied by AnchorDir. Debian's
+// update-ca-certificates only picks up .crt, RHEL's ca-trust anchors are .pem;
+// deriving it from the directory keeps an anchor_dir override self-sufficient.
+func (c CATrust) FileExt() string {
+	if strings.HasPrefix(c.AnchorDir, "/etc/pki/") {
+		return ".pem"
+	}
+	return ".crt"
+}
+
 type Config struct {
 	Server    Server        `yaml:"server"`
 	Schedule  string        `yaml:"schedule"`
 	Jitter    time.Duration `yaml:"-"`
 	JitterRaw string        `yaml:"jitter"`
 	Log       Log           `yaml:"log"`
+	CATrust   CATrust       `yaml:"ca_trust"`
 	Exporter  struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"exporter"`
