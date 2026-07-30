@@ -62,6 +62,23 @@ func TestParseBundleSplitsPerCertificate(t *testing.T) {
 	}
 }
 
+func TestParseBundleRejectsTruncatedTrailingBlock(t *testing.T) {
+	a := selfSigned(t, "VaulTLS Root CA")
+	b := selfSigned(t, "VaulTLS Intermediate CA")
+	full := append(append([]byte{}, a...), b...)
+	// Simulate a response cut short mid-transfer: the first block is intact,
+	// the second is chopped off partway through.
+	truncated := full[:len(a)+len(b)/2]
+
+	got, err := ParseBundle(truncated, ".crt")
+	if err == nil {
+		t.Fatalf("expected error for truncated bundle, got %d anchors", len(got))
+	}
+	if !strings.Contains(err.Error(), "trailing bytes") {
+		t.Fatalf("err = %v, want a trailing-bytes error", err)
+	}
+}
+
 func TestParseBundleExtensionAndEmptyCN(t *testing.T) {
 	got, err := ParseBundle(selfSigned(t, ""), ".pem")
 	if err != nil {

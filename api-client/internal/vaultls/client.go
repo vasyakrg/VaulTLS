@@ -182,8 +182,15 @@ func (c *Client) get(ctx context.Context, path, tok string) (raw []byte, status 
 	if err != nil {
 		return nil, 0, true, fmt.Errorf("request %s: %w", path, err)
 	}
-	raw, _ = io.ReadAll(resp.Body)
+	raw, err = io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		// A body that stops arriving mid-transfer (e.g. a connection cut short of
+		// a declared Content-Length) must not be mistaken for a complete, valid
+		// response: surface it as a transient failure so do() retries instead of
+		// handing a partial payload to the caller as a 200 OK.
+		return nil, 0, true, fmt.Errorf("read body %s: %w", path, err)
+	}
 	return raw, resp.StatusCode, false, nil
 }
 

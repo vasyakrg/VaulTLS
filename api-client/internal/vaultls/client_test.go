@@ -73,9 +73,9 @@ func TestCertUnmarshalName(t *testing.T) {
 		want string
 	}{
 		"object with cn+ou": {`{"id":1,"name":{"cn":"*.novotelecom.ru","ou":"nuc"},"valid_until":5}`, "*.novotelecom.ru"},
-		"object cn only":     {`{"id":1,"name":{"cn":"a","ou":null},"valid_until":5}`, "a"},
-		"plain string":       {`{"id":1,"name":"a","valid_until":5}`, "a"},
-		"null name":          {`{"id":1,"name":null,"valid_until":5}`, ""},
+		"object cn only":    {`{"id":1,"name":{"cn":"a","ou":null},"valid_until":5}`, "a"},
+		"plain string":      {`{"id":1,"name":"a","valid_until":5}`, "a"},
+		"null name":         {`{"id":1,"name":null,"valid_until":5}`, ""},
 	}
 	for label, tc := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -214,6 +214,32 @@ func TestCABundle(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "BEGIN CERTIFICATE") {
 		t.Fatalf("CABundle = %q", raw)
+	}
+}
+
+// A response that stops arriving mid-transfer must surface as an error, not a
+// truncated payload accepted as a 200 OK.
+func TestCABundleShortBodySurfacesError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok123", "token_type": "Bearer", "expires_in": 3600,
+		})
+	})
+	mux.HandleFunc("/api/certificates/ca/bundle", func(w http.ResponseWriter, r *http.Request) {
+		// Declare more bytes than are actually written; the server closes the
+		// connection short, which surfaces to the client as an unexpected EOF
+		// while reading the body.
+		w.Header().Set("Content-Length", "10000")
+		w.Write([]byte("-----BEGIN CERTIFICATE-----\nAAAA\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	c.retryBase = time.Millisecond
+	if _, err := c.CABundle(context.Background()); err == nil {
+		t.Fatal("expected error on a body shorter than Content-Length")
 	}
 }
 

@@ -4,6 +4,7 @@
 package catrust
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -51,6 +52,14 @@ func ParseBundle(raw []byte, ext string) ([]Anchor, error) {
 			FileName:    fmt.Sprintf("vaultls-%s-%s%s", slug(cert.Subject.CommonName), fp[:8], ext),
 			PEM:         pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}),
 		})
+	}
+	// Anything left after the last successfully decoded block means the input
+	// carried a PEM block that never parsed — most commonly a response body cut
+	// short mid-transfer. Silently accepting the complete blocks and dropping
+	// the trailing partial one would make a truncated fetch look like a
+	// legitimate CA retirement.
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return nil, fmt.Errorf("ca bundle: %d trailing bytes after the last PEM block (truncated response?)", len(rest))
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("ca bundle: no certificates found")
