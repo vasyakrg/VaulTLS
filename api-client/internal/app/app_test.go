@@ -3,7 +3,15 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"log/slog"
+	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -54,6 +62,62 @@ func TestSyncCATrustSkippedWhenDisabled(t *testing.T) {
 	SyncCATrust(context.Background(), cfg, f, metrics.New(), slog.New(slog.NewTextHandler(&buf, nil)))
 	if f.hits != 0 {
 		t.Fatalf("disabled ca_trust must not call the server (hits=%d)", f.hits)
+	}
+}
+
+// selfSignedCA returns a throwaway CA certificate in PEM form.
+func selfSignedCA(t *testing.T, cn string) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             time.Unix(0, 0),
+		NotAfter:              time.Unix(1<<31-1, 0),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// caTrustStateDir is a package var precisely so this test can point it at a
+// temp dir: without that, a test reaching the success path would read and
+// write the real /etc/ssl/vaultls on whatever machine runs it.
+func TestSyncCATrustSuccessUsesOverriddenStateDir(t *testing.T) {
+	orig := caTrustStateDir
+	stateDir := t.TempDir()
+	caTrustStateDir = stateDir
+	t.Cleanup(func() { caTrustStateDir = orig })
+
+	anchorDir := t.TempDir()
+	cfg := &config.Config{CATrust: config.CATrust{
+		Enabled:       true,
+		AnchorDir:     anchorDir,
+		UpdateCommand: "true",
+	}}
+	f := &bundleAPI{body: selfSignedCA(t, "Test Root CA")}
+	var buf bytes.Buffer
+	SyncCATrust(context.Background(), cfg, f, metrics.New(), slog.New(slog.NewTextHandler(&buf, nil)))
+
+	if bytes.Contains(buf.Bytes(), []byte("ca trust sync failed")) {
+		t.Fatalf("unexpected failure logged:\n%s", buf.String())
+	}
+	entries, err := os.ReadDir(anchorDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("anchor dir = %v, want exactly one anchor file", entries)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "ca-trust.json")); err != nil {
+		t.Fatalf("state file not written to the overridden state dir: %v", err)
 	}
 }
 

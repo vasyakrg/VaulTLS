@@ -29,8 +29,10 @@ func ReconcileAll(ctx context.Context, cfg *config.Config, r *reconcile.Reconcil
 }
 
 // caTrustStateDir holds the record of anchors the agent owns. It lives in the
-// directory postinstall already creates and the unit already allows writing to.
-const caTrustStateDir = "/etc/ssl/vaultls"
+// directory postinstall already creates and the unit already allows writing
+// to. A var, not a const, so tests can point it at a temp dir instead of
+// reading and writing the real /etc/ssl/vaultls on the host running them.
+var caTrustStateDir = "/etc/ssl/vaultls"
 
 // SyncCATrust keeps the VaulTLS CAs present in the host trust store. Failures
 // are logged and counted but never propagate: an unreachable CA endpoint must
@@ -112,7 +114,8 @@ func Run(ctx context.Context, configPath, githubAPIBase string) error {
 		}
 	}()
 
-	// Initial reconcile, then scheduled loop.
+	// Initial CA trust sync and domain reconcile, then the same pair on every
+	// scheduled run.
 	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
 	return scheduler.Run(ctx, cfg.Schedule, cfg.Jitter, func(c context.Context) {
