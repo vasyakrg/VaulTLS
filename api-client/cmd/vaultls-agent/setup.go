@@ -19,11 +19,12 @@ func cmdSetup(args []string) int {
 	reload := fs.String("reload", "", "reload command")
 	out := fs.String("out", "/etc/vaultls/config.yaml", "config output path")
 	enable := fs.Bool("enable", true, "enable+start the systemd service after writing config")
+	caTrust := fs.Bool("ca-trust", false, "install VaulTLS root CAs into the system trust store")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	preset := wizard.Answers{URL: *url, ClientID: *clientID, Secret: *secret, Domain: *domain, Reload: *reload}
+	preset := wizard.Answers{URL: *url, ClientID: *clientID, Secret: *secret, Domain: *domain, Reload: *reload, CATrust: *caTrust}
 	ans := preset
 	if preset.URL == "" || preset.ClientID == "" || preset.Secret == "" || preset.Domain == "" || preset.Reload == "" {
 		var err error

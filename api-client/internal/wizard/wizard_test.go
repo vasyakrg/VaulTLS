@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/vasyakrg/vaultls-agent/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestRenderProducesLoadableConfig(t *testing.T) {
@@ -83,5 +84,39 @@ func TestRunInteractiveFillsMissing(t *testing.T) {
 	}
 	if got.URL != preset.URL {
 		t.Fatal("preset URL should be preserved, not prompted")
+	}
+}
+
+func TestRenderOmitsCATrustByDefault(t *testing.T) {
+	body, err := Render(Answers{
+		URL: "https://vaultls.example.com", ClientID: "svc", Secret: "pw",
+		Domain: "*.example.com", Reload: "systemctl reload nginx",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "ca_trust") {
+		t.Fatalf("ca_trust must not appear unless requested:\n%s", body)
+	}
+}
+
+func TestRenderWritesCATrustWhenRequested(t *testing.T) {
+	body, err := Render(Answers{
+		URL: "https://vaultls.example.com", ClientID: "svc", Secret: "pw",
+		Domain: "*.example.com", Reload: "systemctl reload nginx", CATrust: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		CATrust struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"ca_trust"`
+	}
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.CATrust.Enabled {
+		t.Fatalf("ca_trust.enabled not set:\n%s", body)
 	}
 }

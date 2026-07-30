@@ -15,6 +15,13 @@ type Answers struct {
 	Secret   string
 	Domain   string
 	Reload   string
+	CATrust  bool
+}
+
+// caTrustDoc is a pointer field in renderDoc so the section is omitted entirely
+// when the operator did not ask for it.
+type caTrustDoc struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type renderDoc struct {
@@ -27,6 +34,7 @@ type renderDoc struct {
 	Exporter struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"exporter"`
+	CATrust *caTrustDoc    `yaml:"ca_trust,omitempty"`
 	Domains []renderDomain `yaml:"domains"`
 }
 
@@ -48,6 +56,9 @@ func Render(a Answers) ([]byte, error) {
 		Formats: []string{"pem"},
 		Reload:  a.Reload,
 	}}
+	if a.CATrust {
+		doc.CATrust = &caTrustDoc{Enabled: true}
+	}
 	return yaml.Marshal(&doc)
 }
 
