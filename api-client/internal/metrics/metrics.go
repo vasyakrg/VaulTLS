@@ -35,6 +35,9 @@ type Metrics struct {
 	reconcileErrors *prometheus.CounterVec
 	reloadFailures  *prometheus.CounterVec
 	tokenErrors     prometheus.Counter
+	caTrustCerts    prometheus.Gauge
+	caTrustLastSync prometheus.Gauge
+	caTrustErrors   *prometheus.CounterVec
 
 	mu                 sync.Mutex
 	serials            map[CertLabels]string
@@ -57,10 +60,14 @@ func New() *Metrics {
 		reconcileErrors: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "vaultls_reconcile_errors_total", Help: "Reconcile errors by stage."}, append(append([]string{}, certLabelNames...), "stage")),
 		reloadFailures:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "vaultls_reload_failures_total", Help: "Reload failures."}, certLabelNames),
 		tokenErrors:     prometheus.NewCounter(prometheus.CounterOpts{Name: "vaultls_scrape_token_errors_total", Help: "Token/auth errors."}),
+		caTrustCerts:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "vaultls_agent_ca_trust_certs", Help: "CA certificates the agent keeps in the system trust store."}),
+		caTrustLastSync: prometheus.NewGauge(prometheus.GaugeOpts{Name: "vaultls_agent_ca_trust_last_sync_timestamp_seconds", Help: "Last successful trust-store sync."}),
+		caTrustErrors:   prometheus.NewCounterVec(prometheus.CounterOpts{Name: "vaultls_agent_ca_trust_errors_total", Help: "Trust-store sync errors by stage."}, []string{"stage"}),
 	}
 	reg.MustRegister(m.up, m.buildInfo, m.updateAvailable, m.latestVersion,
 		m.certExpiry, m.certSerial, m.lastCheck, m.lastRenewal,
-		m.reconcileErrors, m.reloadFailures, m.tokenErrors)
+		m.reconcileErrors, m.reloadFailures, m.tokenErrors,
+		m.caTrustCerts, m.caTrustLastSync, m.caTrustErrors)
 	return m
 }
 
@@ -129,3 +136,10 @@ func (m *Metrics) IncReloadFailure(l CertLabels) {
 }
 
 func (m *Metrics) IncTokenError() { m.tokenErrors.Inc() }
+
+// Trust-store metrics carry no domain labels: the feature is host-wide.
+func (m *Metrics) SetCATrustCerts(n float64) { m.caTrustCerts.Set(n) }
+
+func (m *Metrics) MarkCATrustSync(unixSeconds float64) { m.caTrustLastSync.Set(unixSeconds) }
+
+func (m *Metrics) IncCATrustError(stage string) { m.caTrustErrors.WithLabelValues(stage).Inc() }

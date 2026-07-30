@@ -13,6 +13,15 @@ log:
   # file: /var/log/vaultls-agent.log
 exporter:
   listen: "127.0.0.1:9105"
+# Publish the VaulTLS root CAs into the host's system trust store, so any local
+# client (curl, psql, openssl) accepts certificates issued by VaulTLS.
+# OFF by default: enabling it changes trust for the WHOLE host.
+# anchor_dir/update_command are detected automatically (Debian and RHEL layouts);
+# set them explicitly on any other system.
+# ca_trust:
+#   enabled: true
+#   anchor_dir: /usr/local/share/ca-certificates
+#   update_command: "update-ca-certificates"
 domains:
   - name: "*.example.com"
     # out_dir must live under /etc/ssl/vaultls (the unit's ReadWritePaths).

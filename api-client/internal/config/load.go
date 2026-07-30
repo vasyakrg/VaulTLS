@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,6 +45,11 @@ func applyDefaults(cfg *Config) error {
 		}
 		cfg.Jitter = d
 	}
+	if cfg.CATrust.Enabled {
+		if err := applyCATrustDefaults(&cfg.CATrust, dirExists); err != nil {
+			return err
+		}
+	}
 	for i := range cfg.Domains {
 		d := &cfg.Domains[i]
 		if len(d.Formats) == 0 {
@@ -52,6 +58,48 @@ func applyDefaults(cfg *Config) error {
 		if d.OutDir == "" && d.Name != "" {
 			d.OutDir = "/etc/ssl/vaultls/" + strings.TrimPrefix(d.Name, "*.")
 		}
+	}
+	return nil
+}
+
+// caTrustPlatforms lists the system trust stores the agent knows, in probe
+// order. The package only ships as a .deb, but the binary builds anywhere, so
+// RHEL-style hosts are detected instead of requiring a manual override.
+var caTrustPlatforms = []struct{ dir, command string }{
+	{"/usr/local/share/ca-certificates", "update-ca-certificates"},
+	{"/etc/pki/ca-trust/source/anchors", "update-ca-trust extract"},
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+// applyCATrustDefaults fills anchor_dir/update_command from the detected
+// platform. exists is injected so tests do not depend on the host's layout.
+func applyCATrustDefaults(c *CATrust, exists func(string) bool) error {
+	if c.AnchorDir == "" {
+		for _, p := range caTrustPlatforms {
+			if exists(p.dir) {
+				c.AnchorDir = p.dir
+				break
+			}
+		}
+	}
+	if c.AnchorDir == "" {
+		return fmt.Errorf("ca_trust.enabled is set but no known system trust store was found: " +
+			"set ca_trust.anchor_dir and ca_trust.update_command explicitly")
+	}
+	if c.UpdateCommand == "" {
+		for _, p := range caTrustPlatforms {
+			if p.dir == c.AnchorDir {
+				c.UpdateCommand = p.command
+				break
+			}
+		}
+	}
+	if c.UpdateCommand == "" {
+		return fmt.Errorf("ca_trust.update_command is required for anchor_dir %q", c.AnchorDir)
 	}
 	return nil
 }
@@ -66,6 +114,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Server.ClientID == "" || cfg.Server.Secret == "" {
 		return fmt.Errorf("server.client_id and server.secret are required")
+	}
+	if cfg.CATrust.Enabled && !filepath.IsAbs(cfg.CATrust.AnchorDir) {
+		return fmt.Errorf("ca_trust.anchor_dir must be an absolute path, got %q", cfg.CATrust.AnchorDir)
 	}
 	if len(cfg.Domains) == 0 {
 		return fmt.Errorf("at least one domain is required")

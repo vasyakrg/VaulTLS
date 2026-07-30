@@ -194,3 +194,121 @@ func TestLoadCertIDOnlyWithOutDir(t *testing.T) {
 		t.Fatalf("out_dir = %q, want /etc/ssl/custom", cfg.Domains[0].OutDir)
 	}
 }
+
+func TestCATrustDisabledByDefault(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    reload: "true"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CATrust.Enabled {
+		t.Fatal("ca_trust must be off when the section is absent")
+	}
+	if cfg.CATrust.AnchorDir != "" || cfg.CATrust.UpdateCommand != "" {
+		t.Fatalf("no defaults must be applied while disabled: %+v", cfg.CATrust)
+	}
+}
+
+func TestCATrustExplicitOverridesKept(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+ca_trust:
+  enabled: true
+  anchor_dir: /etc/pki/ca-trust/source/anchors
+  update_command: "update-ca-trust extract"
+domains:
+  - name: "*.example.com"
+    reload: "true"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CATrust.AnchorDir != "/etc/pki/ca-trust/source/anchors" ||
+		cfg.CATrust.UpdateCommand != "update-ca-trust extract" {
+		t.Fatalf("overrides lost: %+v", cfg.CATrust)
+	}
+	if cfg.CATrust.FileExt() != ".pem" {
+		t.Fatalf("FileExt = %q, want .pem under /etc/pki", cfg.CATrust.FileExt())
+	}
+}
+
+func TestCATrustRejectsRelativeAnchorDir(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+ca_trust:
+  enabled: true
+  anchor_dir: relative/anchors
+  update_command: "true"
+domains:
+  - name: "*.example.com"
+    reload: "true"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error for relative ca_trust.anchor_dir")
+	}
+}
+
+// Detection is exercised through an injected existence probe so the test does
+// not depend on which trust store the build host happens to have.
+func TestApplyCATrustDefaultsDetection(t *testing.T) {
+	cases := map[string]struct {
+		present     string
+		in          CATrust
+		wantDir     string
+		wantCommand string
+		wantErr     bool
+	}{
+		"debian": {
+			present: "/usr/local/share/ca-certificates", in: CATrust{Enabled: true},
+			wantDir: "/usr/local/share/ca-certificates", wantCommand: "update-ca-certificates",
+		},
+		"rhel": {
+			present: "/etc/pki/ca-trust/source/anchors", in: CATrust{Enabled: true},
+			wantDir: "/etc/pki/ca-trust/source/anchors", wantCommand: "update-ca-trust extract",
+		},
+		"command derived from known anchor_dir": {
+			present: "", in: CATrust{Enabled: true, AnchorDir: "/usr/local/share/ca-certificates"},
+			wantDir: "/usr/local/share/ca-certificates", wantCommand: "update-ca-certificates",
+		},
+		"unknown anchor_dir without command": {
+			present: "", in: CATrust{Enabled: true, AnchorDir: "/opt/anchors"},
+			wantErr: true,
+		},
+		"nothing detected": {
+			present: "", in: CATrust{Enabled: true}, wantErr: true,
+		},
+	}
+	for label, tc := range cases {
+		t.Run(label, func(t *testing.T) {
+			got := tc.in
+			err := applyCATrustDefaults(&got, func(dir string) bool { return dir == tc.present })
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.AnchorDir != tc.wantDir || got.UpdateCommand != tc.wantCommand {
+				t.Fatalf("got %+v, want dir=%q command=%q", got, tc.wantDir, tc.wantCommand)
+			}
+		})
+	}
+}

@@ -182,8 +182,15 @@ func (c *Client) get(ctx context.Context, path, tok string) (raw []byte, status 
 	if err != nil {
 		return nil, 0, true, fmt.Errorf("request %s: %w", path, err)
 	}
-	raw, _ = io.ReadAll(resp.Body)
+	raw, err = io.ReadAll(resp.Body)
 	resp.Body.Close()
+	if err != nil {
+		// A body that stops arriving mid-transfer (e.g. a connection cut short of
+		// a declared Content-Length) must not be mistaken for a complete, valid
+		// response: surface it as a transient failure so do() retries instead of
+		// handing a partial payload to the caller as a 200 OK.
+		return nil, 0, true, fmt.Errorf("read body %s: %w", path, err)
+	}
 	return raw, resp.StatusCode, false, nil
 }
 
@@ -213,6 +220,13 @@ func (c *Client) Password(ctx context.Context, id int64) (string, error) {
 
 func (c *Client) Download(ctx context.Context, id int64) ([]byte, error) {
 	return c.do(ctx, fmt.Sprintf("/api/certificates/%d/download", id))
+}
+
+// CABundle downloads every TLS CA certificate as one concatenated PEM. The
+// endpoint is public, but the call goes through do() anyway so it inherits the
+// bounded retry and the single forced re-auth on 401.
+func (c *Client) CABundle(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, "/api/certificates/ca/bundle")
 }
 
 // SelectForName returns the non-revoked cert with the given name and the

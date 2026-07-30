@@ -120,6 +120,9 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 | `log.format` | string | Log format: `text` (default) or `json`. |
 | `log.file` | string | Optional file path. When set, logs are written there (e.g. `/var/log/vaultls-agent.log`) instead of stderr. Unset → stderr, captured by journald (`journalctl -u vaultls-agent`). |
 | `exporter.listen` | `host:port` | Address for the Prometheus `/metrics` endpoint. Default: `127.0.0.1:9105`. |
+| `ca_trust.enabled` | bool | Publish the VaulTLS root CAs into the host's system trust store. Default `false`. |
+| `ca_trust.anchor_dir` | string | Anchor directory; auto-detected (Debian/RHEL) if unset. |
+| `ca_trust.update_command` | string | Command to apply the trust store; auto-detected (Debian/RHEL) if unset. |
 
 ### Domain entries (`domains[]`)
 
@@ -172,10 +175,17 @@ Files are written to `out_dir`. The state file `.vaultls-state.json` in each `ou
 The shipped unit uses `ProtectSystem=full`, which makes `/usr`, `/boot`, and `/etc` read-only **except** for the explicitly listed paths:
 
 ```
-ReadWritePaths=/etc/ssl/vaultls /etc/vaultls
+ReadWritePaths=/etc/ssl/vaultls /etc/vaultls -/usr/local/share/ca-certificates -/etc/ssl/certs -/etc/pki/ca-trust/source/anchors -/etc/pki/ca-trust/extracted
 ```
 
-Any `out_dir` outside `/etc/ssl/vaultls` will fail to write at runtime. To allow additional paths, create a drop-in override:
+The four trust-store paths are prefixed with `-` so a host that lacks them (e.g. a
+Debian box has no `/etc/pki/...`) still starts; they are listed unconditionally,
+whether or not `ca_trust.enabled` is set (see
+[System trust store](#system-trust-store-optional)).
+
+Any `out_dir` outside `/etc/ssl/vaultls` will fail to write at runtime. The same
+applies to a custom `ca_trust.anchor_dir` under `/usr` or `/etc` that isn't one
+of the four paths listed above. To allow either, create a drop-in override:
 
 ```bash
 sudo systemctl edit vaultls-agent
@@ -189,6 +199,60 @@ ReadWritePaths+=/your/custom/out_dir
 ```
 
 Save and reload: `sudo systemctl daemon-reload && sudo systemctl restart vaultls-agent`.
+
+---
+
+## System trust store (optional)
+
+By default the agent only writes certificates into `out_dir`. It can also keep
+the VaulTLS root CAs in the host's system trust store, so `curl`, `psql`,
+`openssl s_client` and anything else on the box accepts VaulTLS-issued
+certificates without a per-command `--cacert`.
+
+This is **off by default** — enabling it changes trust for the whole host:
+
+```yaml
+ca_trust:
+  enabled: true
+```
+
+`anchor_dir` and `update_command` are detected automatically:
+
+| Platform | anchor_dir | update_command |
+|---|---|---|
+| Debian/Ubuntu | `/usr/local/share/ca-certificates` | `update-ca-certificates` |
+| RHEL/Fedora | `/etc/pki/ca-trust/source/anchors` | `update-ca-trust extract` |
+
+On any other layout set both explicitly:
+
+```yaml
+ca_trust:
+  enabled: true
+  anchor_dir: /opt/pki/anchors
+  update_command: "/opt/pki/refresh.sh"
+```
+
+The CAs come from the server's public `GET /api/certificates/ca/bundle`, so the
+service account needs no extra scope. Each CA is written as its own file named
+`vaultls-<slug of CN>-<first 8 hex chars of the SHA-256 fingerprint>`, with a
+`.crt` extension (Debian) or `.pem` extension (RHEL/anchor_dir under
+`/etc/pki/`) — e.g. `vaultls-vaultls-root-ca-1a2b3c4d.crt`. The agent records
+what it owns in `/etc/ssl/vaultls/ca-trust.json`. Only files listed there are
+ever removed — anchors placed by anything else are left alone. The check runs
+on every startup and on every scheduled cycle, so a rotated CA is picked up
+even when no certificate changed.
+
+Setting `enabled: false` later does **not** remove already-installed CAs:
+dropping host trust is an explicit operator action. `apt purge vaultls-agent`
+removes them and refreshes the trust store — but only for the two standard
+anchor directories (`/usr/local/share/ca-certificates`,
+`/etc/pki/ca-trust/source/anchors`); the purge script does not read
+`anchor_dir` from the config, so with a custom `anchor_dir` the CAs remain
+trusted on the host after purge and must be removed manually.
+
+Metrics: `vaultls_agent_ca_trust_certs`,
+`vaultls_agent_ca_trust_last_sync_timestamp_seconds`,
+`vaultls_agent_ca_trust_errors_total{stage}`.
 
 ---
 
