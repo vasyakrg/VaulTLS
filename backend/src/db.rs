@@ -18,13 +18,66 @@ use tracing::{debug, info, trace, warn};
 use crate::acme::types::{AcmeAccount, AcmeIdentifier, AdminAcmeOrder, AcmeOrderRow};
 use crate::acme_client::types::{AcmeClientOrder, AcmeClientProvider, TxtRecord};
 use crate::auth::password_auth::Password;
-use crate::certs::common::{Certificate, CA};
+use crate::certs::common::{Certificate, CertificateVersionEntry, CA};
 
 pub(crate) struct CertStatusRow {
     pub created_on: i64,
     pub valid_until: i64,
     pub revoked_at: Option<i64>,
     pub ca_id: Option<i64>,
+    /// True, если строка найдена в истории версий, а не в текущей записи.
+    pub superseded: bool,
+}
+
+/// Строка перестала подходить под замену между проверками обработчика и записью
+/// (например, сертификат успели отозвать). Обработчик отдаёт это как 409 Conflict.
+#[derive(Debug)]
+pub(crate) struct CertificateNotReplaceable;
+
+impl std::fmt::Display for CertificateNotReplaceable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "certificate is no longer replaceable")
+    }
+}
+
+impl std::error::Error for CertificateNotReplaceable {}
+
+/// Новое содержимое сертификата при замене.
+pub(crate) struct ReplaceCertificateInput {
+    pub data: Vec<u8>,
+    pub password: String,
+    pub created_on: i64,
+    pub valid_until: i64,
+    pub serial_hex: Option<String>,
+    pub fingerprint: String,
+    /// 0 означает «не менять привязку к CA».
+    pub ca_id: i64,
+    /// `None` — оставить текущий способ продления как есть. `Some` — установить
+    /// новый в той же транзакции, что и содержимое: замена — единственный момент,
+    /// когда оператор может перевзвести уведомления по импортированной строке.
+    pub renew_method: Option<CertificateRenewMethod>,
+}
+
+/// Байты и пароль конкретной версии.
+pub(crate) struct StoredCertVersion {
+    pub data: Vec<u8>,
+    pub password: String,
+}
+
+/// Which certificates a given replace caller is allowed to touch.
+pub(crate) enum ReplaceGuard {
+    /// Ручная замена оператором: только импортированные, не ACME.
+    ImportedManual,
+    /// Автопродление внутренним CA: не отозван, не ACME и не импортирован.
+    /// Импортированные строки исключены здесь, а не только в `watch_expiry`:
+    /// внутренний CA не имеет права молча подменить материал, полученный извне,
+    /// и это должно держаться, даже если вызывающая сторона ошибётся или
+    /// проиграет гонку с импортом.
+    Renewal,
+    /// Продление ACME-сертификата: зеркало `Renewal` — не отозван и обязательно ACME.
+    /// Это гарантирует то же самое разделение с другой стороны: путь ACME-продления
+    /// не может случайно тронуть внутренне выпущенную или импортированную строку.
+    AcmeRenewal,
 }
 
 static MIGRATIONS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
@@ -297,7 +350,7 @@ impl VaulTLSDB {
     /// If filter_revoked is Some, only certificates that are (not) revoked are returned
     pub(crate) async fn get_user_certs(&self, user_id: Option<i64>, ca_id: Option<i64>, filter_revoked: Option<bool>) -> Result<Vec<Certificate>> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut query = String::from("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id FROM user_certificates WHERE 1=1");
+            let mut query = String::from("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id, version, fingerprint, is_imported FROM user_certificates WHERE 1=1");
             let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
             if let Some(id) = user_id {
@@ -331,7 +384,7 @@ impl VaulTLSDB {
     pub(crate) async fn get_visible_certs(&self, user_id: i64) -> Result<Vec<Certificate>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT c.id, c.name, c.created_on, c.valid_until, c.data, c.password, c.user_id, c.type, c.renew_method, c.ca_id, c.revoked_at, c.acme_provider_id \
+                "SELECT DISTINCT c.id, c.name, c.created_on, c.valid_until, c.data, c.password, c.user_id, c.type, c.renew_method, c.ca_id, c.revoked_at, c.acme_provider_id, c.version, c.fingerprint, c.is_imported \
                  FROM user_certificates c \
                  WHERE c.user_id = ?1 \
                     OR c.id IN ( \
@@ -362,7 +415,7 @@ impl VaulTLSDB {
     /// Returns the id of the user the certificate belongs to and the cert data
     pub(crate) async fn get_user_cert_by_id(&self, id: i64) -> Result<Certificate> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id FROM user_certificates WHERE id = ?1")?;
+            let mut stmt = conn.prepare("SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id, version, fingerprint, is_imported FROM user_certificates WHERE id = ?1")?;
 
             let cert = stmt.query_row(rusqlite::params_from_iter([id]), Certificate::from_row)?;
 
@@ -371,14 +424,15 @@ impl VaulTLSDB {
     }
 
     /// Retrieve the certificate's cert data with id from the database
-    /// Returns the id of the user the certificate belongs to and the cert password
-    pub(crate) async fn get_user_cert_password(&self, id: i64) -> Result<(i64, String)> {
+    /// Returns the id of the user the certificate belongs to, the cert password
+    /// and the current version number (needed for the audit trail).
+    pub(crate) async fn get_user_cert_password(&self, id: i64) -> Result<(i64, String, i64)> {
         db_do!(self.pool, |conn: &Connection| {
-            let mut stmt = conn.prepare("SELECT user_id, password FROM user_certificates WHERE id = ?1")?;
+            let mut stmt = conn.prepare("SELECT user_id, password, version FROM user_certificates WHERE id = ?1")?;
 
             Ok(stmt.query_row(
                 params![id],
-                |row| Ok((row.get(0)?, row.get(1).unwrap_or_default())),
+                |row| Ok((row.get(0)?, row.get(1).unwrap_or_default(), row.get(2)?)),
             )?)
         })
     }
@@ -388,8 +442,8 @@ impl VaulTLSDB {
     pub(crate) async fn insert_user_cert(&self, mut cert: Certificate) -> Result<Certificate> {
         db_do!(self.pool, |conn: &Connection| {
             conn.execute(
-                "INSERT INTO user_certificates (name, created_on, valid_until, data, password, type, renew_method, ca_id, user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![cert.name, cert.created_on, cert.valid_until, cert.data.as_bytes(), cert.password, cert.certificate_type as u8, cert.renew_method as u8, cert.ca_id, cert.user_id],
+                "INSERT INTO user_certificates (name, created_on, valid_until, data, password, type, renew_method, ca_id, user_id, is_imported, fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![cert.name, cert.created_on, cert.valid_until, cert.data.as_bytes(), cert.password, cert.certificate_type as u8, cert.renew_method as u8, cert.ca_id, cert.user_id, if cert.is_imported { 1 } else { 0 }, cert.fingerprint],
             )?;
 
             cert.id = conn.last_insert_rowid();
@@ -405,6 +459,163 @@ impl VaulTLSDB {
                 "DELETE FROM user_certificates WHERE id=?1",
                 params![id]
             ).map(|_| ())?)
+        })
+    }
+
+    /// Вытесняет текущую версию в историю и записывает новое содержимое.
+    /// `id` сертификата не меняется. Возвращает номер новой версии.
+    /// `guard` определяет, какие строки вызывающей стороне разрешено трогать.
+    /// `actor_id` — кто выполнил замену; `None` для необслуживаемого автопродления
+    /// (там нет человека-актёра, `replaced_by` обязан остаться NULL).
+    pub(crate) async fn replace_certificate(
+        &self,
+        cert_id: i64,
+        actor_id: Option<i64>,
+        input: ReplaceCertificateInput,
+        guard: ReplaceGuard,
+    ) -> Result<i64> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+        db_do!(self.pool, |conn: &Connection| {
+            let tx = conn.unchecked_transaction()?;
+
+            let (version, fingerprint): (i64, Option<String>) = tx.query_row(
+                "SELECT version, fingerprint FROM user_certificates WHERE id = ?1",
+                params![cert_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+
+            // ca_id вытесненной строки уезжает в историю вместе с ней: замена может
+            // сменить издателя, а старый серийник обязан проверяться по СВОЕМУ CA.
+            tx.execute(
+                "INSERT INTO certificate_versions \
+                   (cert_id, version, data, password, created_on, valid_until, serial_hex, ca_id, fingerprint, replaced_at, replaced_by) \
+                 SELECT id, version, data, password, created_on, valid_until, serial_hex, ca_id, ?2, ?3, ?4 \
+                   FROM user_certificates WHERE id = ?1",
+                params![cert_id, fingerprint.unwrap_or_default(), now, actor_id],
+            )?;
+
+            let next = version + 1;
+            // Условие в WHERE зависит от доверия к вызывающей стороне:
+            // - ImportedManual: оператор — только импортированные, не ACME, как раньше.
+            // - Renewal: внутренний CA — не отозвана, не ACME и не импортирована.
+            //   ACME-строки обслуживает свой собственный путь продления, а материал
+            //   импортированных строк внутренний CA подменять не вправе вовсе;
+            //   исключение здесь — не опция вызывающей стороны, а гарантия на уровне
+            //   БД, которая обязана держаться даже если caller ошибётся или проиграет
+            //   гонку.
+            // В обоих случаях оно же служит защитой от гонки с /revoke между проверками
+            // обработчика и этой записью: если строка перестала подходить, откатываемся.
+            let guard_clause = match guard {
+                ReplaceGuard::ImportedManual => "revoked_at IS NULL AND is_imported = 1 AND acme_provider_id IS NULL",
+                ReplaceGuard::Renewal => "revoked_at IS NULL AND acme_provider_id IS NULL AND is_imported = 0",
+                ReplaceGuard::AcmeRenewal => "revoked_at IS NULL AND acme_provider_id IS NOT NULL",
+            };
+            let affected = tx.execute(
+                &format!(
+                    "UPDATE user_certificates SET data = ?1, password = ?2, created_on = ?3, \
+                            valid_until = ?4, serial_hex = ?5, fingerprint = ?6, version = ?7, \
+                            ca_id = CASE WHEN ?8 > 0 THEN ?8 ELSE ca_id END, \
+                            renew_method = COALESCE(?9, renew_method) \
+                      WHERE id = ?10 AND {guard_clause}"
+                ),
+                params![
+                    input.data, input.password, input.created_on, input.valid_until,
+                    input.serial_hex, input.fingerprint, next, input.ca_id,
+                    input.renew_method.map(|m| m as u8), cert_id
+                ],
+            )?;
+            if affected == 0 {
+                tx.rollback()?;
+                return Err(anyhow::Error::new(CertificateNotReplaceable));
+            }
+
+            tx.commit()?;
+            Ok::<i64, anyhow::Error>(next)
+        })
+    }
+
+    /// Все версии сертификата, новые сверху. Текущая — с `version_id = None`.
+    pub(crate) async fn list_certificate_versions(&self, cert_id: i64) -> Result<Vec<CertificateVersionEntry>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let current = conn.query_row(
+                "SELECT version, created_on, valid_until, serial_hex, fingerprint \
+                   FROM user_certificates WHERE id = ?1",
+                params![cert_id],
+                |r| Ok(CertificateVersionEntry {
+                    version: r.get(0)?,
+                    version_id: None,
+                    current: true,
+                    created_on: r.get(1)?,
+                    valid_until: r.get(2)?,
+                    serial_hex: r.get(3)?,
+                    fingerprint: r.get(4)?,
+                    replaced_at: None,
+                    replaced_by: None,
+                }),
+            );
+            let mut out = match current {
+                Ok(entry) => vec![entry],
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            };
+
+            let mut stmt = conn.prepare(
+                "SELECT id, version, created_on, valid_until, serial_hex, fingerprint, replaced_at, replaced_by \
+                   FROM certificate_versions WHERE cert_id = ?1 ORDER BY version DESC",
+            )?;
+            let rows = stmt.query_map(params![cert_id], |r| Ok(CertificateVersionEntry {
+                version: r.get(1)?,
+                version_id: Some(r.get(0)?),
+                current: false,
+                created_on: r.get(2)?,
+                valid_until: r.get(3)?,
+                serial_hex: r.get(4)?,
+                fingerprint: r.get(5)?,
+                replaced_at: r.get(6)?,
+                replaced_by: r.get(7)?,
+            }))?;
+            out.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+            Ok(out)
+        })
+    }
+
+    /// Байты запрошенной версии: текущей — из user_certificates, иначе из истории.
+    pub(crate) async fn get_certificate_version(&self, cert_id: i64, version: i64) -> Result<Option<StoredCertVersion>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let current: i64 = match conn.query_row(
+                "SELECT version FROM user_certificates WHERE id = ?1",
+                params![cert_id],
+                |r| r.get(0),
+            ) {
+                Ok(v) => v,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            };
+
+            let sql = if version == current {
+                "SELECT data, password FROM user_certificates WHERE id = ?1 AND version = ?2"
+            } else {
+                "SELECT data, password FROM certificate_versions WHERE cert_id = ?1 AND version = ?2"
+            };
+            let result = conn.query_row(sql, params![cert_id, version], |r| {
+                Ok(StoredCertVersion { data: r.get(0)?, password: r.get(1)? })
+            });
+            match result {
+                Ok(v) => Ok(Some(v)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow::anyhow!(e)),
+            }
+        })
+    }
+
+    /// Удаляет историческую версию. False — если такой версии в истории нет.
+    pub(crate) async fn delete_certificate_version(&self, cert_id: i64, version: i64) -> Result<bool> {
+        db_do!(self.pool, |conn: &Connection| {
+            let affected = conn.execute(
+                "DELETE FROM certificate_versions WHERE cert_id = ?1 AND version = ?2",
+                params![cert_id, version],
+            )?;
+            Ok(affected > 0)
         })
     }
 
@@ -974,6 +1185,39 @@ impl VaulTLSDB {
         Ok(())
     }
 
+    pub(crate) async fn set_cert_fingerprint(&self, cert_id: i64, fingerprint: String) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "UPDATE user_certificates SET fingerprint = ?1 WHERE id = ?2",
+                params![fingerprint, cert_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Досчитывает отпечатки записям, появившимся до миграции 17.
+    /// Сертификаты, у которых отпечаток не вычисляется (SSH, битый PKCS#12),
+    /// молча пропускаются — это не повод ронять старт приложения.
+    pub(crate) async fn backfill_fingerprints(&self) -> Result<()> {
+        let ids: Vec<i64> = db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM user_certificates WHERE fingerprint IS NULL OR fingerprint = ''"
+            )?;
+            let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+            Ok::<Vec<i64>, anyhow::Error>(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+        })?;
+
+        for id in ids {
+            let cert = self.get_user_cert_by_id(id).await?;
+            if let Ok(fp) = cert.get_fingerprint() {
+                if !fp.is_empty() {
+                    self.set_cert_fingerprint(id, fp).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn get_cert_id_by_serial_hex(&self, serial_hex: String) -> Result<Option<i64>> {
         db_do!(self.pool, |conn: &Connection| {
             let result = conn.query_row(
@@ -991,7 +1235,7 @@ impl VaulTLSDB {
 
     pub(crate) async fn get_cert_status_by_serial_hex(&self, serial_hex: String) -> Result<Option<CertStatusRow>> {
         db_do!(self.pool, |conn: &Connection| {
-            let result = conn.query_row(
+            let current = conn.query_row(
                 "SELECT created_on, valid_until, revoked_at, ca_id FROM user_certificates WHERE serial_hex = ?1",
                 params![serial_hex],
                 |row| Ok(CertStatusRow {
@@ -999,13 +1243,62 @@ impl VaulTLSDB {
                     valid_until: row.get(1)?,
                     revoked_at: row.get(2)?,
                     ca_id: row.get(3)?,
+                    superseded: false,
                 }),
             );
-            match result {
+            match current {
+                Ok(r) => return Ok(Some(r)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            }
+
+            // Серийник вытесненной версии: сертификат, выданный клиенту раньше,
+            // не должен становиться «неизвестным» после ротации.
+            let historical = conn.query_row(
+                // ca_id — из самой версии (её издатель мог смениться при замене),
+                // revoked_at — из текущей записи: отзыв закрывает и старые серийники.
+                "SELECT v.created_on, v.valid_until, c.revoked_at, v.ca_id \
+                   FROM certificate_versions v \
+                   JOIN user_certificates c ON c.id = v.cert_id \
+                  WHERE v.serial_hex = ?1",
+                params![serial_hex],
+                |row| Ok(CertStatusRow {
+                    created_on: row.get(0)?,
+                    valid_until: row.get(1)?,
+                    revoked_at: row.get(2)?,
+                    ca_id: row.get(3)?,
+                    superseded: true,
+                }),
+            );
+            match historical {
                 Ok(r) => Ok(Some(r)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(anyhow::anyhow!(e)),
             }
+        })
+    }
+
+    /// Серийники исторических (вытесненных заменой) версий, которые обязаны попасть
+    /// в CRL данного CA: сертификат отозван, а какая-то из его прежних версий была
+    /// подписана именно этим CA. Автопродление может репойнтить строку на новый CA
+    /// до отзыва, поэтому фильтруем по `ca_id` самой исторической версии, а не по
+    /// текущему `ca_id` строки — иначе клиент с закэшированным старым серийником
+    /// продолжит принимать его как валидный (RFC 5280).
+    /// Одним запросом по всем отозванным сертификатам сразу — пул соединений
+    /// `max_size(1)`, а сборка CRL и так идёт по одному CA за раз.
+    pub(crate) async fn get_revoked_history_serials_for_ca(&self, ca_id: i64) -> Result<Vec<(String, i64)>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT v.serial_hex, c.revoked_at \
+                   FROM certificate_versions v \
+                   JOIN user_certificates c ON c.id = v.cert_id \
+                  WHERE v.ca_id = ?1 AND c.revoked_at IS NOT NULL \
+                    AND v.serial_hex IS NOT NULL AND v.serial_hex != ''"
+            )?;
+            let rows = stmt.query_map(params![ca_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
@@ -1318,26 +1611,6 @@ impl VaulTLSDB {
         Ok(id)
     }
 
-    pub(crate) async fn update_acme_client_certificate_in_place(
-        &self,
-        cert_id: i64,
-        pkcs12_der: Vec<u8>,
-        valid_until: i64,
-    ) -> Result<()> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
-        db_do!(self.pool, |conn: &Connection| {
-            let affected = conn.execute(
-                "UPDATE user_certificates SET data = ?1, valid_until = ?2, created_on = ?3 WHERE id = ?4",
-                params![pkcs12_der, valid_until, now, cert_id],
-            )?;
-            if affected != 1 {
-                return Err(anyhow::anyhow!("renew target certificate {cert_id} not found"));
-            }
-            Ok::<(), anyhow::Error>(())
-        })?;
-        Ok(())
-    }
-
     pub(crate) async fn get_acme_client_order_by_cert_id(&self, cert_id: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
@@ -1352,11 +1625,25 @@ impl VaulTLSDB {
         })
     }
 
+    /// Заказ, который сейчас реально продлевает `cert_id` — то есть блокирует
+    /// создание ещё одного.
+    ///
+    /// Заказ без `expires_at` (CA не сообщил срок) сам по себе не истекает никогда,
+    /// поэтому одного статуса мало: если запись статуса после успешной замены не
+    /// прошла, заказ навсегда остаётся `pending_dns` и глушит всё будущее
+    /// автопродление этого сертификата. Поэтому активным считается только заказ,
+    /// который сертификат ещё не «обогнал»: при замене `created_on` строки
+    /// переписывается моментом замены, так что `created_on` сертификата позже
+    /// `created_on` заказа означает, что замена уже состоялась и заказ отработан
+    /// (или брошен) — блокировать им нечего.
     pub(crate) async fn get_active_renewal_order_for_cert(&self, cert_id: i64, now_ms: i64) -> Result<Option<AcmeClientOrder>> {
         db_do!(self.pool, |conn: &Connection| {
             let mut stmt = conn.prepare(
-                "SELECT id, provider_id, domain, include_wildcard, status, order_url, txt_records, cert_id, error, created_on, expires_at, renews_cert_id \
-                 FROM acme_client_orders WHERE renews_cert_id = ?1 AND status IN ('pending_dns','ready') AND (expires_at IS NULL OR expires_at > ?2) ORDER BY id DESC LIMIT 1",
+                "SELECT o.id, o.provider_id, o.domain, o.include_wildcard, o.status, o.order_url, o.txt_records, o.cert_id, o.error, o.created_on, o.expires_at, o.renews_cert_id \
+                 FROM acme_client_orders o WHERE o.renews_cert_id = ?1 AND o.status IN ('pending_dns','ready') \
+                   AND (o.expires_at IS NULL OR o.expires_at > ?2) \
+                   AND NOT EXISTS (SELECT 1 FROM user_certificates c WHERE c.id = o.renews_cert_id AND c.created_on > o.created_on) \
+                 ORDER BY o.id DESC LIMIT 1",
             )?;
             let mut rows = stmt.query(params![cert_id, now_ms])?;
             match rows.next()? {
@@ -1700,12 +1987,6 @@ mod tests {
             provider.id, "example.com".into(), false, Some("https://o/2".into()), &[], None, Some(cert_id),
         ).await.unwrap();
         assert_eq!(db.get_active_renewal_order_for_cert(cert_id, 1).await.unwrap().map(|o| o.id), Some(ren.id));
-
-        // In-place update keeps the id, bumps valid_until.
-        db.update_acme_client_certificate_in_place(cert_id, vec![9, 9], 5_000).await.unwrap();
-        let certs = db.get_user_certs(None, None, None).await.unwrap();
-        let c = certs.iter().find(|c| c.id == cert_id).unwrap();
-        assert_eq!(c.valid_until, 5_000);
     }
 
     #[tokio::test]
@@ -1785,6 +2066,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_17_applies_and_marks_imported_certs() {
+        // mem_db() прогоняет все миграции; если 17-я сломана, конструктор паникует.
+        let db = mem_db().await;
+
+        // Схема доступна: обе новые колонки читаются существующим запросом,
+        // а таблица версий пуста для несуществующего сертификата.
+        let certs = db.get_user_certs(None, None, None).await.unwrap();
+        assert!(certs.is_empty(), "свежая база — сертификатов нет");
+    }
+
+    #[tokio::test]
+    async fn migration_17_backfill_marks_only_imported_ca_certs() {
+        // mem_db() уже применил миграцию 17 (в т.ч. её UPDATE) к пустой базе.
+        // Здесь мы вставляем строки вручную и повторно прогоняем ровно тот же
+        // UPDATE (скопированный дословно из up.sql), чтобы проверить само
+        // правило бэкфилла, а не только факт применения миграции.
+        let db = mem_db().await;
+        let pool = db.pool.clone();
+
+        let (imported_ca_flag, imported_ca_with_key_flag, internal_ca_flag, acme_flag) =
+            tokio::task::spawn_blocking(move || {
+            let conn = pool.get().unwrap();
+
+            // Три CA: внутренняя (is_imported = 0), импортированная БЕЗ ключа
+            // (key пуст — конвенция CA::has_private_key) и импортированная С ключом.
+            conn.execute(
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported, key) VALUES (0, 1, 0, X'00ff')",
+                [],
+            ).unwrap();
+            let internal_ca_id = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported, key) VALUES (0, 1, 1, NULL)",
+                [],
+            ).unwrap();
+            let imported_ca_id = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO ca_certificates (created_on, valid_until, is_imported, key) VALUES (0, 1, 1, X'00ff')",
+                [],
+            ).unwrap();
+            let imported_ca_with_key_id = conn.last_insert_rowid();
+
+            // Четыре сертификата, все стартуют с is_imported = 0:
+            // - под импортированной CA без ключа (после бэкфилла должен стать 1),
+            // - под импортированной CA С ключом: такая CA умеет выпускать локально
+            //   (get_latest_tls_ca подписывает ею), значит лист мог быть выпущен здесь
+            //   и обязан продолжать автопродлеваться — должен остаться 0,
+            // - под внутренней CA (должен остаться 0),
+            // - ACME-сертификат: ca_id NULL, acme_provider_id задан (должен остаться 0).
+            // provider id=1 существует — это пресет Let's Encrypt из миграции 13.
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-imported-ca', 0, 1, ?1, NULL, 0)",
+                rusqlite::params![imported_ca_id],
+            ).unwrap();
+            let cert_under_imported_ca = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-imported-ca-with-key', 0, 1, ?1, NULL, 0)",
+                rusqlite::params![imported_ca_with_key_id],
+            ).unwrap();
+            let cert_under_imported_ca_with_key = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, is_imported) VALUES ('under-internal-ca', 0, 1, ?1, NULL, 0)",
+                rusqlite::params![internal_ca_id],
+            ).unwrap();
+            let cert_under_internal_ca = conn.last_insert_rowid();
+
+            conn.execute(
+                "INSERT INTO user_certificates (name, created_on, valid_until, ca_id, user_id, acme_provider_id, is_imported) VALUES ('acme-cert', 0, 1, NULL, NULL, 1, 0)",
+                [],
+            ).unwrap();
+            let acme_cert = conn.last_insert_rowid();
+
+            // Бэкфилл — дословная копия из backend/migrations/17-certversions/up.sql.
+            conn.execute_batch(
+                "UPDATE user_certificates SET is_imported = 1
+ WHERE acme_provider_id IS NULL
+   AND ca_id IN (
+       SELECT id FROM ca_certificates
+        WHERE is_imported = 1 AND (key IS NULL OR length(key) = 0)
+   );",
+            ).unwrap();
+
+            let get_flag = |id: i64| -> i64 {
+                conn.query_row(
+                    "SELECT is_imported FROM user_certificates WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                ).unwrap()
+            };
+
+            (
+                get_flag(cert_under_imported_ca),
+                get_flag(cert_under_imported_ca_with_key),
+                get_flag(cert_under_internal_ca),
+                get_flag(acme_cert),
+            )
+        }).await.unwrap();
+
+        assert_eq!(imported_ca_flag, 1, "сертификат под импортированной CA без ключа должен получить is_imported = 1");
+        assert_eq!(imported_ca_with_key_flag, 0,
+            "под импортированной CA С ключом лист мог быть выпущен внутри — он обязан остаться is_imported = 0 и продолжать автопродлеваться");
+        assert_eq!(internal_ca_flag, 0, "сертификат под внутренней CA должен остаться is_imported = 0");
+        assert_eq!(acme_flag, 0, "ACME-сертификат не должен помечаться как импортированный");
+    }
+
+    #[tokio::test]
     async fn group_crud_and_membership() {
         let db = mem_db().await;
         let admin = db.insert_user(User { id: -1, name: "a".into(), email: "a@b.c".into(), password_hash: None, oidc_id: None, role: UserRole::Admin, is_local: false }).await.unwrap();
@@ -1843,6 +2233,9 @@ mod tests {
             acme_provider_id: None,
             data: CertData::Pkcs12(vec![7, 8, 9]),
             password: "".into(),
+            version: 1,
+            fingerprint: None,
+            is_imported: false,
         }).await.unwrap();
 
         // viewer не видит чужой серт без группы
@@ -1907,6 +2300,695 @@ mod tests {
         let left = db.query_audit(AuditFilter::default(), 100, 0).await.unwrap();
         assert_eq!(left.total, 1);
         assert_eq!(left.rows[0].ts, 3000);
+    }
+
+    #[tokio::test]
+    async fn replace_certificate_moves_old_row_into_history() {
+        use crate::data::enums::{CAType, CertData, CertificateRenewMethod, CertificateType};
+        use crate::certs::common::CA;
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let ca = db.insert_ca(CA {
+            id: -1, name: "ca".into(), created_on: 0, valid_until: 0,
+            ca_type: CAType::TLS, cert: vec![2], key: vec![], crl_number: 0, is_imported: true,
+        }).await.unwrap();
+        // второй CA: замена перепривязывает сертификат к другому издателю
+        let ca2 = db.insert_ca(CA {
+            id: -1, name: "ca2".into(), created_on: 0, valid_until: 0,
+            ca_type: CAType::TLS, cert: vec![3], key: vec![], crl_number: 0, is_imported: true,
+        }).await.unwrap();
+
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 100, valid_until: 200,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: Some(ca.id),
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"old".to_vec()), password: "oldpw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+        db.set_cert_serial(cert.id, "0a".into()).await.unwrap();
+
+        let new_version = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"new".to_vec(),
+            password: "newpw".into(),
+            created_on: 300,
+            valid_until: 400,
+            serial_hex: Some("0b".into()),
+            fingerprint: "bb".into(),
+            ca_id: ca2.id,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap();
+        assert_eq!(new_version, 2);
+
+        // текущая запись — новая, id прежний
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.id, cert.id);
+        assert_eq!(current.version, 2);
+        assert_eq!(current.ca_id, Some(ca2.id), "замена перепривязала запись к новому CA");
+        assert_eq!(current.fingerprint.as_deref(), Some("bb"));
+        assert_eq!(current.valid_until, 400);
+
+        // история содержит обе версии, вытесненная — со своим id
+        let versions = db.list_certificate_versions(cert.id).await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, 2);
+        assert!(versions[0].current);
+        assert_eq!(versions[0].version_id, None);
+        assert_eq!(versions[1].version, 1);
+        assert!(!versions[1].current);
+        assert!(versions[1].version_id.is_some());
+        assert_eq!(versions[1].replaced_by, Some(user.id));
+        // история хранит вытесненный (старый) fingerprint, а не новый
+        assert_eq!(versions[0].fingerprint.as_deref(), Some("bb"));
+        assert_eq!(versions[1].fingerprint.as_deref(), Some("aa"));
+
+        // история хранит СВОЙ ca_id вытесненной версии, а не переехавший на новый CA
+        let conn = db.pool.get().unwrap();
+        let hist_ca: Option<i64> = conn.query_row(
+            "SELECT ca_id FROM certificate_versions WHERE cert_id = ?1 AND version = 1",
+            params![cert.id],
+            |r| r.get(0),
+        ).unwrap();
+        drop(conn);
+        assert_eq!(hist_ca, Some(ca.id), "вытесненная версия обязана помнить своего издателя");
+
+        // и валидация старого серийника отдаёт старый CA, иначе клиент возьмёт чужой CRL
+        let status = db.get_cert_status_by_serial_hex("0a".into()).await.unwrap().unwrap();
+        assert!(status.superseded);
+        assert_eq!(status.ca_id, Some(ca.id), "старый серийник проверяется по старому CA");
+        assert_eq!(status.revoked_at, None);
+        // текущий серийник — по новому CA
+        let cur_status = db.get_cert_status_by_serial_hex("0b".into()).await.unwrap().unwrap();
+        assert!(!cur_status.superseded);
+        assert_eq!(cur_status.ca_id, Some(ca2.id));
+
+        // байты и пароль старой версии доступны
+        let old = db.get_certificate_version(cert.id, 1).await.unwrap().unwrap();
+        assert_eq!(old.data, b"old".to_vec());
+        assert_eq!(old.password, "oldpw");
+
+        // удаление исторической версии
+        assert!(db.delete_certificate_version(cert.id, 1).await.unwrap());
+        assert_eq!(db.list_certificate_versions(cert.id).await.unwrap().len(), 1);
+        assert!(!db.delete_certificate_version(cert.id, 1).await.unwrap());
+    }
+
+    /// Гонка `/revoke` с заменой не воспроизводится в тесте, но SQL-условие в UPDATE
+    /// обязано отсекать отозванную строку — иначе CRL начнёт перечислять новый серийник,
+    /// а скомпрометированный старый снова станет валидным.
+    #[tokio::test]
+    async fn replace_certificate_refuses_revoked_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "отозванная строка обязана отбиваться типизированной ошибкой: {err}");
+
+        // откат транзакции: ни содержимое, ни история не изменились
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.version, 1);
+        assert_eq!(current.data.as_bytes(), b"v1");
+        assert!(db.list_certificate_versions(cert.id).await.unwrap()
+            .iter().all(|v| v.current), "история обязана остаться пустой");
+    }
+
+    /// То же для строки, которую вообще нельзя заменять: не импортированная / ACME.
+    #[tokio::test]
+    async fn replace_certificate_refuses_non_importable_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "не импортированная строка обязана отбиваться: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// `ImportedManual` не должен становиться шире: строка помечена импортированной,
+    /// но привязана к ACME-провайдеру — ACME обслуживает свой собственный путь
+    /// продления, оператору руками сюда лезть нельзя.
+    #[tokio::test]
+    async fn replace_certificate_imported_manual_refuses_acme_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+        // insert_user_cert не пишет acme_provider_id (эта колонка заполняется отдельным
+        // ACME-клиентским путём) — проставляем её напрямую, как и в migration-тестах выше.
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+
+        let err = db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "ACME-строка обязана отбиваться даже если помечена is_imported: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// Автопродление доверенным путём обязано уметь заменить внутренне выпущенный
+    /// (не импортированный) сертификат — ровно тот случай, который раньше отбивал
+    /// `ImportedManual` и заставлял продление создавать новую строку.
+    #[tokio::test]
+    async fn replace_certificate_renewal_guard_allows_non_imported() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+
+        // actor_id = None: как в реальном пути автопродления — нет человека-актёра.
+        let new_version = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::Renewal).await.unwrap();
+        assert_eq!(new_version, 2);
+
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.id, cert.id, "id обязан остаться прежним — на него смотрит внешний поллер");
+        assert_eq!(current.data.as_bytes(), b"v2");
+        assert!(!current.is_imported, "автопродление не помечает строку как импортированную");
+
+        // replaced_by обязан остаться NULL — атрибуция «пользователь заменил» была бы ложью.
+        let versions = db.list_certificate_versions(cert.id).await.unwrap();
+        let history = versions.iter().find(|v| !v.current).expect("вытесненная версия обязана быть в истории");
+        assert_eq!(history.replaced_by, None, "автопродление не имеет человека-актёра");
+    }
+
+    /// Внутреннее автопродление обязано отбиваться от импортированной строки на
+    /// уровне БД, а не только на уровне `watch_expiry`: материал, полученный извне,
+    /// внутренний CA подменять не вправе, даже если вызывающая сторона ошиблась.
+    #[tokio::test]
+    async fn replace_certificate_renewal_guard_refuses_imported_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::Renewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "импортированная строка обязана отбиваться внутренним автопродлением: {err}");
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.version, 1);
+        assert_eq!(current.data.as_bytes(), b"v1", "содержимое импортированной строки не тронуто");
+    }
+
+    /// Замена обязана уметь перевзвести способ продления в той же транзакции:
+    /// `Some(..)` — установить, `None` — оставить как было.
+    #[tokio::test]
+    async fn replace_certificate_sets_renew_method_when_requested() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+
+        db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: Some(CertificateRenewMethod::Notify),
+        }, ReplaceGuard::ImportedManual).await.unwrap();
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().renew_method,
+                   CertificateRenewMethod::Notify);
+
+        // None — не трогать: способ продления остаётся прежним.
+        db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v3".to_vec(), password: "pw".into(), created_on: 5, valid_until: 6,
+            serial_hex: None, fingerprint: "cc".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap();
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().renew_method,
+                   CertificateRenewMethod::Notify);
+    }
+
+    /// Заказ без `expires_at`, у которого не прошла запись статуса, не имеет права
+    /// глушить автопродление навсегда: сертификат его уже «обогнал» (created_on
+    /// строки переписан моментом замены), значит заказ отработан.
+    #[tokio::test]
+    async fn active_renewal_order_ignores_order_the_certificate_moved_past() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1_000, valid_until: 9_000,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        // insert_user_cert не пишет acme_provider_id — проставляем её напрямую,
+        // как и в соседних ACME-тестах.
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+
+        // Заказ на продление: expires_at не сообщён (NULL) — сам он не протухнет.
+        let order = db.insert_acme_client_order(
+            1, "example.com".into(), false, Some("https://acme.example/o/1".into()),
+            &[], None, Some(cert.id),
+        ).await.unwrap();
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+
+        // Пока сертификат не заменён — заказ активен и блокирует второй.
+        assert_eq!(
+            db.get_active_renewal_order_for_cert(cert.id, now_ms).await.unwrap().map(|o| o.id),
+            Some(order.id),
+        );
+
+        // Замена прошла, а запись статуса — нет: заказ остался pending_dns.
+        db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(),
+            created_on: now_ms + 1_000, valid_until: now_ms + 100_000,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap();
+        assert_eq!(db.get_acme_client_order(order.id).await.unwrap().status, "pending_dns");
+
+        assert!(
+            db.get_active_renewal_order_for_cert(cert.id, now_ms + 2_000).await.unwrap().is_none(),
+            "зависший заказ не имеет права блокировать автопродление навсегда",
+        );
+    }
+
+    /// Даже доверенному пути автопродления запрещено трогать отозванную строку.
+    #[tokio::test]
+    async fn replace_certificate_renewal_guard_refuses_revoked() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::Renewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "отозванная строка обязана отбиваться даже доверенным путём: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// Зеркало `replace_certificate_renewal_guard_allows_non_imported`: путь ACME-продления
+    /// обязан уметь заменить строку с проставленным `acme_provider_id` и обязан оставить
+    /// `ca_id` пустым — ACME-сертификаты не привязаны к внутреннему CA.
+    #[tokio::test]
+    async fn replace_certificate_acme_renewal_guard_allows_acme_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        // insert_user_cert не пишет acme_provider_id — проставляем её напрямую, как и
+        // в соседних ACME-тестах выше.
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+
+        // actor_id = None: как в пути автопродления от вотчера истечения
+        // (notifier.rs::handle_acme_renewal) — там нет человека-актёра, событие
+        // безусловно системное. UI-путь (acme_client/routes.rs::issue_acme_client_order)
+        // работает по-другому: там есть авторизованный пользователь, и он передаёт
+        // actor_id = Some(auth.claims.id) — этот тест его не покрывает.
+        let new_version = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap();
+        assert_eq!(new_version, 2);
+
+        let current = db.get_user_cert_by_id(cert.id).await.unwrap();
+        assert_eq!(current.id, cert.id, "id обязан остаться прежним — на него смотрит внешний поллер");
+        assert_eq!(current.data.as_bytes(), b"v2");
+        assert_eq!(current.ca_id, None, "ACME-сертификаты не привязаны к внутреннему CA");
+
+        let versions = db.list_certificate_versions(cert.id).await.unwrap();
+        let history = versions.iter().find(|v| !v.current).expect("вытесненная версия обязана быть в истории");
+        assert_eq!(history.replaced_by, None,
+                   "здесь актёра нет только потому, что тест воспроизводит вотчер истечения; \
+                    UI-путь (issue_acme_client_order) передаёт Some(actor_id) и это не покрывается этим тестом");
+    }
+
+    /// Зеркало guard'а `ImportedManual`/`Renewal`: `AcmeRenewal` обязан отбивать строку
+    /// без `acme_provider_id` — иначе ACME-путь смог бы тронуть внутренне выпущенный
+    /// или импортированный сертификат.
+    #[tokio::test]
+    async fn replace_certificate_acme_renewal_guard_refuses_non_acme_row() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "не-ACME строка обязана отбиваться ACME-путём продления: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    /// Даже ACME-пути продления запрещено трогать отозванную строку.
+    #[tokio::test]
+    async fn replace_certificate_acme_renewal_guard_refuses_revoked() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        let conn = db.pool.get().unwrap();
+        conn.execute("UPDATE user_certificates SET acme_provider_id = 1 WHERE id = ?1", params![cert.id]).unwrap();
+        drop(conn);
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        let err = db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::AcmeRenewal).await.unwrap_err();
+        assert!(err.downcast_ref::<CertificateNotReplaceable>().is_some(),
+                "отозванная ACME-строка обязана отбиваться даже своим путём продления: {err}");
+        assert_eq!(db.get_user_cert_by_id(cert.id).await.unwrap().version, 1);
+    }
+
+    #[tokio::test]
+    async fn deleting_certificate_cascades_versions() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: String::new(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: true,
+        }).await.unwrap();
+        db.replace_certificate(cert.id, Some(user.id), ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: String::new(), created_on: 3, valid_until: 4,
+            serial_hex: None, fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::ImportedManual).await.unwrap();
+
+        // фикстура действительно создала историческую запись — иначе постусловие ничего не доказывает
+        let conn = db.pool.get().unwrap();
+        let before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM certificate_versions WHERE cert_id = ?1",
+            params![cert.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(before, 1);
+        drop(conn);
+
+        db.delete_user_cert(cert.id).await.unwrap();
+        assert!(db.list_certificate_versions(cert.id).await.unwrap().is_empty());
+
+        // прямая проверка таблицы истории: каскад действительно удалил осиротевшие строки,
+        // а не просто «родителя нет — list_certificate_versions вернул пусто по другой причине»
+        let conn = db.pool.get().unwrap();
+        let after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM certificate_versions WHERE cert_id = ?1",
+            params![cert.id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(after, 0);
+    }
+
+    #[tokio::test]
+    async fn backfill_fingerprints_fills_missing_and_skips_ssh() {
+        use crate::data::enums::{CertData, CertificateRenewMethod, CertificateType};
+        use crate::certs::import::tests_support::self_signed_ca;
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+
+        let (x509, _key) = self_signed_ca("backfill-test");
+        let tls = db.insert_user_cert(Certificate {
+            id: -1, name: "tls".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pem(x509.to_pem().unwrap()), password: String::new(),
+            version: 1, fingerprint: None, is_imported: true,
+        }).await.unwrap();
+
+        let ssh = db.insert_user_cert(Certificate {
+            id: -1, name: "ssh".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::SSHServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::None, ca_id: None,
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::SshBundle(vec![1, 2, 3]), password: String::new(),
+            version: 1, fingerprint: None, is_imported: false,
+        }).await.unwrap();
+
+        db.backfill_fingerprints().await.unwrap();
+
+        let filled = db.get_user_cert_by_id(tls.id).await.unwrap();
+        assert_eq!(filled.fingerprint.as_deref().map(str::len), Some(64));
+        let untouched = db.get_user_cert_by_id(ssh.id).await.unwrap();
+        assert_eq!(untouched.fingerprint, None, "SSH пропускается без ошибки");
+    }
+
+    /// CRL обязан перечислить каждый серийник, который сертификат когда-либо носил:
+    /// продление вытесняет старую версию до отзыва, и без истории клиент с
+    /// закэшированным старым серийником продолжит принимать его как валидный.
+    #[tokio::test]
+    async fn revoked_certificate_history_serials_include_superseded_version() {
+        use crate::data::enums::{CAType, CertData, CertificateRenewMethod, CertificateType};
+        use crate::certs::common::CA;
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let ca = db.insert_ca(CA {
+            id: -1, name: "ca".into(), created_on: 0, valid_until: 0,
+            ca_type: CAType::TLS, cert: vec![1], key: vec![2], crl_number: 0, is_imported: false,
+        }).await.unwrap();
+
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: Some(ca.id),
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        db.set_cert_serial(cert.id, "0a".into()).await.unwrap();
+
+        // автопродление вытесняет "0a" в историю до того, как сертификат отозван
+        db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: Some("0b".into()), fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::Renewal).await.unwrap();
+
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        // текущий серийник ("0b") виден обычным способом — по нему и так строился CRL
+        let conn = db.pool.get().unwrap();
+        let current_serial: Option<String> = conn.query_row(
+            "SELECT serial_hex FROM user_certificates WHERE id = ?1",
+            params![cert.id],
+            |r| r.get(0),
+        ).unwrap();
+        drop(conn);
+        assert_eq!(current_serial.as_deref(), Some("0b"));
+
+        // исторический серийник ("0a") обязан быть виден отдельным методом для CRL
+        let history = db.get_revoked_history_serials_for_ca(ca.id).await.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].0, "0a");
+        assert!(history[0].1 > 0, "время отзыва должно быть перенесено с родительской строки");
+
+        // вместе current + history перечисляют оба серийника, которые носил сертификат
+        let mut all: Vec<String> = history.iter().map(|(s, _)| s.clone()).collect();
+        all.push(current_serial.unwrap());
+        all.sort();
+        assert_eq!(all, vec!["0a".to_string(), "0b".to_string()]);
+    }
+
+    /// Пустых/NULL исторических серийников (не прошедших backfill) быть в CRL не должно.
+    #[tokio::test]
+    async fn revoked_certificate_history_serials_skip_missing_serial() {
+        use crate::data::enums::{CAType, CertData, CertificateRenewMethod, CertificateType};
+        use crate::certs::common::CA;
+
+        let db = mem_db().await;
+        let user = db.insert_user(User {
+            id: -1, name: "o".into(), email: "o@b.c".into(), password_hash: None,
+            oidc_id: None, role: UserRole::User, is_local: false,
+        }).await.unwrap();
+        let ca = db.insert_ca(CA {
+            id: -1, name: "ca".into(), created_on: 0, valid_until: 0,
+            ca_type: CAType::TLS, cert: vec![1], key: vec![2], crl_number: 0, is_imported: false,
+        }).await.unwrap();
+
+        let cert = db.insert_user_cert(Certificate {
+            id: -1, name: "c".into(), created_on: 1, valid_until: 2,
+            certificate_type: CertificateType::TLSServer, user_id: user.id,
+            renew_method: CertificateRenewMethod::Renew, ca_id: Some(ca.id),
+            revoked_at: None, acme_provider_id: None,
+            data: CertData::Pkcs12(b"v1".to_vec()), password: "pw".into(),
+            version: 1, fingerprint: Some("aa".into()), is_imported: false,
+        }).await.unwrap();
+        // серийник исходной версии никогда не бэкфиллился (serial_hex остаётся NULL)
+
+        db.replace_certificate(cert.id, None, ReplaceCertificateInput {
+            data: b"v2".to_vec(), password: "pw2".into(), created_on: 3, valid_until: 4,
+            serial_hex: Some("0b".into()), fingerprint: "bb".into(), ca_id: 0,
+            renew_method: None,
+        }, ReplaceGuard::Renewal).await.unwrap();
+        db.revoke_user_cert(cert.id).await.unwrap();
+
+        let history = db.get_revoked_history_serials_for_ca(ca.id).await.unwrap();
+        assert!(history.is_empty(), "NULL serial_hex обязан быть пропущен: {history:?}");
     }
 }
 

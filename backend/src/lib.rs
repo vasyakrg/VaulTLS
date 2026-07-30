@@ -114,6 +114,7 @@ pub async fn create_rocket() -> Rocket<Build> {
     let db = VaulTLSDB::new(encrypted, false).expect("Failed opening SQLite database");
     db.fix_password().await.expect("Failed fixing passwords");
     db.backfill_serials().await.expect("Failed backfilling certificate serials");
+    db.backfill_fingerprints().await.expect("Failed backfilling certificate fingerprints");
     if !db_initialized {
         info!("New database. Set initial database file permissions to 0600");
         // Adjust permissions
@@ -218,6 +219,9 @@ pub async fn create_rocket() -> Rocket<Build> {
                 create_ca,
                 import_ca,
                 import_certificate,
+                update_certificate,
+                list_certificate_versions,
+                delete_certificate_version,
                 create_user_certificate,
                 get_all_ca,
                 download_current_tls_ca,
@@ -315,6 +319,9 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_ca,
                 import_ca,
                 import_certificate,
+                update_certificate,
+                list_certificate_versions,
+                delete_certificate_version,
                 get_all_ca,
                 download_current_tls_ca,
                 download_ca_bundle,
@@ -376,6 +383,9 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 create_ca,
                 import_ca,
                 import_certificate,
+                update_certificate,
+                list_certificate_versions,
+                delete_certificate_version,
                 get_all_ca,
                 download_current_tls_ca,
                 download_ca_bundle,

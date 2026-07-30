@@ -124,6 +124,40 @@ pub async fn create_acme_client_order(
     Ok(Json(CreateOrderResponse { order_id: order.id, txt_records: order.txt_records }))
 }
 
+/// Выпуск состоялся, но новый сертификат не продлевает срок действия текущего,
+/// поэтому замена отклонена. Отдельный тип нужен, чтобы обработчик ниже отличил
+/// этот случай от прочих провалов и вернул 409, а не 500.
+#[derive(Debug)]
+struct RenewalDoesNotExtendExpiry(String);
+
+impl std::fmt::Display for RenewalDoesNotExtendExpiry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for RenewalDoesNotExtendExpiry {}
+
+/// Срок действия в человекочитаемом виде для текста ошибки (мс UNIX).
+fn fmt_expiry(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| ms.to_string())
+}
+
+/// Записывает провал попытки выпуска в заказ. Best-effort: провалившаяся запись
+/// статуса не должна подменять собой исходную причину отказа — она лишь логируется.
+/// Заказ при этом остаётся `pending_dns`; см. комментарий на том же месте в
+/// notifier.rs::handle_acme_renewal.
+async fn record_order_failure(state: &State<AppState>, order_id: i64, error: &str) {
+    if let Err(e) = state.db.update_acme_client_order_status(order_id, "failed", None, Some(error.to_string())).await {
+        tracing::error!(
+            error = %e, order_id,
+            "failed to record the failed ACME order status; the order stays pending_dns"
+        );
+    }
+}
+
 #[openapi(tag = "ACME Client")]
 #[post("/acme-client/orders/<id>/issue")]
 pub async fn issue_acme_client_order(
@@ -156,10 +190,82 @@ pub async fn issue_acme_client_order(
             let inner = async {
                 let packed = client::pack_issued_certificate(&issued.certificate_pem, &issued.private_key_pem, "")
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                // Filled in on the renewal branch below; carries what the audit record
+                // needs. Fired after the order status update further down, not here —
+                // see the comment at that call for why.
+                let mut renewal_audit: Option<(i64, i64, String, String)> = None;
                 let result_cert_id = if let Some(renew_id) = order.renews_cert_id {
-                    // Renewal: update the existing certificate in place (same id).
-                    state.db.update_acme_client_certificate_in_place(renew_id, packed.pkcs12_der, packed.valid_until)
-                        .await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    // Renewal: replace the existing certificate in place (same id) and
+                    // push the superseded content into certificate_versions, mirroring
+                    // the unattended ACME renewal path in
+                    // notification::notifier::handle_acme_renewal — same guard, same
+                    // "leave ca_id alone" reasoning. Unlike that path, this one runs
+                    // under AuthenticatedPrivileged: a person pressed "issue", so
+                    // attribution below is a real actor, not the system.
+                    let existing = state.db.get_user_cert_by_id(renew_id).await
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    // Тот же guard, что в notifier::handle_acme_renewal, и та же
+                    // функция: замена, не продлевающая срок, не даёт ничего, а стоит
+                    // строки в certificate_versions и строки в аудите.
+                    //
+                    // Но здесь, в отличие от вотчера, кнопку нажал человек, а заказ
+                    // ACME одноразовый: выпущенный сертификат вместе с приватным
+                    // ключом будет выброшен безвозвратно. Молча вернуть 200 с
+                    // «valid» — тот же немой no-op, ради устранения которого на
+                    // ручном пути вводился force. Поэтому — типизированная ошибка:
+                    // внешний обработчик ниже проставит заказу `failed` с этим же
+                    // текстом (как и любому другому провалу) и вернёт 409.
+                    if !crate::notification::notifier::renewal_extends_expiry(
+                        packed.valid_until, existing.valid_until,
+                    ) {
+                        return Err(anyhow::Error::new(RenewalDoesNotExtendExpiry(format!(
+                            "issued certificate expires at {}, which does not extend the current expiry {}; \
+                             the replacement was refused and the issued material discarded",
+                            fmt_expiry(packed.valid_until), fmt_expiry(existing.valid_until)
+                        ))));
+                    }
+                    let tmp_cert = crate::certs::common::Certificate {
+                        data: crate::data::enums::CertData::Pkcs12(packed.pkcs12_der.clone()),
+                        password: String::new(),
+                        valid_until: packed.valid_until,
+                        ..existing.clone()
+                    };
+                    let fingerprint = tmp_cert.get_fingerprint()
+                        .map_err(|e| anyhow::anyhow!("cannot compute fingerprint for renewed ACME cert: {e}"))?;
+                    let serial_hex = tmp_cert.get_serial().ok()
+                        .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                    let created_on = chrono::Utc::now().timestamp_millis();
+
+                    // No map_err(..to_string()) here, unlike the other calls in this
+                    // block: replace_certificate's CertificateNotReplaceable needs to
+                    // survive as its concrete type so the outer handler below can
+                    // downcast it into a 409, the same way api::update_certificate
+                    // does for the identical race. Wrapping it through a String here
+                    // would erase that.
+                    let new_version = state.db.replace_certificate(
+                        renew_id,
+                        // A person triggered this via the UI/API — attribute it to
+                        // them, matching what the manual replace endpoint
+                        // (api::update_certificate) records for `replaced_by`.
+                        Some(auth.claims.id),
+                        crate::db::ReplaceCertificateInput {
+                            data: packed.pkcs12_der,
+                            // pack_issued_certificate above is always called with "".
+                            password: String::new(),
+                            created_on,
+                            valid_until: packed.valid_until,
+                            serial_hex,
+                            fingerprint: fingerprint.clone(),
+                            // ACME certificates carry ca_id = NULL and must keep it;
+                            // 0 means "leave the existing binding alone".
+                            ca_id: 0,
+                            // Продление не меняет способ продления — он и так работает.
+                            renew_method: None,
+                        },
+                        crate::db::ReplaceGuard::AcmeRenewal,
+                    ).await?;
+
+                    renewal_audit = Some((existing.version, new_version, fingerprint, existing.name.cn.clone()));
                     renew_id
                 } else {
                     let cert_name = if order.include_wildcard {
@@ -176,15 +282,49 @@ pub async fn issue_acme_client_order(
                 };
                 state.db.update_acme_client_order_status(id, "valid", Some(result_cert_id), None).await
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+                // Replace → status → audit, same ordering as
+                // notifier.rs::handle_acme_renewal. Audit fires only after the order
+                // status update above has actually succeeded — otherwise a failed
+                // status update below would still leave a Success audit row on record
+                // for a replacement whose order bookkeeping never completed.
+                if let Some((old_version, new_version, fingerprint, cn)) = renewal_audit {
+                    // Same shape as api::update_certificate's audit call: real actor
+                    // via audit_actor/record_audit, AuditAction::UpdateCertificate,
+                    // detail names the version transition — just labelled as an ACME
+                    // renewal instead of a manual replace.
+                    let (aid, alabel, atype) = crate::api::audit_actor(state, &auth.claims).await;
+                    crate::api::record_audit(
+                        state, aid, alabel, atype, crate::data::enums::AuditAction::UpdateCertificate,
+                        Some("certificate".into()), Some(result_cert_id.to_string()), Some(cn),
+                        crate::data::enums::AuditResult::Success,
+                        Some(format!("ACME renewal: v{old_version} → v{new_version}, fingerprint {fingerprint}")),
+                        None,
+                    ).await;
+                }
+
                 Ok::<_, anyhow::Error>(())
             }.await;
             if let Err(e) = inner {
-                state.db.update_acme_client_order_status(id, "failed", None, Some(e.to_string())).await?;
+                record_order_failure(state, id, &e.to_string()).await;
+                // Отказ по «не продлевает срок» — это конфликт состояния (новый
+                // материал не лучше текущего), а не внутренняя ошибка: 409 с обеими
+                // датами в тексте, чтобы оператор видел, что именно произошло.
+                if let Some(refused) = e.downcast_ref::<RenewalDoesNotExtendExpiry>() {
+                    return Err(ApiError::Conflict(refused.0.clone()));
+                }
+                // Same downcast api::update_certificate performs on replace_certificate's
+                // error (backend/src/api.rs:979-987): the row stopped matching the
+                // AcmeRenewal guard between the order and this write (e.g. revoked
+                // concurrently) is a state conflict, not an internal error — 409, not 500.
+                if e.downcast_ref::<crate::db::CertificateNotReplaceable>().is_some() {
+                    return Err(ApiError::Conflict("certificate state changed and it can no longer be replaced".into()));
+                }
                 return Err(ApiError::Other(e.to_string()));
             }
         }
         Err(e) => {
-            state.db.update_acme_client_order_status(id, "failed", None, Some(e.to_string())).await?;
+            record_order_failure(state, id, &e.to_string()).await;
             return Err(ApiError::Other(e.to_string()));
         }
     }

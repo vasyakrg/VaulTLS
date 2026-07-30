@@ -20,11 +20,37 @@ pub struct Certificate {
     pub ca_id: Option<i64>,
     pub revoked_at: Option<i64>,
     pub acme_provider_id: Option<i64>,
+    /// Номер текущей версии; растёт при каждой замене содержимого.
+    #[serde(default = "default_version")]
+    pub version: i64,
+    /// SHA-256 от DER leaf-сертификата, hex. None у записей, не прошедших бэкфилл.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    /// True только у сертификатов, загруженных файлом — только их можно заменять.
+    #[serde(default)]
+    pub is_imported: bool,
     #[serde(skip)]
     pub data: CertData,
     #[serde(skip)]
     pub password: String
 }
+
+/// Одна запись в истории версий сертификата.
+/// У текущей версии `version_id` = None: она хранится в `user_certificates`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CertificateVersionEntry {
+    pub version: i64,
+    pub version_id: Option<i64>,
+    pub current: bool,
+    pub created_on: i64,
+    pub valid_until: i64,
+    pub serial_hex: Option<String>,
+    pub fingerprint: Option<String>,
+    pub replaced_at: Option<i64>,
+    pub replaced_by: Option<i64>,
+}
+
+fn default_version() -> i64 { 1 }
 
 impl Certificate {
     pub(crate) fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
@@ -50,7 +76,10 @@ impl Certificate {
             renew_method: row.get(8)?,
             ca_id: row.get(9)?,
             revoked_at: row.get(10)?,
-            acme_provider_id: row.get(11)?
+            acme_provider_id: row.get(11)?,
+            version: row.get(12).unwrap_or(1),
+            fingerprint: row.get(13).unwrap_or(None),
+            is_imported: row.get::<_, i64>(14).unwrap_or(0) == 1,
         })
     }
 
@@ -60,6 +89,20 @@ impl Certificate {
             CertData::Pem(ref pem) => { extract_pem_serial_number(pem) }
             CertData::SshBundle(ref ssh) => { extract_ssh_serial_number(ssh, &self.name.to_string()) }
         }
+    }
+
+    /// SHA-256 от DER leaf-сертификата в нижнем регистре hex.
+    pub(crate) fn get_fingerprint(&self) -> Result<String> {
+        use crate::certs::import::{parse_cert, parse_pkcs12};
+        let leaf = match &self.data {
+            CertData::Pkcs12(der) => parse_pkcs12(der, &self.password)?.0,
+            CertData::Pem(pem) => parse_cert(pem)?,
+            CertData::SshBundle(_) => {
+                return Err(anyhow::anyhow!("SSH certificates have no X.509 fingerprint"))
+            }
+        };
+        let digest = leaf.digest(openssl::hash::MessageDigest::sha256())?;
+        Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
     }
 }
 
@@ -132,5 +175,62 @@ pub fn get_password(system_generated_password: bool, cert_password: &Option<Stri
             Some(p) => p.clone(),
             None => String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::certs::import::tests_support::self_signed_ca;
+
+    #[test]
+    fn fingerprint_is_stable_lowercase_sha256_hex() {
+        let (cert, _key) = self_signed_ca("fingerprint-test");
+        let pem = cert.to_pem().unwrap();
+        let c = Certificate {
+            id: 1,
+            name: crate::data::objects::Name::from("fingerprint-test".to_string()),
+            created_on: 0,
+            valid_until: 0,
+            certificate_type: crate::data::enums::CertificateType::TLSServer,
+            user_id: 1,
+            renew_method: crate::data::enums::CertificateRenewMethod::None,
+            ca_id: None,
+            revoked_at: None,
+            acme_provider_id: None,
+            data: crate::data::enums::CertData::Pem(pem),
+            password: String::new(),
+            version: 1,
+            fingerprint: None,
+            is_imported: true,
+        };
+
+        let fp = c.get_fingerprint().unwrap();
+        assert_eq!(fp.len(), 64, "sha256 hex — 64 символа");
+        assert_eq!(fp, fp.to_lowercase());
+        assert!(fp.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert_eq!(fp, c.get_fingerprint().unwrap(), "отпечаток детерминирован");
+    }
+
+    #[test]
+    fn fingerprint_of_ssh_bundle_is_an_error() {
+        let c = Certificate {
+            id: 1,
+            name: crate::data::objects::Name::from("ssh".to_string()),
+            created_on: 0,
+            valid_until: 0,
+            certificate_type: crate::data::enums::CertificateType::SSHServer,
+            user_id: 1,
+            renew_method: crate::data::enums::CertificateRenewMethod::None,
+            ca_id: None,
+            revoked_at: None,
+            acme_provider_id: None,
+            data: crate::data::enums::CertData::SshBundle(vec![1, 2, 3]),
+            password: String::new(),
+            version: 1,
+            fingerprint: None,
+            is_imported: false,
+        };
+        assert!(c.get_fingerprint().is_err());
     }
 }

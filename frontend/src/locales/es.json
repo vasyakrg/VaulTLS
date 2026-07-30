@@ -301,6 +301,27 @@
     "downloadPem": "Descargar paquete PEM",
     "downloadP12": "Descargar PKCS#12"
   },
+  "certVersions": {
+    "update": "Actualizar certificado",
+    "updateTitle": "Actualizar certificado",
+    "updateHint": "Sube un certificado nuevo con el mismo common name. El registro conserva su id; el contenido actual pasa al historial.",
+    "history": "Historial de versiones",
+    "historyTitle": "Historial de versiones",
+    "version": "Versión",
+    "current": "Actual",
+    "fingerprint": "Huella",
+    "replacedAt": "Reemplazada",
+    "replacedBy": "Reemplazada por",
+    "downloadP12": "Descargar .p12",
+    "downloadPem": "Descargar PEM",
+    "showPassword": "Mostrar contraseña",
+    "deleteVersion": "Eliminar versión",
+    "deleteConfirm": "¿Eliminar la versión {version}? Esta acción no se puede deshacer.",
+    "updated": "Actualizado a la versión {version}",
+    "noHistory": "Aún no hay versiones anteriores.",
+    "downloadFailed": "No se pudo descargar esta versión.",
+    "passwordFailed": "No se pudo obtener la contraseña de esta versión."
+  },
   "importCert": {
     "title": "Importar certificado",
     "mode": "Modo de importación",

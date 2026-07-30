@@ -268,6 +268,9 @@ impl TLSCertificateBuilder {
             renew_method: self.renew_method,
             revoked_at: None,
             acme_provider_id: None,
+            version: 1,
+            fingerprint: None,
+            is_imported: false,
         })
     }
 }

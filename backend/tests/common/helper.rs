@@ -1,4 +1,5 @@
 use std::io::{Cursor, Read};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use ssh_key::{Certificate, PrivateKey};
@@ -95,7 +96,12 @@ pub(crate) fn leaf_signed_by_pem(cn: &str, ca_pem: &[u8], ca_key_pem: &[u8]) -> 
 
     let mut builder = X509Builder::new().unwrap();
     builder.set_version(2).unwrap();
-    let serial = BigNum::from_u32(42).unwrap().to_asn1_integer().unwrap();
+    // Each generated leaf must carry a distinct serial — real CAs never reuse one,
+    // and version-history tests rely on the pre-rotation and post-rotation serials
+    // being different so a superseded serial can still be told apart from the current one.
+    static NEXT_LEAF_SERIAL: AtomicU32 = AtomicU32::new(42);
+    let serial_value = NEXT_LEAF_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let serial = BigNum::from_u32(serial_value).unwrap().to_asn1_integer().unwrap();
     builder.set_serial_number(&serial).unwrap();
     builder.set_subject_name(&name).unwrap();
     builder.set_issuer_name(ca.subject_name()).unwrap();
@@ -117,6 +123,92 @@ pub(crate) fn leaf_signed_by_pem(cn: &str, ca_pem: &[u8], ca_key_pem: &[u8]) -> 
     let leaf_pem = leaf_cert.to_pem().unwrap();
     let leaf_key_pem = leaf_key.private_key_to_pem_pkcs8().unwrap();
     (leaf_pem, leaf_key_pem)
+}
+
+/// Generate a leaf cert signed by `ca_pem`/`ca_key_pem` with given CN, with an
+/// explicit validity window instead of the fixed "now .. +90d" one `leaf_signed_by_pem`
+/// hardcodes. Offsets are in days from now and may be negative (past) or zero.
+/// Returns (leaf_pem, leaf_key_pem).
+pub(crate) fn leaf_signed_by_pem_with_validity(
+    cn: &str,
+    ca_pem: &[u8],
+    ca_key_pem: &[u8],
+    not_before_days_offset: i64,
+    not_after_days_offset: i64,
+) -> (Vec<u8>, Vec<u8>) {
+    let ca = openssl::x509::X509::from_pem(ca_pem).unwrap();
+    let ca_key = PKey::private_key_from_pem(ca_key_pem).unwrap();
+
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let ec_key = EcKey::generate(&group).unwrap();
+    let leaf_key = PKey::from_ec_key(ec_key).unwrap();
+
+    let mut name_builder = X509NameBuilder::new().unwrap();
+    name_builder.append_entry_by_text("CN", cn).unwrap();
+    let name = name_builder.build();
+
+    let mut builder = X509Builder::new().unwrap();
+    builder.set_version(2).unwrap();
+    // Each generated leaf must carry a distinct serial — real CAs never reuse one,
+    // and version-history tests rely on the pre-rotation and post-rotation serials
+    // being different so a superseded serial can still be told apart from the current one.
+    static NEXT_LEAF_SERIAL: AtomicU32 = AtomicU32::new(100_000);
+    let serial_value = NEXT_LEAF_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let serial = BigNum::from_u32(serial_value).unwrap().to_asn1_integer().unwrap();
+    builder.set_serial_number(&serial).unwrap();
+    builder.set_subject_name(&name).unwrap();
+    builder.set_issuer_name(ca.subject_name()).unwrap();
+    builder.set_pubkey(&leaf_key).unwrap();
+
+    let now_s = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let not_before = now_s + not_before_days_offset * 86_400;
+    let not_after = now_s + not_after_days_offset * 86_400;
+    builder.set_not_before(&Asn1Time::from_unix(not_before).unwrap()).unwrap();
+    builder.set_not_after(&Asn1Time::from_unix(not_after).unwrap()).unwrap();
+
+    // SKI for the leaf
+    let ski = SubjectKeyIdentifier::new().build(&builder.x509v3_context(Some(&ca), None)).unwrap();
+    builder.append_extension(ski).unwrap();
+    // AKI referencing CA
+    let aki = AuthorityKeyIdentifier::new()
+        .keyid(true)
+        .build(&builder.x509v3_context(Some(&ca), None))
+        .unwrap();
+    builder.append_extension(aki).unwrap();
+    builder.sign(&ca_key, MessageDigest::sha256()).unwrap();
+    let leaf_cert = builder.build();
+
+    let leaf_pem = leaf_cert.to_pem().unwrap();
+    let leaf_key_pem = leaf_key.private_key_to_pem_pkcs8().unwrap();
+    (leaf_pem, leaf_key_pem)
+}
+
+/// Same as `multipart_import_leaf`, plus arbitrary extra text fields
+/// (`renew_method`, `force`, ...). Used by the PUT /certificates/<id> tests.
+pub(crate) fn multipart_import_leaf_with_fields(
+    boundary: &str,
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    chain_pem: &[u8],
+    user_id: i64,
+    extra: &[(&str, &str)],
+) -> Vec<u8> {
+    let mut body = multipart_import_leaf(boundary, cert_pem, key_pem, chain_pem, user_id);
+    // Drop the closing delimiter, append the extra fields, close again.
+    let closing = format!("--{}--\r\n", boundary);
+    let keep = body.len() - closing.len();
+    body.truncate(keep);
+    for (name, value) in extra {
+        body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n").as_bytes(),
+        );
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(closing.as_bytes());
+    body
 }
 
 /// Build a multipart body for POST /certificates/import

@@ -60,6 +60,7 @@ impl OpenApiResponderInner for ApiError {
             (401, "Unauthorized - Authentication failed or invalid credentials"),
             (403, "Forbidden - User doesn't have required permissions"),
             (404, "Not Found - Resource not found"),
+            (409, "Conflict - the request conflicts with the current state of the resource"),
             (500, "Internal Server Error - Database error, OpenSSL error, or other internal errors")
         ];
 

@@ -566,6 +566,11 @@ pub struct ImportCertForm<'r> {
     pub cert_type: Option<u8>,
     /// CertificateRenewMethod as u8: 0=None, 1=Notify, 2=Renew, 3=RenewAndNotify
     pub renew_method: Option<u8>,
+    /// PUT /certificates/<id> only: allow a replacement that does NOT extend the
+    /// expiry (deliberate downgrade, e.g. rotating a compromised one-year cert to a
+    /// fresh 90-day one). Local admins only; ignored for everyone else. Never
+    /// bypasses the expired / not-yet-valid checks.
+    pub force: Option<bool>,
 }
 
 impl<'r> rocket_okapi::JsonSchema for ImportCertForm<'r> {
@@ -741,7 +746,7 @@ pub(crate) async fn import_certificate(
     };
     let valid_until = asn1_to_unix_ms(leaf.not_after())?;
     let created_on = asn1_to_unix_ms(leaf.not_before())?;
-    let cert = Certificate {
+    let mut cert = Certificate {
         id: -1,
         name: crate::data::objects::Name::from(cn_from_cert(&leaf)),
         created_on,
@@ -754,9 +759,283 @@ pub(crate) async fn import_certificate(
         acme_provider_id: None,
         data: stored,
         password: form.password.clone().unwrap_or_default(),
+        version: 1,
+        fingerprint: None,
+        is_imported: true,
     };
+    // Best-effort: if the fingerprint can't be computed right now, leave it None —
+    // the startup backfill (later task) will fill it in rather than failing the import.
+    cert.fingerprint = cert.get_fingerprint().ok();
     let saved = state.db.insert_user_cert(cert).await?;
+
+    // Best-effort: populate the serial so /certificates/validate recognizes this cert
+    // immediately, without waiting on the startup backfill.
+    if let Ok(serial) = saved.get_serial() {
+        let serial_hex: String = serial.iter().map(|b| format!("{b:02x}")).collect();
+        if !serial_hex.is_empty() {
+            let _ = state.db.set_cert_serial(saved.id, serial_hex).await;
+        }
+    }
+
     Ok(Json(saved))
+}
+
+#[openapi(tag = "Certificates")]
+#[put("/certificates/<id>", data = "<form>")]
+/// Replace the contents of an imported certificate, keeping its id.
+/// The previous contents move into the version history.
+pub(crate) async fn update_certificate(
+    state: &State<AppState>,
+    id: i64,
+    form: rocket::form::Form<ImportCertForm<'_>>,
+    authentication: Authenticated,
+) -> Result<Json<Certificate>, ApiError> {
+    use crate::certs::import::{parse_cert, parse_private_key, parse_pkcs12, parse_pem_bundle, find_issuing_ca, verify_signed_by};
+
+    let existing = state.db.get_user_cert_by_id(id).await
+        .map_err(|_| ApiError::NotFound(None))?;
+
+    // Авторизация: владелец или локальный админ; сервис — только со cert:issue
+    // и только на сертификатах своего владельца.
+    if authentication.claims.is_service() {
+        if !authentication.claims.has_scope("cert:issue") {
+            return Err(ApiError::Forbidden(None));
+        }
+        if existing.user_id != authentication.claims.id {
+            return Err(ApiError::Forbidden(None));
+        }
+    } else if !authentication.claims.is_local_admin() && existing.user_id != authentication.claims.id {
+        return Err(ApiError::Forbidden(None));
+    }
+    // Владелец записи не меняется: UPDATE в replace_certificate не трогает user_id.
+
+    // Что вообще подлежит замене
+    if existing.acme_provider_id.is_some() {
+        return Err(ApiError::BadRequest("ACME certificates are renewed by the provider".into()));
+    }
+    if !existing.is_imported {
+        return Err(ApiError::BadRequest("certificate is not importable".into()));
+    }
+    if existing.revoked_at.is_some() {
+        return Err(ApiError::BadRequest("revoked certificate cannot be updated".into()));
+    }
+    if !matches!(existing.certificate_type, CertificateType::TLSClient | CertificateType::TLSServer) {
+        return Err(ApiError::BadRequest("only TLS certificates can be replaced".into()));
+    }
+
+    // 1) Разобрать присланный материал — та же логика, что в import_certificate.
+    let (leaf, chain, stored): (openssl::x509::X509, Vec<openssl::x509::X509>, CertData) =
+        if let Some(p12_file) = &form.p12 {
+            let bytes = read_tempfile(p12_file).await?;
+            let pwd = form.password.clone().unwrap_or_default();
+            let (leaf, _key, chain) = parse_pkcs12(&bytes, &pwd)
+                .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            (leaf, chain, CertData::Pkcs12(bytes))
+        } else {
+            let cert_f = form.cert.as_ref()
+                .ok_or_else(|| ApiError::BadRequest("cert or p12 required".into()))?;
+            let key_f = form.key.as_ref()
+                .ok_or_else(|| ApiError::BadRequest("key required with cert".into()))?;
+            let cert_bytes = read_tempfile(cert_f).await?;
+            let key_bytes = read_tempfile(key_f).await?;
+            let cert_certs = parse_pem_bundle(&cert_bytes).unwrap_or_default();
+            let leaf = match cert_certs.first() {
+                Some(c) => c.clone(),
+                None => parse_cert(&cert_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?,
+            };
+            let key = parse_private_key(&key_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+            let mut chain: Vec<openssl::x509::X509> = cert_certs.into_iter().skip(1).collect();
+            if let Some(cf) = &form.chain {
+                let extra = parse_pem_bundle(&read_tempfile(cf).await?)
+                    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+                chain.extend(extra);
+            }
+            let pwd = form.password.clone().unwrap_or_default();
+            let mut ca_stack = openssl::stack::Stack::new()?;
+            for c in &chain {
+                ca_stack.push(c.clone())?;
+            }
+            let p12 = openssl::pkcs12::Pkcs12::builder()
+                .name("imported")
+                .ca(ca_stack)
+                .cert(&leaf)
+                .pkey(&key)
+                .build2(&pwd)?;
+            (leaf, chain, CertData::Pkcs12(p12.to_der()?))
+        };
+
+    // 2) CN обязан совпадать.
+    let new_cn = cn_from_cert(&leaf);
+    if new_cn != existing.name.cn {
+        return Err(ApiError::BadRequest(format!(
+            "CN mismatch: certificate has '{}', record expects '{}'", new_cn, existing.name.cn
+        )));
+    }
+
+    // 2a) Окно валидности нового листа: не протух, уже вступил в силу и является
+    //     улучшением по сравнению с тем, что заменяет — иначе агент задеплоит
+    //     на следующем поллинге неработающий сертификат.
+    fn format_ts(ms: i64) -> Result<String, ApiError> {
+        chrono::DateTime::from_timestamp_millis(ms)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .ok_or_else(|| ApiError::BadRequest("certificate has an unrenderable timestamp".into()))
+    }
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let new_not_before = asn1_to_unix_ms(leaf.not_before())?;
+    let new_not_after = asn1_to_unix_ms(leaf.not_after())?;
+
+    if new_not_after <= now {
+        return Err(ApiError::BadRequest(format!(
+            "certificate expired at {}, it cannot replace a live one (current time {})",
+            format_ts(new_not_after)?, format_ts(now)?
+        )));
+    }
+    if new_not_before > now {
+        return Err(ApiError::BadRequest(format!(
+            "certificate only becomes valid at {} (current time {})",
+            format_ts(new_not_before)?, format_ts(now)?
+        )));
+    }
+    // `force` снимает ТОЛЬКО требование продлить срок — сознательный «даунгрейд»
+    // (например, ротация скомпрометированного годового сертификата свежим
+    // 90-дневным: строка не отозвана, другого пути заменить её на месте нет).
+    // Проверки «просрочен» и «ещё не вступил в силу» выше абсолютны для всех:
+    // такой материал ломает сервис немедленно, кто бы его ни присылал.
+    // Право на обход — только у локального админа; всем остальным (владелец,
+    // OIDC-админ, сервисный токен) force игнорируется и отказ остаётся обычным.
+    let force_no_improvement = form.force.unwrap_or(false)
+        && authentication.claims.is_local_admin();
+    if new_not_after <= existing.valid_until && !force_no_improvement {
+        return Err(ApiError::BadRequest(format!(
+            "certificate expires at {}, which is no later than the current one's expiry at {}; replacement must extend validity",
+            format_ts(new_not_after)?, format_ts(existing.valid_until)?
+        )));
+    }
+    let forced_downgrade = force_no_improvement && new_not_after <= existing.valid_until;
+
+    // Способ продления: если оператор прислал его явно — он и становится новым.
+    // Если нет — сохраняем прежний, НО `None` (0) перевзводим в `Notify` (1):
+    // замена — ровно тот момент, когда на строке снова появился сертификат,
+    // о котором стоит предупреждать. Иначе импортированный сертификат, уже
+    // отдавший своё единственное предупреждение (watch_expiry гасит renew_method
+    // после уведомления), навсегда остаётся немым — а API-пути сменить
+    // renew_method у существующей записи нет вовсе.
+    let renew_method = match form.renew_method {
+        Some(v) => CertificateRenewMethod::try_from(v)
+            .map_err(|_| ApiError::BadRequest(format!("invalid renew_method: {v}")))?,
+        None if existing.renew_method == CertificateRenewMethod::None => CertificateRenewMethod::Notify,
+        None => existing.renew_method,
+    };
+
+    // 3) Цепочка: сначала пробуем прежний CA записи, иначе ищем издателя в цепочке
+    //    — ровно та же логика, что в import_certificate (api.rs:695-728).
+    let same_ca = match existing.ca_id {
+        Some(existing_ca_id) => match state.db.get_ca_by_id(existing_ca_id).await {
+            Ok(ca) if !ca.cert.is_empty() => parse_cert(&ca.cert)
+                .map(|c| verify_signed_by(&leaf, &c))
+                .unwrap_or(false),
+            _ => false,
+        },
+        None => false,
+    };
+
+    let ca_id = if same_ca {
+        existing.ca_id.unwrap()
+    } else {
+        let issuer = find_issuing_ca(&leaf, &chain)
+            .ok_or_else(|| ApiError::BadRequest("could not find issuing CA in chain".into()))?;
+        if !verify_signed_by(&leaf, &issuer) {
+            return Err(ApiError::BadRequest("leaf is not signed by the provided CA chain".into()));
+        }
+        let issuer_der = issuer.to_der()?;
+        match state.db.find_imported_ca_by_cert(&issuer_der).await? {
+            Some(found) => found.id,
+            None => {
+                let ca = CA {
+                    id: -1,
+                    name: crate::data::objects::Name::from(cn_from_cert(&issuer)),
+                    created_on: asn1_to_unix_ms(issuer.not_before())?,
+                    valid_until: asn1_to_unix_ms(issuer.not_after())?,
+                    ca_type: CAType::TLS,
+                    cert: issuer_der,
+                    key: Vec::new(),
+                    crl_number: 0,
+                    is_imported: true,
+                };
+                state.db.insert_ca(ca).await?.id
+            }
+        }
+    };
+
+    // 4) Транзакционная замена.
+    let password = form.password.clone().unwrap_or_default();
+    let candidate = Certificate {
+        id,
+        name: existing.name.clone(),
+        created_on: asn1_to_unix_ms(leaf.not_before())?,
+        valid_until: asn1_to_unix_ms(leaf.not_after())?,
+        certificate_type: existing.certificate_type,
+        user_id: existing.user_id,
+        renew_method,
+        ca_id: Some(ca_id),
+        revoked_at: None,
+        acme_provider_id: None,
+        data: stored,
+        password: password.clone(),
+        version: existing.version,
+        fingerprint: None,
+        is_imported: true,
+    };
+    let fingerprint = candidate.get_fingerprint()
+        .map_err(|e| ApiError::BadRequest(format!("cannot compute fingerprint: {e}")))?;
+    let serial_hex = candidate.get_serial().ok()
+        .map(|s| s.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
+    let new_version = state.db.replace_certificate(
+        id,
+        Some(authentication.claims.id),
+        crate::db::ReplaceCertificateInput {
+            data: candidate.data.as_bytes().to_vec(),
+            password,
+            created_on: candidate.created_on,
+            valid_until: candidate.valid_until,
+            serial_hex,
+            fingerprint: fingerprint.clone(),
+            ca_id,
+            // Пишется той же транзакцией, что и содержимое: перевзведение
+            // уведомлений не должно «потеряться», если замена откатится.
+            renew_method: Some(renew_method),
+        },
+        crate::db::ReplaceGuard::ImportedManual,
+    ).await.map_err(|e| {
+        // Строку успели отозвать (или иначе вывести из-под замены) между проверками
+        // выше и транзакцией — это конфликт состояния, а не внутренняя ошибка.
+        if e.downcast_ref::<crate::db::CertificateNotReplaceable>().is_some() {
+            ApiError::Conflict("certificate state changed and it can no longer be replaced".into())
+        } else {
+            ApiError::from(e)
+        }
+    })?;
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    // Обход проверки на продление срока обязан быть виден в аудите: иначе
+    // сокращение срока действия выглядит как обычная замена.
+    let forced_note = if forced_downgrade {
+        format!(
+            ", FORCED validity downgrade by local admin: new expiry {} is not later than previous {}",
+            format_ts(candidate.valid_until)?, format_ts(existing.valid_until)?
+        )
+    } else {
+        String::new()
+    };
+    record_audit(state, aid, alabel, atype, AuditAction::UpdateCertificate,
+        Some("certificate".into()), Some(id.to_string()), Some(existing.name.cn.clone()),
+        AuditResult::Success,
+        Some(format!("v{} → v{}, fingerprint {}{}", existing.version, new_version, fingerprint, forced_note)),
+        None).await;
+
+    Ok(Json(state.db.get_user_cert_by_id(id).await?))
 }
 
 #[openapi(tag = "Certificates")]
@@ -1125,14 +1404,71 @@ async fn can_access_cert_secret(state: &State<AppState>, claims: &Claims, cert_o
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/<id>/download?<download_format>")]
+#[get("/certificates/<id>/versions")]
+/// List all versions of a certificate, newest first. The current version has
+/// `version_id: null` — it lives in the certificate record itself.
+pub(crate) async fn list_certificate_versions(
+    state: &State<AppState>,
+    id: i64,
+    authentication: Authenticated,
+) -> Result<Json<Vec<crate::certs::common::CertificateVersionEntry>>, ApiError> {
+    if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
+        return Err(ApiError::Forbidden(None));
+    }
+    let certificate = state.db.get_user_cert_by_id(id).await
+        .map_err(|_| ApiError::NotFound(None))?;
+    if !can_access_cert_secret(state, &authentication.claims, certificate.user_id, id).await? {
+        return Err(ApiError::Forbidden(None));
+    }
+    Ok(Json(state.db.list_certificate_versions(id).await?))
+}
+
+#[openapi(tag = "Certificates")]
+#[delete("/certificates/<id>/versions/<version>")]
+/// Permanently delete one historical version. The current version cannot be deleted.
+pub(crate) async fn delete_certificate_version(
+    state: &State<AppState>,
+    id: i64,
+    version: i64,
+    authentication: AuthenticatedLocalAdmin,
+) -> Result<(), ApiError> {
+    let certificate = state.db.get_user_cert_by_id(id).await
+        .map_err(|_| ApiError::NotFound(None))?;
+    if certificate.version == version {
+        return Err(ApiError::BadRequest("current version cannot be deleted".into()));
+    }
+    // История отозванного сертификата — это и есть источник его серийников для CRL
+    // и для /certificates/validate. Удалить старую версию значит снять её серийник
+    // с отзыва: скомпрометированный сертификат, возможно ещё живой по сроку, снова
+    // начнёт приниматься. Отзыв необратим — история отозванной строки тоже.
+    if certificate.revoked_at.is_some() {
+        return Err(ApiError::BadRequest(
+            "certificate is revoked: its version history is what keeps the superseded serials on the CRL, so it cannot be deleted".into()
+        ));
+    }
+    if !state.db.delete_certificate_version(id, version).await? {
+        return Err(ApiError::NotFound(None));
+    }
+
+    let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    record_audit(state, aid, alabel, atype, AuditAction::DeleteCertificateVersion,
+        Some("certificate".into()), Some(id.to_string()), Some(certificate.name.cn.clone()),
+        AuditResult::Success, Some(format!("version {version}")), None).await;
+
+    Ok(())
+}
+
+#[openapi(tag = "Certificates")]
+#[get("/certificates/<id>/download?<download_format>&<version>")]
 /// Download a user-owned certificate. Requires authentication.
 /// Use `?format=pem` to download TLS certs as a PEM zip bundle (cert.pem, privkey.pem, chain.pem, fullchain.pem).
+/// Use `?version=N` to download a superseded version from history instead of the current one.
 pub(crate) async fn download_certificate(
     state: &State<AppState>,
     id: i64,
     authentication: Authenticated,
     download_format: Option<String>,
+    version: Option<i64>,
 ) -> Result<DownloadResponse, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
@@ -1140,6 +1476,25 @@ pub(crate) async fn download_certificate(
     let certificate = state.db.get_user_cert_by_id(id).await?;
     if !can_access_cert_secret(state, &authentication.claims, certificate.user_id, id).await? {
         return Err(ApiError::Forbidden(None));
+    }
+
+    // По умолчанию отдаём текущую версию; ?version=N достаёт её из истории.
+    // Номер отданной версии попадает в аудит: выдача вытесненной версии обязана
+    // отличаться в журнале от рядовой выгрузки текущей.
+    let served_version = version.unwrap_or(certificate.version);
+    let mut certificate = certificate;
+    if let Some(v) = version {
+        let stored = state.db.get_certificate_version(id, v).await?
+            .ok_or(ApiError::NotFound(None))?;
+        certificate.data = match certificate.certificate_type {
+            CertificateType::SSHClient | CertificateType::SSHServer => CertData::SshBundle(stored.data),
+            _ => if stored.data.starts_with(b"-----BEGIN CERTIFICATE-----") {
+                CertData::Pem(stored.data)
+            } else {
+                CertData::Pkcs12(stored.data)
+            },
+        };
+        certificate.password = stored.password;
     }
 
     // PEM zip path: only for TLS certs when ?download_format=pem
@@ -1192,7 +1547,7 @@ pub(crate) async fn download_certificate(
                 let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
                 record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
                     Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-                    Some(download_format.clone().unwrap_or_else(|| "pkcs12".into())), None).await;
+                    Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), None).await;
 
                 return Ok(DownloadResponse::new_typed(
                     zip_bytes,
@@ -1212,30 +1567,42 @@ pub(crate) async fn download_certificate(
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
         Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-        Some(download_format.clone().unwrap_or_else(|| "pkcs12".into())), None).await;
+        Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), None).await;
 
     Ok(DownloadResponse::new(certificate.data.into_bytes(), &file_name))
 }
 
 #[openapi(tag = "Certificates")]
-#[get("/certificates/<id>/password")]
+#[get("/certificates/<id>/password?<version>")]
 /// Fetch the password for a user-owned certificate. Requires authentication.
+/// Use `?version=N` to fetch the password for a superseded version from history.
 pub(crate) async fn fetch_certificate_password(
     state: &State<AppState>,
     id: i64,
-    authentication: Authenticated
+    authentication: Authenticated,
+    version: Option<i64>,
 ) -> Result<Json<String>, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
     }
-    let (user_id, password) = state.db.get_user_cert_password(id).await?;
+    let (user_id, password, current_version) = state.db.get_user_cert_password(id).await?;
     if !can_access_cert_secret(state, &authentication.claims, user_id, id).await? {
         return Err(ApiError::Forbidden(None));
     }
 
+    let password = match version {
+        None => password,
+        Some(v) => state.db.get_certificate_version(id, v).await?
+            .ok_or(ApiError::NotFound(None))?
+            .password,
+    };
+    // Ключ вытесненной версии обязан отличаться в журнале от рядовой выдачи текущей.
+    let served_version = version.unwrap_or(current_version);
+
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::FetchCertificatePassword,
-        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
+        Some(format!("v{served_version}")), None).await;
 
     Ok(Json(password))
 }
@@ -1282,6 +1649,62 @@ pub(crate) async fn delete_user_cert(
     Ok(())
 }
 
+/// Decodes a lowercase-hex serial (as stored in `serial_hex` columns) into raw bytes.
+/// Total: never panics, including on non-ASCII input. Works over the byte slice rather
+/// than slicing the `&str` by character index — a naive `&s[i..i+2]` would panic on a
+/// non-ASCII string whose even byte length still passes the length check but cuts a
+/// UTF-8 codepoint in half (e.g. `"aäb"`, 4 bytes). Malformed input, ASCII or not,
+/// returns `None` — a corrupt historical serial must not take down CRL generation for
+/// every other certificate.
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() % 2 != 0 {
+        return None;
+    }
+    bytes
+        .chunks_exact(2)
+        .map(|pair| -> Option<u8> {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some(((hi << 4) | lo) as u8)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod hex_decode_tests {
+    use super::hex_decode;
+
+    #[test]
+    fn decodes_valid_lowercase_hex() {
+        assert_eq!(hex_decode("0a2f"), Some(vec![0x0a, 0x2f]));
+    }
+
+    #[test]
+    fn rejects_odd_length() {
+        assert_eq!(hex_decode("abc"), None);
+    }
+
+    #[test]
+    fn rejects_empty_input() {
+        assert_eq!(hex_decode(""), None);
+    }
+
+    #[test]
+    fn rejects_non_hex_ascii() {
+        assert_eq!(hex_decode("zz11"), None);
+    }
+
+    /// The regression this guards: a naive `&s[i..i+2]` byte-index slice panics here
+    /// because 'ä' is a 2-byte UTF-8 codepoint — the even *byte* length ("aäb" is 4
+    /// bytes) passes the length check, but slicing at byte offset 2 lands mid-codepoint.
+    /// Iterating over bytes instead of str-slicing must return None, not panic.
+    #[test]
+    fn rejects_non_ascii_without_panicking() {
+        assert_eq!(hex_decode("aäb"), None);
+    }
+}
+
 async fn create_crl_params(state: &State<AppState>, ca: &CA) -> Result<(Vec<(Vec<u8>, i64)>, i64), ApiError>{
     assert_eq!(ca.ca_type, CAType::TLS);
 
@@ -1293,6 +1716,19 @@ async fn create_crl_params(state: &State<AppState>, ca: &CA) -> Result<(Vec<(Vec
             .map_err(|_| ApiError::Other("Could not retrieve serial number from certificate to create CRL".to_string()))?;
 
         revoked_params.push((serial, cert.revoked_at.unwrap_or(0)));
+    }
+
+    // Renewal replaces the current row's contents in place before expiry; if the
+    // certificate is later revoked, the serial it wore before that last renewal is
+    // still inside its own validity window and must show up on the CRL too, or a
+    // client that cached it keeps treating it as valid (RFC 5280).
+    let historical = state.db.get_revoked_history_serials_for_ca(ca.id).await
+        .map_err(|e| ApiError::Other(e.to_string()))?;
+    for (serial_hex, revoked_at) in historical {
+        match hex_decode(&serial_hex) {
+            Some(bytes) => revoked_params.push((bytes, revoked_at)),
+            None => tracing::warn!(serial_hex = %serial_hex, ca_id = ca.id, "skipping malformed historical serial while building CRL"),
+        }
     }
 
     let crl_next_update_hours = state.settings.get_crl_next_update_hours();
@@ -1610,6 +2046,7 @@ pub(crate) async fn validate_certificate(
             not_after: None,
             revoked_at: None,
             ca_id: None,
+            superseded: false,
         })),
         Some(row) => {
             let now = chrono::Utc::now().timestamp_millis();
@@ -1621,6 +2058,7 @@ pub(crate) async fn validate_certificate(
                 not_after: Some(row.valid_until),
                 revoked_at: row.revoked_at,
                 ca_id: row.ca_id,
+                superseded: row.superseded,
             }))
         }
     }
