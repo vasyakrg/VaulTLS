@@ -179,10 +179,13 @@ ReadWritePaths=/etc/ssl/vaultls /etc/vaultls -/usr/local/share/ca-certificates -
 ```
 
 The four trust-store paths are prefixed with `-` so a host that lacks them (e.g. a
-Debian box has no `/etc/pki/...`) still starts; they are only used when
-`ca_trust.enabled: true` (see [System trust store](#system-trust-store-optional)).
+Debian box has no `/etc/pki/...`) still starts; they are listed unconditionally,
+whether or not `ca_trust.enabled` is set (see
+[System trust store](#system-trust-store-optional)).
 
-Any `out_dir` outside `/etc/ssl/vaultls` will fail to write at runtime. To allow additional paths, create a drop-in override:
+Any `out_dir` outside `/etc/ssl/vaultls` will fail to write at runtime. The same
+applies to a custom `ca_trust.anchor_dir` under `/usr` or `/etc` that isn't one
+of the four paths listed above. To allow either, create a drop-in override:
 
 ```bash
 sudo systemctl edit vaultls-agent
@@ -231,15 +234,21 @@ ca_trust:
 
 The CAs come from the server's public `GET /api/certificates/ca/bundle`, so the
 service account needs no extra scope. Each CA is written as its own file named
-`vaultls-<cn>-<fingerprint>.crt`, and the agent records what it owns in
-`/etc/ssl/vaultls/ca-trust.json`. Only files listed there are ever removed —
-anchors placed by anything else are left alone. The check runs on every startup
-and on every scheduled cycle, so a rotated CA is picked up even when no
-certificate changed.
+`vaultls-<slug of CN>-<first 8 hex chars of the SHA-256 fingerprint>`, with a
+`.crt` extension (Debian) or `.pem` extension (RHEL/anchor_dir under
+`/etc/pki/`) — e.g. `vaultls-vaultls-root-ca-1a2b3c4d.crt`. The agent records
+what it owns in `/etc/ssl/vaultls/ca-trust.json`. Only files listed there are
+ever removed — anchors placed by anything else are left alone. The check runs
+on every startup and on every scheduled cycle, so a rotated CA is picked up
+even when no certificate changed.
 
 Setting `enabled: false` later does **not** remove already-installed CAs:
 dropping host trust is an explicit operator action. `apt purge vaultls-agent`
-removes them and refreshes the trust store.
+removes them and refreshes the trust store — but only for the two standard
+anchor directories (`/usr/local/share/ca-certificates`,
+`/etc/pki/ca-trust/source/anchors`); the purge script does not read
+`anchor_dir` from the config, so with a custom `anchor_dir` the CAs remain
+trusted on the host after purge and must be removed manually.
 
 Metrics: `vaultls_agent_ca_trust_certs`,
 `vaultls_agent_ca_trust_last_sync_timestamp_seconds`,
