@@ -121,9 +121,16 @@ type Result struct {
    bundle. Удаляются **только** пути из состояния — чужие анкоры в каталоге не
    трогаются никогда. Удаление обязательно: иначе выведенный из обращения CA
    остаётся доверенным вечно.
-8. Состояние записывается атомарно (`0600`) **до** запуска `update_command`:
-   упавшая команда не должна приводить к потере учёта уже разложенных файлов.
+8. Состояние записывается атомарно (`0600`) **до** запуска `update_command`, с
+   флагом `pending_update: true`: упавшая команда не должна приводить к потере
+   учёта уже разложенных файлов.
 9. `r.Run(ctx, cfg.UpdateCommand)` — один прогон на весь набор.
+10. При успехе состояние перезаписывается с `pending_update: false` и свежим
+    `last_sync`. Флаг обязателен: без него упавшая команда оставила бы агента в
+    состоянии «всё сделано», и доверие не применилось бы никогда — шаг 5 счёл
+    бы набор совпавшим и вышел бы без повторного запуска команды.
+    Соответственно, `pending_update: true` в прочитанном состоянии сам по себе
+    делает прогон необходимым.
 
 ### 4.2 Состояние
 
@@ -133,6 +140,7 @@ type Result struct {
 ```json
 {
   "certs": { "<sha256-hex>": "vaultls-vaultls-root-ca-1a2b3c4d.crt" },
+  "pending_update": false,
   "last_sync": 1753848000000
 }
 ```
@@ -143,14 +151,16 @@ type Result struct {
 
 ## 5. Точка вызова
 
-`app.ReconcileAll` — один раз в начале, до цикла по доменам:
+Новая функция `app.SyncCATrust(ctx, cfg, fetcher, m, log)`, вызываемая из `Run`
+и `RunOnce` непосредственно перед `ReconcileAll`:
 
 ```go
-if cfg.CATrust.Enabled {
-    res, err := catrust.Sync(ctx, api, runner, cfg.CATrust, caTrustStateDir)
-    ...
-}
+func SyncCATrust(ctx context.Context, cfg *config.Config, f catrust.Fetcher, m *metrics.Metrics, log *slog.Logger)
 ```
+
+Отдельная функция, а не расширение `ReconcileAll`: у последней уже есть тест на
+изоляцию сбоев по доменам, и её сигнатура не должна тянуть за собой сущности
+доверенного хранилища.
 
 Это покрывает оба требования задачи разом:
 
@@ -227,8 +237,9 @@ fake-`Runner`, считающем вызовы:
    восстанавливает файл и зовёт `Runner` (проверка шага 5 алгоритма).
 5. Чужой файл `other.crt` в каталоге переживает все прогоны.
 6. Битый PEM → ошибка, каталог и состояние не изменились.
-7. `Runner` вернул ошибку → `Sync` возвращает ошибку, но состояние уже
-   записано (следующий прогон не переразложит файлы, а лишь повторит команду).
+7. `Runner` вернул ошибку → `Sync` возвращает ошибку, состояние записано с
+   `pending_update: true`; следующий прогон с тем же bundle снова вызывает
+   `Runner` и по успеху снимает флаг.
 
 `internal/config/load_test.go` — автодетект anchor_dir, ошибка при
 `enabled: true` без детекта и без override, обратная совместимость конфига без
@@ -250,7 +261,7 @@ fake-`Runner`, считающем вызовы:
 | `internal/config/load.go` | автодетект + валидация |
 | `internal/vaultls/client.go` | метод `CABundle` |
 | `internal/metrics/metrics.go` | три метрики + сеттеры |
-| `internal/app/app.go` | вызов `Sync` в `ReconcileAll` |
+| `internal/app/app.go` | `SyncCATrust` + вызов из `Run`/`RunOnce` |
 | `internal/wizard/wizard.go` | поле `CATrust`, рендер секции |
 | `cmd/vaultls-agent/setup.go` | флаг `--ca-trust` |
 | `packaging/systemd/vaultls-agent.service` | `ReadWritePaths` |
