@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/vasyakrg/vaultls-agent/internal/catrust"
 	"github.com/vasyakrg/vaultls-agent/internal/config"
 	"github.com/vasyakrg/vaultls-agent/internal/metrics"
 	"github.com/vasyakrg/vaultls-agent/internal/reconcile"
@@ -23,6 +25,37 @@ func ReconcileAll(ctx context.Context, cfg *config.Config, r *reconcile.Reconcil
 		} else {
 			log.Info("reconcile ok", "domain", d.Name, "cert_id", d.CertID)
 		}
+	}
+}
+
+// caTrustStateDir holds the record of anchors the agent owns. It lives in the
+// directory postinstall already creates and the unit already allows writing to.
+const caTrustStateDir = "/etc/ssl/vaultls"
+
+// SyncCATrust keeps the VaulTLS CAs present in the host trust store. Failures
+// are logged and counted but never propagate: an unreachable CA endpoint must
+// not stop certificates from being deployed.
+func SyncCATrust(ctx context.Context, cfg *config.Config, f catrust.Fetcher, m *metrics.Metrics, log *slog.Logger) {
+	if !cfg.CATrust.Enabled {
+		return
+	}
+	res, err := catrust.Sync(ctx, f, catrust.ShellRunner{}, cfg.CATrust, caTrustStateDir, time.Now)
+	if err != nil {
+		stage := string(catrust.StageUpdate)
+		var se *catrust.Error
+		if errors.As(err, &se) {
+			stage = string(se.Stage)
+		}
+		m.IncCATrustError(stage)
+		log.Error("ca trust sync failed", "stage", stage, "err", err)
+		return
+	}
+	m.SetCATrustCerts(float64(res.Installed))
+	m.MarkCATrustSync(float64(time.Now().Unix()))
+	if res.Changed {
+		log.Info("ca trust store updated", "certs", res.Installed, "anchor_dir", cfg.CATrust.AnchorDir)
+	} else {
+		log.Debug("ca trust store already current", "certs", res.Installed)
 	}
 }
 
@@ -80,8 +113,10 @@ func Run(ctx context.Context, configPath, githubAPIBase string) error {
 	}()
 
 	// Initial reconcile, then scheduled loop.
+	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
 	return scheduler.Run(ctx, cfg.Schedule, cfg.Jitter, func(c context.Context) {
+		SyncCATrust(c, cfg, api, m, log)
 		ReconcileAll(c, cfg, r, log)
 	})
 }
@@ -98,6 +133,7 @@ func RunOnce(ctx context.Context, configPath string) error {
 	m := metrics.New()
 	api := vaultls.New(cfg.Server.URL, cfg.Server.ClientID, cfg.Server.Secret, cfg.Server.InsecureSkipVerify)
 	r := reconcile.New(api, m, time.Now)
+	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
 	return nil
 }
