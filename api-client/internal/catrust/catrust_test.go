@@ -3,6 +3,7 @@ package catrust
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,55 +203,107 @@ func TestSyncRejectsGarbageWithoutTouchingDisk(t *testing.T) {
 	}
 }
 
-// A successful write must not leave a "*.tmp" leftover: Debian's
-// update-ca-certificates ignores it (globs only *.crt), but RHEL's p11-kit
-// reads every file under source/anchors and would trust a half-written cert.
-func TestWriteAnchorLeavesNoTrustedLeftover(t *testing.T) {
+// occupy replaces path with a non-empty directory, so os.WriteFile, os.Rename
+// and os.Remove all refuse to work through it. It is the injection used to
+// provoke real write/rename/remove failures inside Sync and writeAnchor.
+func occupy(t *testing.T, path string) {
+	t.Helper()
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "occupied"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A crash between writeAnchor's os.WriteFile and its os.Rename must not leave
+// behind a file the platform trust tooling will enumerate. Debian's
+// update-ca-certificates collects local anchors with
+//
+//	find -L "$LOCALCERTSDIR" -type f -name '*.crt'
+//
+// which matches dot-prefixed names perfectly well, so a leading dot buys
+// nothing there: what keeps the leftover out of its view is the name not
+// ending in the anchor extension. The failure is provoked for real (the rename
+// target is occupied by a non-empty directory) so the assertion is made about
+// the name writeAnchor actually used, not one the test re-derived.
+func TestWriteAnchorCrashLeftoverIsInvisibleToTrustTooling(t *testing.T) {
 	dir := t.TempDir()
 	anchors, err := ParseBundle(selfSigned(t, "Root A"), ".crt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := anchors[0]
-	if err := writeAnchor(dir, a); err != nil {
-		t.Fatal(err)
+	occupy(t, filepath.Join(dir, a.FileName))
+
+	if err := writeAnchor(dir, a); err == nil {
+		t.Fatal("test setup: expected the rename onto an occupied path to fail")
 	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != a.FileName {
-		t.Fatalf("anchor dir = %v, want exactly [%s]", entries, a.FileName)
+	var leftovers []string
+	for _, e := range entries {
+		if e.Name() == a.FileName {
+			continue // the blocker directory
+		}
+		leftovers = append(leftovers, e.Name())
+	}
+	if len(leftovers) != 1 {
+		t.Fatalf("anchor dir leftovers = %v, want exactly the half-written temp file", leftovers)
+	}
+	name := leftovers[0]
+	for _, ext := range []string{".crt", ".pem"} {
+		if strings.Contains(name, ext) {
+			t.Fatalf("crash leftover %q carries %q: `find -name '*%s'` and p11-kit both read it", name, ext, ext)
+		}
+		if ok, _ := filepath.Match("*"+ext, name); ok {
+			t.Fatalf("crash leftover %q matches update-ca-certificates' `-name '*%s'` glob", name, ext)
+		}
 	}
 }
 
-// The temp file used during the atomic write must be one no trust-store tool
-// reads: a leading dot keeps both update-ca-certificates and p11-kit off it,
-// unlike a "<final>.tmp" suffix which p11-kit would still pick up.
-func TestWriteAnchorTempNameIsDotPrefixed(t *testing.T) {
-	dir := t.TempDir()
-	anchors, err := ParseBundle(selfSigned(t, "Root A"), ".crt")
-	if err != nil {
+// p11-kit's loader_load_directory walks source/anchors with readdir and pushes
+// every entry — no dot-file filter, no extension filter — so on RHEL no naming
+// scheme can hide a half-written anchor from the trust store. A leftover has to
+// actually be deleted, which means a run that is about to write must first
+// sweep its own stale temp files out of the anchor directory.
+func TestSyncSweepsStaleTempAnchors(t *testing.T) {
+	h := newHarness(t, selfSigned(t, "Root A"))
+	// ".vaultls-tmp-" spelled out rather than taken from the constant: this is
+	// the on-disk name a crashed previous run leaves, and the sweep has to keep
+	// recognising it.
+	stale := filepath.Join(h.anchorDir, ".vaultls-tmp-vaultls-root-old-deadbeef")
+	if err := os.WriteFile(stale, []byte("-----BEGIN CERTIFICATE-----\nhalf writ"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a := anchors[0]
-	tmp := filepath.Join(dir, ".vaultls-tmp-"+a.FileName)
-	if err := os.WriteFile(tmp, []byte("interrupted"), 0o644); err != nil {
+	foreign := filepath.Join(h.anchorDir, "other-corp.crt")
+	if err := os.WriteFile(foreign, []byte("foreign"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(filepath.Base(tmp), ".") {
-		t.Fatalf("temp anchor name %q is not dot-prefixed", tmp)
-	}
-	if err := os.Remove(tmp); err != nil {
+
+	if _, err := h.sync(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(stale); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stale temp anchor survived the sync (stat err = %v); p11-kit parses it on RHEL", err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("sweep removed a foreign anchor: %v", err)
 	}
 }
 
 // A write failure partway through a multi-anchor sync (e.g. ENOSPC) must not
 // lose track of the anchors already written: otherwise they sit on disk,
 // trusted, but recorded nowhere — invisible to the retire logic and to purge
-// cleanup. The failure is injected by occupying the second anchor's temp path
-// with a directory, which os.WriteFile refuses to write through.
+// cleanup. The failure is injected by occupying the second anchor's final path
+// with a non-empty directory, which os.Rename refuses to replace.
 func TestSyncWriteFailureLeavesPartialStateRecorded(t *testing.T) {
 	body := append(selfSigned(t, "Root A"), selfSigned(t, "Root B")...)
 	h := newHarness(t, body)
@@ -262,10 +315,7 @@ func TestSyncWriteFailureLeavesPartialStateRecorded(t *testing.T) {
 	if len(anchors) != 2 {
 		t.Fatalf("test setup: got %d anchors, want 2", len(anchors))
 	}
-	blocked := filepath.Join(h.anchorDir, ".vaultls-tmp-"+anchors[1].FileName)
-	if err := os.MkdirAll(blocked, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	occupy(t, filepath.Join(h.anchorDir, anchors[1].FileName))
 
 	_, err = h.sync(context.Background())
 	if err == nil {
@@ -285,6 +335,63 @@ func TestSyncWriteFailureLeavesPartialStateRecorded(t *testing.T) {
 	}
 	if len(st.Certs) != 1 || st.Certs[anchors[0].Fingerprint] != anchors[0].FileName {
 		t.Fatalf("state = %+v, want the successfully written anchor recorded", st)
+	}
+}
+
+// Same failure, but starting from a NON-EMPTY prior state whose CA the new
+// bundle retires. The write loop runs before the removal loop, so at the moment
+// of the failure the prior anchor is still on disk and still un-retired.
+// Persisting only the anchors of the current bundle written so far therefore
+// drops it from the state file — and the state file is the sole record of
+// ownership, so that file can never be retired by the agent and is never seen
+// by purge cleanup. It stays trusted on the host forever.
+func TestSyncWriteFailureKeepsPriorOwnership(t *testing.T) {
+	oldBody := selfSigned(t, "Root Old A")
+	h := newHarness(t, oldBody)
+	if _, err := h.sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldAnchors, err := ParseBundle(oldBody, h.cfg.FileExt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldFile := filepath.Join(h.anchorDir, oldAnchors[0].FileName)
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Fatalf("test setup: first sync did not install the old anchor: %v", err)
+	}
+
+	newBody := selfSigned(t, "Root New")
+	newAnchors, err := ParseBundle(newBody, h.cfg.FileExt())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The new bundle retires Root Old A; block the new anchor's rename target so
+	// the write loop aborts before the removal loop ever runs.
+	occupy(t, filepath.Join(h.anchorDir, newAnchors[0].FileName))
+	h.fetcher.body = newBody
+	h.runner.calls = 0
+
+	_, err = h.sync(context.Background())
+	if err == nil {
+		t.Fatal("expected error from blocked anchor write")
+	}
+	var se *Error
+	if !errors.As(err, &se) || se.Stage != StageWrite {
+		t.Fatalf("err = %v, want a write-stage Error", err)
+	}
+	if h.runner.calls != 0 {
+		t.Fatalf("update command must not run when a write fails, got %d calls", h.runner.calls)
+	}
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Fatalf("test setup: the retired anchor should still be on disk: %v", err)
+	}
+
+	st, err := ReadState(h.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Certs[oldAnchors[0].Fingerprint] != oldAnchors[0].FileName {
+		t.Fatalf("anchor %s still on disk but dropped from state: %+v", oldAnchors[0].FileName, st)
 	}
 }
 
@@ -314,16 +421,7 @@ func TestSyncRemovalFailureKeepsUnremovedAnchorsTracked(t *testing.T) {
 		blockedName = name
 		break
 	}
-	blockedPath := filepath.Join(h.anchorDir, blockedName)
-	if err := os.Remove(blockedPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(blockedPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(blockedPath, "occupied"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	occupy(t, filepath.Join(h.anchorDir, blockedName))
 
 	newBody := selfSigned(t, "Root New")
 	h.fetcher.body = newBody
