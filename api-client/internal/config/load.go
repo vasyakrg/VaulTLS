@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -104,6 +105,22 @@ func applyCATrustDefaults(c *CATrust, exists func(string) bool) error {
 	return nil
 }
 
+// basenameRe keeps the override a plain file-name stem: it is concatenated with
+// suffixes and joined onto out_dir, so anything path-like would let it escape
+// the directory, and a leading dot would shadow the agent's own state file.
+var basenameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+func validateBasename(b string) error {
+	if b == "" {
+		return nil
+	}
+	if !basenameRe.MatchString(b) {
+		return fmt.Errorf("invalid basename %q: must start with a letter or digit and "+
+			"contain only letters, digits, dot, dash or underscore (max 64 chars)", b)
+	}
+	return nil
+}
+
 func validate(cfg *Config) error {
 	if cfg.Server.URL == "" {
 		return fmt.Errorf("server.url is required")
@@ -146,6 +163,9 @@ func validate(cfg *Config) error {
 			}
 		}
 		if _, err := d.FileMode(); err != nil {
+			return fmt.Errorf("domain[%d] (%s): %w", i, d.Name, err)
+		}
+		if err := validateBasename(d.Basename); err != nil {
 			return fmt.Errorf("domain[%d] (%s): %w", i, d.Name, err)
 		}
 	}

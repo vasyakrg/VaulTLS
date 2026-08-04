@@ -66,23 +66,24 @@ func writeBundle(dir string, b *pki.Bundle, d config.Domain) error {
 	if err != nil {
 		return err
 	}
+	names := d.FileNames()
 	for _, f := range d.Formats {
 		switch f {
 		case "pem":
-			if err := writeFile(dir, "fullchain.pem", b.Fullchain, mode, d); err != nil {
+			if err := writeFile(dir, names.Fullchain, b.Fullchain, mode, d); err != nil {
 				return err
 			}
-			if err := writeFile(dir, "cert.pem", b.Cert, mode, d); err != nil {
+			if err := writeFile(dir, names.Cert, b.Cert, mode, d); err != nil {
 				return err
 			}
-			if err := writeFile(dir, "chain.pem", b.Chain, mode, d); err != nil {
+			if err := writeFile(dir, names.Chain, b.Chain, mode, d); err != nil {
 				return err
 			}
-			if err := writeFile(dir, "privkey.pem", b.PrivKey, 0o600, d); err != nil {
+			if err := writeFile(dir, names.PrivKey, b.PrivKey, 0o600, d); err != nil {
 				return err
 			}
 		case "haproxy":
-			if err := writeFile(dir, "haproxy.pem", b.Haproxy, 0o600, d); err != nil {
+			if err := writeFile(dir, names.Haproxy, b.Haproxy, 0o600, d); err != nil {
 				return err
 			}
 		}

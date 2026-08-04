@@ -130,6 +130,7 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 |---|---|---|
 | `name` | string | VaulTLS certificate name to look up (see wildcard note below). |
 | `out_dir` | string | Directory where certificate files are written. |
+| `basename` | string | Optional stem for the written file names (see [Output files](#output-files)). Unset → the default `fullchain.pem`/`cert.pem`/… names. Allowed: letters, digits, `.`, `-`, `_`; must start with a letter or digit; max 64 chars. |
 | `formats` | `[]string` | Output formats: `pem`, `haproxy` (both may be listed). |
 | `owner` | string | File owner for written certificate files. |
 | `group` | string | File group for written certificate files. |
@@ -167,6 +168,20 @@ Files are written to `out_dir`. The state file `.vaultls-state.json` in each `ou
 | File | Permissions | Contents |
 |---|---|---|
 | `haproxy.pem` | `0600` | Fullchain + private key concatenated (HAProxy `crt` format) |
+
+### Renaming output files (`basename`)
+
+Set `basename` on a domain entry to control the file names — useful when an existing nginx/haproxy config expects a particular name. Permissions and contents are unchanged; only the names differ:
+
+| Default | With `basename: example` |
+|---|---|
+| `fullchain.pem` | `example.pem` |
+| `cert.pem` | `example-cert.pem` |
+| `chain.pem` | `example-chain.pem` |
+| `privkey.pem` | `example-key.pem` |
+| `haproxy.pem` | `example-haproxy.pem` |
+
+Changing `basename` on a live deployment does **not** remove the files written under the previous name — delete them manually after updating the consuming config.
 
 ---
 
