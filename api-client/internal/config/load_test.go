@@ -58,6 +58,60 @@ domains:
 	}
 }
 
+func TestLoadRejectsInvalidBasename(t *testing.T) {
+	for _, name := range []string{"../escape", "sub/dir", ".hidden", "-lead", "na me"} {
+		p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    basename: "`+name+`"
+    reload: "true"
+`)
+		if _, err := Load(p); err == nil {
+			t.Errorf("basename %q accepted, want rejected", name)
+		}
+	}
+}
+
+func TestLoadAcceptsBasename(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    basename: example_com-1.internal
+    reload: "true"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("valid basename rejected: %v", err)
+	}
+	if got := cfg.Domains[0].FileNames().Cert; got != "example_com-1.internal-cert.pem" {
+		t.Errorf("cert name = %q", got)
+	}
+}
+
+func TestFileNamesDefaultWithoutBasename(t *testing.T) {
+	n := Domain{}.FileNames()
+	want := FileNames{"fullchain.pem", "cert.pem", "chain.pem", "privkey.pem", "haproxy.pem"}
+	if n != want {
+		t.Errorf("FileNames() = %+v, want %+v", n, want)
+	}
+}
+
+func TestFileNamesWithBasename(t *testing.T) {
+	n := Domain{Basename: "site"}.FileNames()
+	want := FileNames{"site.pem", "site-cert.pem", "site-chain.pem", "site-key.pem", "site-haproxy.pem"}
+	if n != want {
+		t.Errorf("FileNames() = %+v, want %+v", n, want)
+	}
+}
+
 func TestLoadAppliesDefaultsAndExpandsEnv(t *testing.T) {
 	t.Setenv("VAULTLS_SECRET", "s3cr3t")
 	p := writeTmp(t, `

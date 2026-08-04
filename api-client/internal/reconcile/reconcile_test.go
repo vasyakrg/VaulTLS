@@ -29,7 +29,7 @@ type fakeAPI struct {
 	dlCount  int
 }
 
-func (f *fakeAPI) List(context.Context) ([]vaultls.Cert, error) { return f.certs, nil }
+func (f *fakeAPI) List(context.Context) ([]vaultls.Cert, error)    { return f.certs, nil }
 func (f *fakeAPI) Password(context.Context, int64) (string, error) { return f.password, nil }
 func (f *fakeAPI) Download(context.Context, int64) ([]byte, error) {
 	f.dlCount++
@@ -56,6 +56,35 @@ func makeP12(t *testing.T, serial int64) []byte {
 func newDomain(dir string) config.Domain {
 	return config.Domain{Name: "*.example.com", OutDir: dir, Formats: []string{"pem", "haproxy"},
 		Mode: "0640", Reload: "true"}
+}
+
+func TestReconcileHonorsBasename(t *testing.T) {
+	dir := t.TempDir()
+	api := &fakeAPI{
+		certs:    []vaultls.Cert{{ID: 2, Name: "*.example.com", ValidUntil: time.Now().Add(48 * time.Hour).UnixMilli()}},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	d := newDomain(dir)
+	d.Basename = "example"
+	if err := New(api, metrics.New(), time.Now).Domain(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"example.pem", "example-cert.pem", "example-chain.pem",
+		"example-key.pem", "example-haproxy.pem"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("missing %s: %v", f, err)
+		}
+	}
+	for _, f := range []string{"fullchain.pem", "privkey.pem", "cert.pem", "chain.pem", "haproxy.pem"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			t.Errorf("default-named %s written despite basename override", f)
+		}
+	}
+	info, _ := os.Stat(filepath.Join(dir, "example-key.pem"))
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("key mode = %v, want 0600", info.Mode().Perm())
+	}
 }
 
 func TestReconcileWritesAndRenews(t *testing.T) {

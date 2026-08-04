@@ -16,14 +16,50 @@ type Server struct {
 }
 
 type Domain struct {
-	Name    string   `yaml:"name"`
-	OutDir  string   `yaml:"out_dir"`
-	Formats []string `yaml:"formats"`
-	Owner   string   `yaml:"owner"`
-	Group   string   `yaml:"group"`
-	Mode    string   `yaml:"mode"`
-	Reload  string   `yaml:"reload"`
-	CertID  int64    `yaml:"cert_id"`
+	Name     string   `yaml:"name"`
+	OutDir   string   `yaml:"out_dir"`
+	Basename string   `yaml:"basename"`
+	Formats  []string `yaml:"formats"`
+	Owner    string   `yaml:"owner"`
+	Group    string   `yaml:"group"`
+	Mode     string   `yaml:"mode"`
+	Reload   string   `yaml:"reload"`
+	CertID   int64    `yaml:"cert_id"`
+}
+
+// FileNames are the on-disk names writeBundle uses for one domain.
+type FileNames struct {
+	Fullchain string
+	Cert      string
+	Chain     string
+	PrivKey   string
+	Haproxy   string
+}
+
+// defaultFileNames is the historic layout, kept for every domain that does not
+// set basename: renaming files under an existing deployment would break the
+// paths already referenced by nginx/haproxy configs.
+var defaultFileNames = FileNames{
+	Fullchain: "fullchain.pem",
+	Cert:      "cert.pem",
+	Chain:     "chain.pem",
+	PrivKey:   "privkey.pem",
+	Haproxy:   "haproxy.pem",
+}
+
+// FileNames derives the output file names from basename. The fullchain — the
+// file most configs point at — takes the bare name, the rest are suffixed.
+func (d Domain) FileNames() FileNames {
+	if d.Basename == "" {
+		return defaultFileNames
+	}
+	return FileNames{
+		Fullchain: d.Basename + ".pem",
+		Cert:      d.Basename + "-cert.pem",
+		Chain:     d.Basename + "-chain.pem",
+		PrivKey:   d.Basename + "-key.pem",
+		Haproxy:   d.Basename + "-haproxy.pem",
+	}
 }
 
 // Log configures the agent's structured logging. Zero values keep the historic
