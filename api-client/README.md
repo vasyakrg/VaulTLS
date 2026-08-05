@@ -158,10 +158,10 @@ Files are written to `out_dir`. The state file `.vaultls-state.json` in each `ou
 
 | File | Permissions | Contents |
 |---|---|---|
-| `fullchain.pem` | `mode` | Certificate + intermediate chain (PEM) |
-| `privkey.pem` | `0600` | Private key (PEM) |
-| `cert.pem` | `mode` | End-entity certificate only (PEM) |
-| `chain.pem` | `mode` | Intermediate chain only (PEM) |
+| `fullchain.crt` | `mode` | Certificate + intermediate chain (PEM) |
+| `privkey.key` | `0600` | Private key (PEM) |
+| `cert.crt` | `mode` | End-entity certificate only (PEM) |
+| `chain.crt` | `mode` | Intermediate chain only (PEM) |
 
 ### `haproxy` format
 
@@ -175,10 +175,10 @@ Set `basename` on a domain entry to control the file names — useful when an ex
 
 | Default | With `basename: example` |
 |---|---|
-| `fullchain.pem` | `example.pem` |
-| `cert.pem` | `example-cert.pem` |
-| `chain.pem` | `example-chain.pem` |
-| `privkey.pem` | `example-key.pem` |
+| `fullchain.pem` | `example.crt` |
+| `cert.pem` | `example-cert.crt` |
+| `chain.pem` | `example-chain.crt` |
+| `privkey.pem` | `example-key.key` |
 | `haproxy.pem` | `example-haproxy.pem` |
 
 Changing `basename` on a live deployment does **not** remove the files written under the previous name — delete them manually after updating the consuming config.
