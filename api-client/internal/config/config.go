@@ -27,39 +27,52 @@ type Domain struct {
 	CertID   int64    `yaml:"cert_id"`
 }
 
-// FileNames are the on-disk names writeBundle uses for one domain.
-type FileNames struct {
+// SplitFileNames are the on-disk names writeBundle uses for the split formats
+// ("nginx", and its "pem" alias): certificate material is written with the .crt
+// extension, the private key with .key — the split nginx ssl_certificate /
+// ssl_certificate_key expect.
+type SplitFileNames struct {
 	Fullchain string
 	Cert      string
 	Chain     string
 	PrivKey   string
-	Haproxy   string
 }
 
-// defaultFileNames is the historic layout, kept for every domain that does not
-// set basename: renaming files under an existing deployment would break the
+// defaultSplitFileNames is the historic layout, kept for every domain that does
+// not set basename: renaming files under an existing deployment would break the
 // paths already referenced by nginx/haproxy configs.
-var defaultFileNames = FileNames{
-	Fullchain: "fullchain.pem",
-	Cert:      "cert.pem",
-	Chain:     "chain.pem",
-	PrivKey:   "privkey.pem",
-	Haproxy:   "haproxy.pem",
+var defaultSplitFileNames = SplitFileNames{
+	Fullchain: "fullchain.crt",
+	Cert:      "cert.crt",
+	Chain:     "chain.crt",
+	PrivKey:   "privkey.key",
 }
 
-// FileNames derives the output file names from basename. The fullchain — the
-// file most configs point at — takes the bare name, the rest are suffixed.
-func (d Domain) FileNames() FileNames {
+// SplitFileNames derives the split-format file names from basename. The
+// fullchain — the file most configs point at — takes the bare name, the rest
+// are suffixed; certificates get .crt, the private key gets .key.
+func (d Domain) SplitFileNames() SplitFileNames {
 	if d.Basename == "" {
-		return defaultFileNames
+		return defaultSplitFileNames
 	}
-	return FileNames{
-		Fullchain: d.Basename + ".pem",
-		Cert:      d.Basename + "-cert.pem",
-		Chain:     d.Basename + "-chain.pem",
-		PrivKey:   d.Basename + "-key.pem",
-		Haproxy:   d.Basename + "-haproxy.pem",
+	return SplitFileNames{
+		Fullchain: d.Basename + ".crt",
+		Cert:      d.Basename + "-cert.crt",
+		Chain:     d.Basename + "-chain.crt",
+		PrivKey:   d.Basename + "-key.key",
 	}
+}
+
+// defaultHaproxyFileName is the HAProxy combined bundle (fullchain + private key
+// in one .pem file, as HAProxy's ssl crts directive expects).
+const defaultHaproxyFileName = "haproxy.pem"
+
+// HaproxyFileName returns the on-disk name of the combined HAProxy bundle.
+func (d Domain) HaproxyFileName() string {
+	if d.Basename == "" {
+		return defaultHaproxyFileName
+	}
+	return d.Basename + "-haproxy.pem"
 }
 
 // Log configures the agent's structured logging. Zero values keep the historic

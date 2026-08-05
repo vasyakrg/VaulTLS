@@ -31,8 +31,8 @@ func contextClock() time.Time { return time.Unix(0, 0) }
 
 func TestReconcileAllIsolatesFailures(t *testing.T) {
 	cfg := &config.Config{Domains: []config.Domain{
-		{Name: "a", OutDir: t.TempDir(), Formats: []string{"pem"}, Mode: "0640", Reload: "true"},
-		{Name: "b", OutDir: t.TempDir(), Formats: []string{"pem"}, Mode: "0640", Reload: "true"},
+		{Name: "a", OutDir: t.TempDir(), Formats: []string{"nginx"}, Mode: "0640", Reload: "true"},
+		{Name: "b", OutDir: t.TempDir(), Formats: []string{"nginx"}, Mode: "0640", Reload: "true"},
 	}}
 	r := reconcile.New(failAPI{}, metrics.New(), contextClock)
 	var buf bytes.Buffer

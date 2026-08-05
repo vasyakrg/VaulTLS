@@ -27,11 +27,11 @@ domains:
     # out_dir must live under /etc/ssl/vaultls (the unit's ReadWritePaths).
     # To write elsewhere, extend ReadWritePaths via a systemd override.
     out_dir: /etc/ssl/vaultls/example.com
-    # Optional: rename the output files. basename: example writes example.pem
-    # (fullchain), example-cert.pem, example-chain.pem, example-key.pem and
-    # example-haproxy.pem. Unset keeps fullchain.pem/cert.pem/chain.pem/privkey.pem.
+    # Optional: rename the output files. basename: example writes example.crt
+    # (fullchain), example-cert.crt, example-chain.crt, example-key.key and
+    # example-haproxy.pem. Unset keeps fullchain.crt/cert.crt/chain.crt/privkey.key.
     # basename: example
-    formats: [pem, haproxy]
+    formats: [nginx, haproxy]
     owner: root
     group: ssl-cert
     mode: "0640"

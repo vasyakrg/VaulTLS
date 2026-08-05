@@ -68,14 +68,14 @@ func TestDecodeProducesAllForms(t *testing.T) {
 		t.Fatal("privkey missing key PEM")
 	}
 	if bytes.Count(b.Cert, []byte("BEGIN CERTIFICATE")) != 1 {
-		t.Fatal("cert.pem should contain only leaf")
+		t.Fatal("cert must contain only leaf")
 	}
 	if !bytes.Contains(b.Haproxy, []byte("PRIVATE KEY")) ||
 		!bytes.Contains(b.Haproxy, []byte("BEGIN CERTIFICATE")) {
-		t.Fatal("haproxy.pem must contain cert+key")
+		t.Fatal("haproxy bundle must contain cert+key")
 	}
 	if !strings.HasPrefix(string(b.Haproxy), "-----BEGIN CERTIFICATE") {
-		t.Fatal("haproxy.pem must start with cert, then key")
+		t.Fatal("haproxy bundle must start with cert, then key")
 	}
 }
 

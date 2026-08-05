@@ -11,7 +11,7 @@ Built for Debian/amd64 hosts: ships as a single static binary in a `.deb`, runs 
 - **Pull-based distribution** — fetches certificates from VaulTLS over its REST API using a service account (`client_id` + `secret`); no inbound access to the host required.
 - **Multiple domains per host** — each domain is reconciled independently; one failing domain never blocks the others.
 - **Wildcard-aware lookup** — match a certificate by name (`*.example.com`) or pin an exact `cert_id`.
-- **Multiple on-disk formats** — `pem` (separate `fullchain`/`privkey`/`cert`/`chain`) and `haproxy` (cert+key in one file). Private keys are always written `0600`.
+- **Multiple on-disk formats** — `nginx` (separate `fullchain`/`cert`/`chain` as `.crt`, plus `privkey.key`) and `haproxy` (cert+key concatenated in one `.pem`). Private keys are always written `0600`.
 - **Change detection** — compares the certificate serial against a local state file and **only reloads the target service when the certificate actually changed** — no needless reloads.
 - **Atomic, fail-safe writes** — new files are written to a temp path and renamed; a server outage or a bad download never clobbers good certs already on disk.
 - **Resilient API client** — in-memory token caching, one automatic re-auth on `401`, and bounded exponential backoff on transient network/5xx errors.
@@ -130,8 +130,8 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 |---|---|---|
 | `name` | string | VaulTLS certificate name to look up (see wildcard note below). |
 | `out_dir` | string | Directory where certificate files are written. |
-| `basename` | string | Optional stem for the written file names (see [Output files](#output-files)). Unset → the default `fullchain.pem`/`cert.pem`/… names. Allowed: letters, digits, `.`, `-`, `_`; must start with a letter or digit; max 64 chars. |
-| `formats` | `[]string` | Output formats: `pem`, `haproxy` (both may be listed). |
+| `basename` | string | Optional stem for the written file names (see [Output files](#output-files)). Unset → the default `fullchain.crt`/`cert.crt`/… names. Allowed: letters, digits, `.`, `-`, `_`; must start with a letter or digit; max 64 chars. |
+| `formats` | `[]string` | Output formats: `nginx`, `haproxy` (both may be listed). `pem` is accepted as a legacy alias for `nginx`. |
 | `owner` | string | File owner for written certificate files. |
 | `group` | string | File group for written certificate files. |
 | `mode` | octal string | File permissions for non-private files (default `"0640"`). Private key is always `0600`. |
@@ -154,7 +154,9 @@ The agent automatically selects the **newest non-revoked** certificate with that
 
 Files are written to `out_dir`. The state file `.vaultls-state.json` in each `out_dir` records the last-deployed serial and is used to skip unnecessary writes.
 
-### `pem` format
+### `nginx` format
+
+The split layout nginx expects: certificate material with the `.crt` extension, the private key with `.key`.
 
 | File | Permissions | Contents |
 |---|---|---|
@@ -162,6 +164,8 @@ Files are written to `out_dir`. The state file `.vaultls-state.json` in each `ou
 | `privkey.key` | `0600` | Private key (PEM) |
 | `cert.crt` | `mode` | End-entity certificate only (PEM) |
 | `chain.crt` | `mode` | Intermediate chain only (PEM) |
+
+> **Migration from `pem`.** `pem` is accepted as a legacy alias for `nginx` and produces the same `.crt`/`.key` files. Before v0.5.0 the `pem` format wrote `*.pem` files; those are no longer produced, so after upgrading, point your nginx config at the `.crt`/`.key` names (or set `basename`), and remove the old `*.pem` files manually.
 
 ### `haproxy` format
 
@@ -175,10 +179,10 @@ Set `basename` on a domain entry to control the file names — useful when an ex
 
 | Default | With `basename: example` |
 |---|---|
-| `fullchain.pem` | `example.crt` |
-| `cert.pem` | `example-cert.crt` |
-| `chain.pem` | `example-chain.crt` |
-| `privkey.pem` | `example-key.key` |
+| `fullchain.crt` | `example.crt` |
+| `cert.crt` | `example-cert.crt` |
+| `chain.crt` | `example-chain.crt` |
+| `privkey.key` | `example-key.key` |
 | `haproxy.pem` | `example-haproxy.pem` |
 
 Changing `basename` on a live deployment does **not** remove the files written under the previous name — delete them manually after updating the consuming config.
@@ -439,7 +443,7 @@ exporter:
 domains:
   - name: "*.example.com"
     out_dir: /etc/ssl/vaultls/example.com
-    formats: [pem, haproxy]
+    formats: [nginx, haproxy]
     owner: root
     group: ssl-cert
     mode: "0640"
@@ -464,7 +468,7 @@ exporter:
 domains:
   - name: "*.example.com"
     out_dir: /etc/ssl/vaultls/example.com
-    formats: [pem]
+    formats: [nginx]
     reload: "systemctl reload nginx"
   - name: "*.internal.example.com"
     out_dir: /etc/ssl/vaultls/internal
@@ -473,7 +477,7 @@ domains:
     reload: "systemctl reload haproxy"
   - cert_id: 42          # pin an exact certificate by ID instead of by name
     out_dir: /etc/ssl/vaultls/legacy
-    formats: [pem]
+    formats: [nginx]
     reload: "systemctl reload postfix"
 ```
 

@@ -54,7 +54,7 @@ func makeP12(t *testing.T, serial int64) []byte {
 }
 
 func newDomain(dir string) config.Domain {
-	return config.Domain{Name: "*.example.com", OutDir: dir, Formats: []string{"pem", "haproxy"},
+	return config.Domain{Name: "*.example.com", OutDir: dir, Formats: []string{"nginx", "haproxy"},
 		Mode: "0640", Reload: "true"}
 }
 
@@ -70,18 +70,18 @@ func TestReconcileHonorsBasename(t *testing.T) {
 	if err := New(api, metrics.New(), time.Now).Domain(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"example.pem", "example-cert.pem", "example-chain.pem",
-		"example-key.pem", "example-haproxy.pem"} {
+	for _, f := range []string{"example.crt", "example-cert.crt", "example-chain.crt",
+		"example-key.key", "example-haproxy.pem"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
-	for _, f := range []string{"fullchain.pem", "privkey.pem", "cert.pem", "chain.pem", "haproxy.pem"} {
+	for _, f := range []string{"fullchain.crt", "privkey.key", "cert.crt", "chain.crt", "haproxy.pem"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
 			t.Errorf("default-named %s written despite basename override", f)
 		}
 	}
-	info, _ := os.Stat(filepath.Join(dir, "example-key.pem"))
+	info, _ := os.Stat(filepath.Join(dir, "example-key.key"))
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("key mode = %v, want 0600", info.Mode().Perm())
 	}
@@ -99,12 +99,12 @@ func TestReconcileWritesAndRenews(t *testing.T) {
 	if err := r.Domain(context.Background(), newDomain(dir)); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"fullchain.pem", "privkey.pem", "cert.pem", "chain.pem", "haproxy.pem"} {
+	for _, f := range []string{"fullchain.crt", "privkey.key", "cert.crt", "chain.crt", "haproxy.pem"} {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
-	info, _ := os.Stat(filepath.Join(dir, "privkey.pem"))
+	info, _ := os.Stat(filepath.Join(dir, "privkey.key"))
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("privkey mode = %v, want 0600", info.Mode().Perm())
 	}
@@ -115,6 +115,31 @@ func TestReconcileWritesAndRenews(t *testing.T) {
 	st, _ := store.Read(dir)
 	if st.Serial != "A1B2C" {
 		t.Errorf("state serial = %q", st.Serial)
+	}
+}
+
+// "pem" is the legacy name for the split-format layout now called "nginx"; it
+// must keep writing the same .crt/.key files so existing configs work unchanged.
+func TestReconcilePEMAliasMatchesNginx(t *testing.T) {
+	dir := t.TempDir()
+	api := &fakeAPI{
+		certs:    []vaultls.Cert{{ID: 2, Name: "*.example.com", ValidUntil: time.Now().Add(48 * time.Hour).UnixMilli()}},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	d := config.Domain{Name: "*.example.com", OutDir: dir, Formats: []string{"pem"}, Mode: "0640", Reload: "true"}
+	if err := New(api, metrics.New(), time.Now).Domain(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"fullchain.crt", "cert.crt", "chain.crt", "privkey.key"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("pem alias should write %s: %v", f, err)
+		}
+	}
+	for _, f := range []string{"fullchain.pem", "privkey.pem", "cert.pem", "chain.pem", "haproxy.pem"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			t.Errorf("pem alias must not write legacy .pem name %s", f)
+		}
 	}
 }
 
@@ -175,8 +200,8 @@ func TestReconcileSelectsByCertID(t *testing.T) {
 	if api.dlCount != 1 {
 		t.Errorf("expected one download for the cert picked by CertID, dlCount = %d", api.dlCount)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "fullchain.pem")); err != nil {
-		t.Errorf("missing fullchain.pem: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "fullchain.crt")); err != nil {
+		t.Errorf("missing fullchain.crt: %v", err)
 	}
 	st, _ := store.Read(dir)
 	if st.CertID != 9 {
@@ -248,8 +273,8 @@ func TestReconcileCertIDOnlyDistinctLabels(t *testing.T) {
 	r := New(api, m, time.Now)
 	ctx := context.Background()
 
-	dA := config.Domain{OutDir: dirA, Formats: []string{"pem"}, Mode: "0640", Reload: "true", CertID: 7}
-	dB := config.Domain{OutDir: dirB, Formats: []string{"pem"}, Mode: "0640", Reload: "true", CertID: 9}
+	dA := config.Domain{OutDir: dirA, Formats: []string{"nginx"}, Mode: "0640", Reload: "true", CertID: 7}
+	dB := config.Domain{OutDir: dirB, Formats: []string{"nginx"}, Mode: "0640", Reload: "true", CertID: 9}
 	if err := r.Domain(ctx, dA); err != nil {
 		t.Fatal(err)
 	}

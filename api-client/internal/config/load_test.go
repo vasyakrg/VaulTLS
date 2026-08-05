@@ -91,24 +91,30 @@ domains:
 	if err != nil {
 		t.Fatalf("valid basename rejected: %v", err)
 	}
-	if got := cfg.Domains[0].FileNames().Cert; got != "example_com-1.internal-cert.pem" {
+	if got := cfg.Domains[0].SplitFileNames().Cert; got != "example_com-1.internal-cert.crt" {
 		t.Errorf("cert name = %q", got)
 	}
 }
 
 func TestFileNamesDefaultWithoutBasename(t *testing.T) {
-	n := Domain{}.FileNames()
-	want := FileNames{"fullchain.pem", "cert.pem", "chain.pem", "privkey.pem", "haproxy.pem"}
-	if n != want {
-		t.Errorf("FileNames() = %+v, want %+v", n, want)
+	s := Domain{}.SplitFileNames()
+	wantSplit := SplitFileNames{"fullchain.crt", "cert.crt", "chain.crt", "privkey.key"}
+	if s != wantSplit {
+		t.Errorf("SplitFileNames() = %+v, want %+v", s, wantSplit)
+	}
+	if h := (Domain{}).HaproxyFileName(); h != "haproxy.pem" {
+		t.Errorf("HaproxyFileName() = %q, want haproxy.pem", h)
 	}
 }
 
 func TestFileNamesWithBasename(t *testing.T) {
-	n := Domain{Basename: "site"}.FileNames()
-	want := FileNames{"site.pem", "site-cert.pem", "site-chain.pem", "site-key.pem", "site-haproxy.pem"}
-	if n != want {
-		t.Errorf("FileNames() = %+v, want %+v", n, want)
+	s := Domain{Basename: "site"}.SplitFileNames()
+	wantSplit := SplitFileNames{"site.crt", "site-cert.crt", "site-chain.crt", "site-key.key"}
+	if s != wantSplit {
+		t.Errorf("SplitFileNames() = %+v, want %+v", s, wantSplit)
+	}
+	if h := (Domain{Basename: "site"}).HaproxyFileName(); h != "site-haproxy.pem" {
+		t.Errorf("HaproxyFileName() = %q, want site-haproxy.pem", h)
 	}
 }
 
@@ -140,7 +146,7 @@ domains:
 	if d.OutDir != "/etc/ssl/vaultls/example.com" {
 		t.Fatalf("default out_dir = %q", d.OutDir)
 	}
-	if len(d.Formats) != 1 || d.Formats[0] != "pem" {
+	if len(d.Formats) != 1 || d.Formats[0] != "nginx" {
 		t.Fatalf("default formats = %v", d.Formats)
 	}
 }

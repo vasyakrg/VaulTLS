@@ -66,24 +66,25 @@ func writeBundle(dir string, b *pki.Bundle, d config.Domain) error {
 	if err != nil {
 		return err
 	}
-	names := d.FileNames()
+	split := d.SplitFileNames()
+	haproxy := d.HaproxyFileName()
 	for _, f := range d.Formats {
 		switch f {
-		case "pem":
-			if err := writeFile(dir, names.Fullchain, b.Fullchain, mode, d); err != nil {
+		case "nginx", "pem": // "pem" is the legacy alias for the split-format layout
+			if err := writeFile(dir, split.Fullchain, b.Fullchain, mode, d); err != nil {
 				return err
 			}
-			if err := writeFile(dir, names.Cert, b.Cert, mode, d); err != nil {
+			if err := writeFile(dir, split.Cert, b.Cert, mode, d); err != nil {
 				return err
 			}
-			if err := writeFile(dir, names.Chain, b.Chain, mode, d); err != nil {
+			if err := writeFile(dir, split.Chain, b.Chain, mode, d); err != nil {
 				return err
 			}
-			if err := writeFile(dir, names.PrivKey, b.PrivKey, 0o600, d); err != nil {
+			if err := writeFile(dir, split.PrivKey, b.PrivKey, 0o600, d); err != nil {
 				return err
 			}
 		case "haproxy":
-			if err := writeFile(dir, names.Haproxy, b.Haproxy, 0o600, d); err != nil {
+			if err := writeFile(dir, haproxy, b.Haproxy, 0o600, d); err != nil {
 				return err
 			}
 		}

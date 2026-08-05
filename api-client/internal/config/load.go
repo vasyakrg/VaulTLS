@@ -54,7 +54,7 @@ func applyDefaults(cfg *Config) error {
 	for i := range cfg.Domains {
 		d := &cfg.Domains[i]
 		if len(d.Formats) == 0 {
-			d.Formats = []string{"pem"}
+			d.Formats = []string{"nginx"}
 		}
 		if d.OutDir == "" && d.Name != "" {
 			d.OutDir = "/etc/ssl/vaultls/" + strings.TrimPrefix(d.Name, "*.")
@@ -158,7 +158,9 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("domain[%d] (%s): reload is required", i, d.Name)
 		}
 		for _, f := range d.Formats {
-			if f != "pem" && f != "haproxy" {
+			// "pem" is the legacy alias for the split-format layout now called
+			// "nginx"; kept so existing configs keep working unchanged.
+			if f != "nginx" && f != "pem" && f != "haproxy" {
 				return fmt.Errorf("domain[%d] (%s): unknown format %q", i, d.Name, f)
 			}
 		}

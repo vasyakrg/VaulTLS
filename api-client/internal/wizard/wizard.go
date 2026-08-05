@@ -53,7 +53,7 @@ func Render(a Answers) ([]byte, error) {
 	doc.Exporter.Listen = "127.0.0.1:9105"
 	doc.Domains = []renderDomain{{
 		Name:    a.Domain,
-		Formats: []string{"pem"},
+		Formats: []string{"nginx"},
 		Reload:  a.Reload,
 	}}
 	if a.CATrust {
