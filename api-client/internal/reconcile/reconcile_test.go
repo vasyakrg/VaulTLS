@@ -6,6 +6,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +18,10 @@ import (
 	"time"
 
 	"github.com/vasyakrg/vaultls-agent/internal/config"
+	"github.com/vasyakrg/vaultls-agent/internal/k8s"
 	"github.com/vasyakrg/vaultls-agent/internal/metrics"
 	"github.com/vasyakrg/vaultls-agent/internal/store"
+	"github.com/vasyakrg/vaultls-agent/internal/target"
 	"github.com/vasyakrg/vaultls-agent/internal/vaultls"
 	pkcs12 "software.sslmate.com/src/go-pkcs12"
 )
@@ -67,7 +71,7 @@ func TestReconcileHonorsBasename(t *testing.T) {
 	}
 	d := newDomain(dir)
 	d.Basename = "example"
-	if err := New(api, metrics.New(), time.Now).Domain(context.Background(), d); err != nil {
+	if err := New(api, metrics.New(), time.Now, nil).Domain(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"example.crt", "example-cert.crt", "example-chain.crt",
@@ -95,7 +99,7 @@ func TestReconcileWritesAndRenews(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now)
+	r := New(api, m, time.Now, nil)
 	if err := r.Domain(context.Background(), newDomain(dir)); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +132,7 @@ func TestReconcilePEMAliasMatchesNginx(t *testing.T) {
 		password: "pw",
 	}
 	d := config.Domain{Name: "*.example.com", OutDir: dir, Formats: []string{"pem"}, Mode: "0640", Reload: "true"}
-	if err := New(api, metrics.New(), time.Now).Domain(context.Background(), d); err != nil {
+	if err := New(api, metrics.New(), time.Now, nil).Domain(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"fullchain.crt", "cert.crt", "chain.crt", "privkey.key"} {
@@ -152,7 +156,7 @@ func TestReconcileSkipsWhenUnchanged(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now)
+	r := New(api, m, time.Now, nil)
 	ctx := context.Background()
 	d := newDomain(dir)
 	if err := r.Domain(ctx, d); err != nil {
@@ -171,7 +175,7 @@ func TestReconcileDomainNotFound(t *testing.T) {
 	dir := t.TempDir()
 	api := &fakeAPI{certs: []vaultls.Cert{{ID: 1, Name: "other", ValidUntil: 1}}}
 	m := metrics.New()
-	r := New(api, m, time.Now)
+	r := New(api, m, time.Now, nil)
 	if err := r.Domain(context.Background(), newDomain(dir)); err == nil {
 		t.Fatal("expected error when domain cert not found")
 	}
@@ -190,7 +194,7 @@ func TestReconcileSelectsByCertID(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now)
+	r := New(api, m, time.Now, nil)
 	d := newDomain(dir)
 	d.Name = "no-such-name"
 	d.CertID = 9
@@ -232,10 +236,10 @@ func TestReconcileSameNameDistinctCertsKeepSeparateSeries(t *testing.T) {
 	dA.CertID = 11
 	dB := newDomain(dirB)
 	dB.CertID = 14
-	if err := New(apiA, m, time.Now).Domain(ctx, dA); err != nil {
+	if err := New(apiA, m, time.Now, nil).Domain(ctx, dA); err != nil {
 		t.Fatal(err)
 	}
-	if err := New(apiB, m, time.Now).Domain(ctx, dB); err != nil {
+	if err := New(apiB, m, time.Now, nil).Domain(ctx, dB); err != nil {
 		t.Fatal(err)
 	}
 
@@ -270,7 +274,7 @@ func TestReconcileCertIDOnlyDistinctLabels(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now)
+	r := New(api, m, time.Now, nil)
 	ctx := context.Background()
 
 	dA := config.Domain{OutDir: dirA, Formats: []string{"nginx"}, Mode: "0640", Reload: "true", CertID: 7}
@@ -293,5 +297,101 @@ func TestReconcileCertIDOnlyDistinctLabels(t *testing.T) {
 	}
 	if strings.Contains(body, `domain=""`) {
 		t.Errorf("metrics has empty domain label (collision)\n%s", body)
+	}
+}
+
+// End-to-end over the k8s target: the certificate lands in a Secret, and the
+// state recorded on that Secret is enough for the next pass to skip the
+// download — the agent pod has no state file to fall back on.
+func TestReconcileK8sTargetWritesSecretAndSkips(t *testing.T) {
+	var (
+		secret  map[string]any
+		created bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch r.Method {
+		case http.MethodGet:
+			if !created {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"kind":"Status","message":"not found"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(secret)
+		case http.MethodPost:
+			created = true
+			_ = json.Unmarshal(body, &secret)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(body)
+		case http.MethodPatch:
+			var patch map[string]any
+			_ = json.Unmarshal(body, &patch)
+			mergeInto(secret, patch)
+			_ = json.NewEncoder(w).Encode(secret)
+		}
+	}))
+	defer srv.Close()
+
+	api := &fakeAPI{
+		certs:    []vaultls.Cert{{ID: 2, Name: "*.example.com", ValidUntil: time.Now().Add(48 * time.Hour).UnixMilli()}},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	d := config.Domain{
+		Name:   "*.example.com",
+		Target: config.TargetK8s,
+		K8s:    config.K8s{Namespace: "default", Secret: "wildcard-example-com", IncludeCA: true},
+	}
+	f := target.NewFactoryWithClient(k8s.NewForTest(srv.URL, "tok", srv.Client()))
+	r := New(api, metrics.New(), time.Now, f)
+	ctx := context.Background()
+
+	if err := r.Domain(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("secret was not created")
+	}
+	if secret["type"] != "kubernetes.io/tls" {
+		t.Errorf("type = %v", secret["type"])
+	}
+	data := secret["data"].(map[string]any)
+	for _, k := range []string{"tls.crt", "tls.key", "ca.crt"} {
+		if data[k] == nil || data[k] == "" {
+			t.Errorf("secret data %q is empty", k)
+		}
+	}
+	meta := secret["metadata"].(map[string]any)
+	ann := meta["annotations"].(map[string]any)
+	if ann["vaultls.io/serial"] != "A1B2C" {
+		t.Errorf("serial annotation = %v", ann["vaultls.io/serial"])
+	}
+
+	first := api.dlCount
+	if err := r.Domain(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if api.dlCount != first {
+		t.Errorf("second pass should skip the download, dlCount %d -> %d", first, api.dlCount)
+	}
+}
+
+// mergeInto applies a JSON merge patch to the fake server's stored object.
+func mergeInto(dst, patch map[string]any) {
+	for k, v := range patch {
+		sub, isMap := v.(map[string]any)
+		cur, curIsMap := dst[k].(map[string]any)
+		switch {
+		case v == nil:
+			delete(dst, k)
+		case isMap && curIsMap:
+			mergeInto(cur, sub)
+		case isMap:
+			cp := map[string]any{}
+			mergeInto(cp, sub)
+			dst[k] = cp
+		default:
+			dst[k] = v
+		}
 	}
 }

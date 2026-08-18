@@ -372,3 +372,138 @@ func TestApplyCATrustDefaultsDetection(t *testing.T) {
 		})
 	}
 }
+
+func k8sConfig(t *testing.T, domainBody string) (*Config, error) {
+	t.Helper()
+	return Load(writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    target: k8s
+`+domainBody))
+}
+
+func TestLoadK8sTarget(t *testing.T) {
+	cfg, err := k8sConfig(t, `    k8s:
+      namespace: default
+      secret: wildcard-example-com
+      include_ca: true
+      labels:
+        vaultls.io/replicate: "true"
+`)
+	if err != nil {
+		t.Fatalf("valid k8s domain rejected: %v", err)
+	}
+	d := cfg.Domains[0]
+	if d.Kind() != TargetK8s {
+		t.Errorf("Kind() = %q", d.Kind())
+	}
+	// The file-target defaults must not be filled in for a k8s domain: an
+	// out_dir invented here would show up in logs and metrics as a path the
+	// agent never writes.
+	if d.OutDir != "" || len(d.Formats) != 0 {
+		t.Errorf("file defaults leaked into k8s domain: out_dir=%q formats=%v", d.OutDir, d.Formats)
+	}
+	if !d.K8s.IncludeCA || d.K8s.Labels["vaultls.io/replicate"] != "true" {
+		t.Errorf("k8s block = %+v", d.K8s)
+	}
+}
+
+func TestLoadK8sTargetRequiresNamespaceAndSecret(t *testing.T) {
+	for _, body := range []string{
+		"    k8s:\n      secret: only-secret\n",
+		"    k8s:\n      namespace: default\n",
+		"",
+	} {
+		if _, err := k8sConfig(t, body); err == nil {
+			t.Errorf("k8s domain without namespace/secret accepted (body %q)", body)
+		}
+	}
+}
+
+func TestLoadK8sTargetRejectsFileSettings(t *testing.T) {
+	base := "    k8s:\n      namespace: default\n      secret: s\n"
+	for _, extra := range []string{
+		"    out_dir: /etc/ssl/vaultls/x\n",
+		"    reload: \"systemctl reload nginx\"\n",
+		"    formats: [nginx]\n",
+		"    mode: \"0640\"\n",
+		"    basename: example\n",
+	} {
+		if _, err := k8sConfig(t, base+extra); err == nil {
+			t.Errorf("k8s domain accepted file-only setting %q", extra)
+		}
+	}
+}
+
+func TestLoadK8sTargetValidatesNames(t *testing.T) {
+	for _, body := range []string{
+		"    k8s:\n      namespace: Default\n      secret: s\n",
+		"    k8s:\n      namespace: default\n      secret: \"bad_name\"\n",
+		"    k8s:\n      namespace: default\n      secret: \"-lead\"\n",
+	} {
+		if _, err := k8sConfig(t, body); err == nil {
+			t.Errorf("invalid DNS-1123 name accepted: %q", body)
+		}
+	}
+}
+
+func TestLoadRejectsUnknownTarget(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    target: vault
+    reload: "true"
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for an unknown target")
+	}
+}
+
+func TestLoadRejectsDuplicateSecret(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    target: k8s
+    cert_id: 11
+    k8s: {namespace: default, secret: wildcard}
+  - name: "*.example.com"
+    target: k8s
+    cert_id: 14
+    k8s: {namespace: default, secret: wildcard}
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for two domains writing one Secret")
+	}
+}
+
+// The same Secret name in two namespaces is a legitimate deployment.
+func TestLoadAllowsSameSecretDistinctNamespaces(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    target: k8s
+    k8s: {namespace: default, secret: wildcard}
+  - name: "*.example.com"
+    target: k8s
+    k8s: {namespace: infra, secret: wildcard}
+`)
+	if _, err := Load(p); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+}

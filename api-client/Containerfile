@@ -1,0 +1,17 @@
+# Container image for the agent's k8s target: it keeps one Secret per configured
+# domain up to date. The same binary also ships as a .deb for plain nodes.
+FROM golang:1.26-alpine AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags "-s -w -X github.com/vasyakrg/vaultls-agent/internal/version.Version=${VERSION}" \
+    -o /out/vaultls-agent ./cmd/vaultls-agent
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=build /out/vaultls-agent /usr/bin/vaultls-agent
+USER 65532:65532
+ENTRYPOINT ["/usr/bin/vaultls-agent"]
+CMD ["run", "--config", "/etc/vaultls/config.yaml", "--no-self-update"]

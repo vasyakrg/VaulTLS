@@ -1,6 +1,7 @@
-package reconcile
+package target
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -9,7 +10,20 @@ import (
 
 	"github.com/vasyakrg/vaultls-agent/internal/config"
 	"github.com/vasyakrg/vaultls-agent/internal/pki"
+	"github.com/vasyakrg/vaultls-agent/internal/store"
 )
+
+// File deploys a bundle as files under out_dir, with the state kept in the
+// .vaultls-state.json that lives beside them.
+type File struct{ d config.Domain }
+
+func (f File) LoadState(context.Context) (store.State, error) { return store.Read(f.d.OutDir) }
+
+func (f File) Apply(_ context.Context, b *pki.Bundle) error { return writeBundle(f.d.OutDir, b, f.d) }
+
+func (f File) SaveState(_ context.Context, s store.State) error { return store.Write(f.d.OutDir, s) }
+
+func (f File) Describe() string { return f.d.OutDir }
 
 // writeFile atomically writes data to dir/name with the given mode, then
 // best-effort applies owner/group from the domain.

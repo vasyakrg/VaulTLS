@@ -1,0 +1,49 @@
+{{- if .Values.rbac.create }}
+{{- $root := . }}
+{{- $byNs := dict }}
+{{- range .Values.certificates }}
+  {{- $names := index $byNs .namespace | default (list) }}
+  {{- $names = append $names .secretName }}
+  {{- $_ := set $byNs .namespace $names }}
+{{- end }}
+{{- range $ns, $names := $byNs }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "vaultls-agent.fullname" $root }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "vaultls-agent.labels" $root | nindent 4 }}
+rules:
+  # A create request cannot be narrowed by resourceNames: the object does not
+  # exist yet when the request is authorized. Every other verb is pinned to the
+  # exact Secrets this release manages.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "update", "patch"]
+    resourceNames:
+      {{- range ($names | uniq) }}
+      - {{ . | quote }}
+      {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "vaultls-agent.fullname" $root }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "vaultls-agent.labels" $root | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "vaultls-agent.fullname" $root }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "vaultls-agent.serviceAccountName" $root }}
+    namespace: {{ $root.Release.Namespace }}
+{{- end }}
+{{- end }}

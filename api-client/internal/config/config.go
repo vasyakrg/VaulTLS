@@ -15,8 +15,25 @@ type Server struct {
 	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 }
 
+// Target kinds a domain entry can deploy to.
+const (
+	TargetFile = "file"
+	TargetK8s  = "k8s"
+)
+
+// K8s describes the Secret a k8s-target domain keeps up to date. The agent
+// writes only this one object; replicating it to other namespaces is left to
+// the cluster's own tooling (Kyverno, reflector, ...), matched via Labels.
+type K8s struct {
+	Namespace string            `yaml:"namespace"`
+	Secret    string            `yaml:"secret"`
+	IncludeCA bool              `yaml:"include_ca"`
+	Labels    map[string]string `yaml:"labels"`
+}
+
 type Domain struct {
 	Name     string   `yaml:"name"`
+	Target   string   `yaml:"target"`
 	OutDir   string   `yaml:"out_dir"`
 	Basename string   `yaml:"basename"`
 	Formats  []string `yaml:"formats"`
@@ -25,6 +42,15 @@ type Domain struct {
 	Mode     string   `yaml:"mode"`
 	Reload   string   `yaml:"reload"`
 	CertID   int64    `yaml:"cert_id"`
+	K8s      K8s      `yaml:"k8s"`
+}
+
+// Kind normalises the target, defaulting to the historic file output.
+func (d Domain) Kind() string {
+	if d.Target == "" {
+		return TargetFile
+	}
+	return d.Target
 }
 
 // SplitFileNames are the on-disk names writeBundle uses for the split formats

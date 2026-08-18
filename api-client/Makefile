@@ -1,7 +1,7 @@
 VERSION ?= dev
 LDFLAGS := -s -w -X github.com/vasyakrg/vaultls-agent/internal/version.Version=$(VERSION)
 
-.PHONY: test build deb clean
+.PHONY: test build deb image clean
 
 test:
 	go test ./...
@@ -11,6 +11,11 @@ build:
 
 deb: build
 	VERSION=$(VERSION) nfpm pkg --packager deb --config packaging/nfpm.yaml --target dist/
+
+IMAGE ?= ghcr.io/vasyakrg/vaultls-agent
+
+image:
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) -f Containerfile .
 
 clean:
 	rm -rf dist

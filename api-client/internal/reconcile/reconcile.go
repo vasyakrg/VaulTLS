@@ -11,6 +11,7 @@ import (
 	"github.com/vasyakrg/vaultls-agent/internal/pki"
 	"github.com/vasyakrg/vaultls-agent/internal/reloader"
 	"github.com/vasyakrg/vaultls-agent/internal/store"
+	"github.com/vasyakrg/vaultls-agent/internal/target"
 	"github.com/vasyakrg/vaultls-agent/internal/vaultls"
 )
 
@@ -23,31 +24,42 @@ type API interface {
 type Clock func() time.Time
 
 type Reconciler struct {
-	api API
-	m   *metrics.Metrics
-	now Clock
+	api     API
+	m       *metrics.Metrics
+	now     Clock
+	targets *target.Factory
 }
 
-func New(api API, m *metrics.Metrics, now Clock) *Reconciler {
-	return &Reconciler{api: api, m: m, now: now}
+func New(api API, m *metrics.Metrics, now Clock, targets *target.Factory) *Reconciler {
+	if targets == nil {
+		targets = target.NewFactory()
+	}
+	return &Reconciler{api: api, m: m, now: now, targets: targets}
 }
 
 // certLabels keys metric series by the whole config entry: two entries may share
-// one domain name while pulling different certificates into different directories.
-func certLabels(d config.Domain) metrics.CertLabels {
+// one domain name while pulling different certificates to different
+// destinations. dest is the target's own identity — an out_dir for file
+// targets, namespace/secret for cluster ones.
+func certLabels(d config.Domain, dest string) metrics.CertLabels {
 	domain := d.Name
 	if domain == "" {
-		domain = d.OutDir
+		domain = dest
 	}
 	certID := ""
 	if d.CertID != 0 {
 		certID = strconv.FormatInt(d.CertID, 10)
 	}
-	return metrics.CertLabels{Domain: domain, CertID: certID, OutDir: d.OutDir}
+	return metrics.CertLabels{Domain: domain, CertID: certID, OutDir: dest}
 }
 
 func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
-	label := certLabels(d)
+	tgt, err := r.targets.For(d)
+	if err != nil {
+		r.m.IncReconcileError(certLabels(d, d.OutDir), "target")
+		return fmt.Errorf("resolve target: %w", err)
+	}
+	label := certLabels(d, tgt.Describe())
 	now := r.now()
 	r.m.MarkCheck(label, float64(now.Unix()))
 
@@ -66,7 +78,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 
 	r.m.SetCertExpiry(label, float64(cert.ValidUntil)/1000.0)
 
-	prev, err := store.Read(d.OutDir)
+	prev, err := tgt.LoadState(ctx)
 	if err != nil {
 		r.m.IncReconcileError(label, "state_read")
 		return fmt.Errorf("read state: %w", err)
@@ -77,7 +89,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 	// ValidUntil); until either changes we have nothing new to deploy.
 	if prev.CertID == cert.ID && prev.ValidUntil == cert.ValidUntil && prev.Serial != "" {
 		prev.LastCheck = now.UnixMilli()
-		if err := store.Write(d.OutDir, prev); err != nil {
+		if err := tgt.SaveState(ctx, prev); err != nil {
 			r.m.IncReconcileError(label, "state_write")
 			return fmt.Errorf("write state: %w", err)
 		}
@@ -103,9 +115,9 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 
 	changed := bundle.Serial != prev.Serial
 	if changed {
-		if err := writeBundle(d.OutDir, bundle, d); err != nil {
+		if err := tgt.Apply(ctx, bundle); err != nil {
 			r.m.IncReconcileError(label, "write")
-			return fmt.Errorf("write bundle: %w", err)
+			return fmt.Errorf("deploy bundle: %w", err)
 		}
 	}
 
@@ -116,7 +128,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 	if changed {
 		next.LastRenewal = now.UnixMilli()
 	}
-	if err := store.Write(d.OutDir, next); err != nil {
+	if err := tgt.SaveState(ctx, next); err != nil {
 		r.m.IncReconcileError(label, "state_write")
 		return fmt.Errorf("write state: %w", err)
 	}
