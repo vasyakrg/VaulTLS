@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vaultls-agent.fullname" . }}
+  labels:
+    {{- include "vaultls-agent.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Two agents writing the same Secret would fight over it, so the old pod goes
+  # away before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "vaultls-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "vaultls-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "vaultls-agent.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["run", "--config", "/etc/vaultls/config.yaml", "--no-self-update"]
+          env:
+            - name: VAULTLS_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls-agent.credentialsSecret" . }}
+                  key: client_id
+            - name: VAULTLS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vaultls-agent.credentialsSecret" . }}
+                  key: secret
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vaultls
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "vaultls-agent.fullname" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

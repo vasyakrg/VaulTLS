@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vaultls-agent.fullname" . }}
+  labels:
+    {{- include "vaultls-agent.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      url: {{ required "vaultls.url is required" .Values.vaultls.url | quote }}
+      client_id: ${VAULTLS_CLIENT_ID}
+      secret: ${VAULTLS_SECRET}
+      insecure_skip_verify: {{ .Values.vaultls.insecureSkipVerify }}
+    schedule: {{ .Values.schedule | quote }}
+    jitter: {{ .Values.jitter | quote }}
+    log:
+      level: {{ .Values.log.level | quote }}
+      format: {{ .Values.log.format | quote }}
+    exporter:
+      # 0.0.0.0 so the metrics port is reachable from outside the pod.
+      listen: "0.0.0.0:{{ .Values.metrics.port }}"
+    domains:
+      {{- range .Values.certificates }}
+      - target: k8s
+        {{- with .name }}
+        name: {{ . | quote }}
+        {{- end }}
+        {{- with .certId }}
+        cert_id: {{ . }}
+        {{- end }}
+        k8s:
+          namespace: {{ required "certificates[].namespace is required" .namespace | quote }}
+          secret: {{ required "certificates[].secretName is required" .secretName | quote }}
+          include_ca: {{ default false .includeCA }}
+          {{- with .labels }}
+          labels:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- end }}

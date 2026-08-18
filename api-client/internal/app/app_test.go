@@ -34,7 +34,7 @@ func TestReconcileAllIsolatesFailures(t *testing.T) {
 		{Name: "a", OutDir: t.TempDir(), Formats: []string{"nginx"}, Mode: "0640", Reload: "true"},
 		{Name: "b", OutDir: t.TempDir(), Formats: []string{"nginx"}, Mode: "0640", Reload: "true"},
 	}}
-	r := reconcile.New(failAPI{}, metrics.New(), contextClock)
+	r := reconcile.New(failAPI{}, metrics.New(), contextClock, nil)
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
 	// Must not panic and must attempt both domains despite errors.

@@ -7,20 +7,38 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    defaults:
-      run:
-        working-directory: api-client
+      packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          cache-dependency-path: api-client/go.sum
+      - name: Resolve version
+        run: echo "VERSION=${GITHUB_REF_NAME#agent-v}" >> "$GITHUB_ENV"
       - run: go test ./...
+        working-directory: api-client
       - run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
       - name: Build deb
-        run: |
-          VERSION="${GITHUB_REF_NAME#agent-v}"
-          make deb VERSION="$VERSION"
-      - uses: softprops/action-gh-release@v2
+        run: make deb VERSION="$VERSION"
+        working-directory: api-client
+      - uses: softprops/action-gh-release@v3
         with:
           files: api-client/dist/*.deb
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./api-client
+          file: ./api-client/Containerfile
+          platforms: linux/amd64
+          push: true
+          build-args: VERSION=${{ env.VERSION }}
+          tags: |
+            ghcr.io/vasyakrg/vaultls-agent:${{ env.VERSION }}
+            ghcr.io/vasyakrg/vaultls-agent:latest

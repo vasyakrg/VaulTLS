@@ -13,13 +13,14 @@ import (
 	"github.com/vasyakrg/vaultls-agent/internal/reconcile"
 	"github.com/vasyakrg/vaultls-agent/internal/scheduler"
 	"github.com/vasyakrg/vaultls-agent/internal/selfupdate"
+	"github.com/vasyakrg/vaultls-agent/internal/target"
 	"github.com/vasyakrg/vaultls-agent/internal/vaultls"
 	"github.com/vasyakrg/vaultls-agent/internal/version"
 )
 
 func ReconcileAll(ctx context.Context, cfg *config.Config, r *reconcile.Reconciler, log *slog.Logger) {
 	for _, d := range cfg.Domains {
-		log.Debug("reconciling domain", "domain", d.Name, "cert_id", d.CertID, "out_dir", d.OutDir)
+		log.Debug("reconciling domain", "domain", d.Name, "cert_id", d.CertID, "target", d.Kind())
 		if err := r.Domain(ctx, d); err != nil {
 			log.Error("reconcile failed", "domain", d.Name, "cert_id", d.CertID, "err", err)
 		} else {
@@ -61,7 +62,15 @@ func SyncCATrust(ctx context.Context, cfg *config.Config, f catrust.Fetcher, m *
 	}
 }
 
-func Run(ctx context.Context, configPath, githubAPIBase string) error {
+// Options carries the switches that only make sense for one deployment shape,
+// so they stay out of config.yaml: in a container the agent is upgraded by
+// rolling the image tag, and the GitHub version check is pure noise there.
+type Options struct {
+	GitHubAPIBase string
+	NoSelfUpdate  bool
+}
+
+func Run(ctx context.Context, configPath string, opts Options) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -82,7 +91,7 @@ func Run(ctx context.Context, configPath, githubAPIBase string) error {
 	m.SetBuildInfo(version.Version)
 
 	api := vaultls.New(cfg.Server.URL, cfg.Server.ClientID, cfg.Server.Secret, cfg.Server.InsecureSkipVerify)
-	r := reconcile.New(api, m, time.Now)
+	r := reconcile.New(api, m, time.Now, target.NewFactory())
 
 	// Exporter.
 	mux := http.NewServeMux()
@@ -100,19 +109,21 @@ func Run(ctx context.Context, configPath, githubAPIBase string) error {
 	}()
 
 	// Self-update check now and daily.
-	checkUpdate(ctx, m, githubAPIBase, log)
-	go func() {
-		t := time.NewTicker(24 * time.Hour)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				checkUpdate(ctx, m, githubAPIBase, log)
+	if !opts.NoSelfUpdate {
+		checkUpdate(ctx, m, opts.GitHubAPIBase, log)
+		go func() {
+			t := time.NewTicker(24 * time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					checkUpdate(ctx, m, opts.GitHubAPIBase, log)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Initial CA trust sync and domain reconcile, then the same pair on every
 	// scheduled run.
@@ -135,7 +146,7 @@ func RunOnce(ctx context.Context, configPath string) error {
 	}
 	m := metrics.New()
 	api := vaultls.New(cfg.Server.URL, cfg.Server.ClientID, cfg.Server.Secret, cfg.Server.InsecureSkipVerify)
-	r := reconcile.New(api, m, time.Now)
+	r := reconcile.New(api, m, time.Now, target.NewFactory())
 	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
 	return nil

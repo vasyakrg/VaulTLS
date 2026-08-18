@@ -10,6 +10,7 @@ Built for Debian/amd64 hosts: ships as a single static binary in a `.deb`, runs 
 
 - **Pull-based distribution** — fetches certificates from VaulTLS over its REST API using a service account (`client_id` + `secret`); no inbound access to the host required.
 - **Multiple domains per host** — each domain is reconciled independently; one failing domain never blocks the others.
+- **Two deployment targets** — files on a node (`target: file`, the default) or a `kubernetes.io/tls` Secret in a cluster (`target: k8s`), mixable in one config.
 - **Wildcard-aware lookup** — match a certificate by name (`*.example.com`) or pin an exact `cert_id`.
 - **Multiple on-disk formats** — `nginx` (separate `fullchain`/`cert`/`chain` as `.crt`, plus `privkey.key`) and `haproxy` (cert+key concatenated in one `.pem`). Private keys are always written `0600`.
 - **Change detection** — compares the certificate serial against a local state file and **only reloads the target service when the certificate actually changed** — no needless reloads.
@@ -129,6 +130,7 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 | Field | Type | Description |
 |---|---|---|
 | `name` | string | VaulTLS certificate name to look up (see wildcard note below). |
+| `target` | string | Where the certificate is deployed: `file` (default, writes to `out_dir`) or `k8s` (writes a Secret, see [Kubernetes target](#kubernetes-target)). |
 | `out_dir` | string | Directory where certificate files are written. |
 | `basename` | string | Optional stem for the written file names (see [Output files](#output-files)). Unset → the default `fullchain.crt`/`cert.crt`/… names. Allowed: letters, digits, `.`, `-`, `_`; must start with a letter or digit; max 64 chars. |
 | `formats` | `[]string` | Output formats: `nginx`, `haproxy` (both may be listed). `pem` is accepted as a legacy alias for `nginx`. |
@@ -137,6 +139,72 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 | `mode` | octal string | File permissions for non-private files (default `"0640"`). Private key is always `0600`. |
 | `reload` | string | Shell command executed after a certificate is updated. |
 | `cert_id` | int64 | If non-zero, selects a certificate by its exact ID instead of by `name`. |
+
+### Kubernetes target (`target: k8s`)
+
+| Field | Type | Description |
+|---|---|---|
+| `k8s.namespace` | string | Namespace of the managed Secret. Required. |
+| `k8s.secret` | string | Name of the managed Secret. Required. |
+| `k8s.include_ca` | bool | Also write the intermediate chain as `ca.crt`. Default `false`. Turning it off removes a `ca.crt` written earlier. |
+| `k8s.labels` | map | Extra labels put on the Secret — what a replication policy selects on. `app.kubernetes.io/managed-by: vaultls-agent` is always added. |
+
+The file-target keys (`out_dir`, `basename`, `formats`, `owner`, `group`, `mode`,
+`reload`) are **rejected** on a `k8s` domain rather than ignored: a config that
+describes an output which will never be written is a config that lies.
+
+```yaml
+domains:
+  - name: "*.example.com"
+    target: k8s
+    k8s:
+      namespace: default
+      secret: wildcard-example-com
+      include_ca: true
+      labels:
+        vaultls.io/replicate: "true"
+```
+
+The resulting Secret:
+
+```
+type: kubernetes.io/tls
+data:
+  tls.crt   fullchain (certificate + intermediate chain)
+  tls.key   private key
+  ca.crt    intermediate chain          # only with include_ca: true
+annotations:
+  vaultls.io/cert-id, /serial, /valid-until, /last-check, /last-renewal
+```
+
+A pod has no writable volume for `.vaultls-state.json`, so the deployment state
+lives in those annotations. That keeps the skip-if-unchanged logic working
+across restarts and rescheduling; deleting the Secret makes the next run
+recreate it from scratch.
+
+Updates go out as a JSON merge patch touching only the keys the agent owns, so
+labels and annotations added by other controllers survive a rotation. The Secret
+`type` is immutable and never patched.
+
+Minimum RBAC — one Role per target namespace, no cluster-wide Secret access:
+
+```yaml
+rules:
+  # create cannot be narrowed by resourceNames: the object does not exist yet
+  # when the request is authorized.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "update", "patch"]
+    resourceNames: ["wildcard-example-com"]
+```
+
+Deploy it with the chart in [`helm-chart-agent/`](../helm-chart-agent/README.md),
+which also covers replicating the Secret to other namespaces with Kyverno.
+
+Image: `ghcr.io/vasyakrg/vaultls-agent:<version>` (linux/amd64).
 
 ### Wildcard mapping
 

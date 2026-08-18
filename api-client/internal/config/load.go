@@ -53,6 +53,12 @@ func applyDefaults(cfg *Config) error {
 	}
 	for i := range cfg.Domains {
 		d := &cfg.Domains[i]
+		if d.Target == "" {
+			d.Target = TargetFile
+		}
+		if d.Target != TargetFile {
+			continue
+		}
 		if len(d.Formats) == 0 {
 			d.Formats = []string{"nginx"}
 		}
@@ -138,38 +144,85 @@ func validate(cfg *Config) error {
 	if len(cfg.Domains) == 0 {
 		return fmt.Errorf("at least one domain is required")
 	}
-	// Two entries writing into one directory would silently overwrite each
+	// Two entries deploying to one destination would silently overwrite each
 	// other's key material on every reconcile.
-	seenOutDir := map[string]int{}
+	seenDest := map[string]int{}
 	for i, d := range cfg.Domains {
-		if d.OutDir != "" {
-			if first, dup := seenOutDir[d.OutDir]; dup {
-				return fmt.Errorf("domain[%d] (%s): out_dir %q already used by domain[%d]", i, d.Name, d.OutDir, first)
-			}
-			seenOutDir[d.OutDir] = i
-		}
 		if d.Name == "" && d.CertID == 0 {
 			return fmt.Errorf("domain[%d]: name or cert_id required", i)
 		}
-		if d.Name == "" && d.OutDir == "" {
-			return fmt.Errorf("domain[%d]: out_dir is required when name is empty", i)
+		var err error
+		switch d.Kind() {
+		case TargetFile:
+			err = validateFileDomain(d)
+		case TargetK8s:
+			err = validateK8sDomain(d)
+		default:
+			err = fmt.Errorf("unknown target %q (want %q or %q)", d.Target, TargetFile, TargetK8s)
 		}
-		if d.Reload == "" {
-			return fmt.Errorf("domain[%d] (%s): reload is required", i, d.Name)
-		}
-		for _, f := range d.Formats {
-			// "pem" is the legacy alias for the split-format layout now called
-			// "nginx"; kept so existing configs keep working unchanged.
-			if f != "nginx" && f != "pem" && f != "haproxy" {
-				return fmt.Errorf("domain[%d] (%s): unknown format %q", i, d.Name, f)
-			}
-		}
-		if _, err := d.FileMode(); err != nil {
+		if err != nil {
 			return fmt.Errorf("domain[%d] (%s): %w", i, d.Name, err)
 		}
-		if err := validateBasename(d.Basename); err != nil {
-			return fmt.Errorf("domain[%d] (%s): %w", i, d.Name, err)
+		dest := d.Kind() + ":" + d.OutDir
+		if d.Kind() == TargetK8s {
+			dest = d.Kind() + ":" + d.K8s.Namespace + "/" + d.K8s.Secret
 		}
+		if first, dup := seenDest[dest]; dup {
+			return fmt.Errorf("domain[%d] (%s): destination already used by domain[%d]", i, d.Name, first)
+		}
+		seenDest[dest] = i
+	}
+	return nil
+}
+
+func validateFileDomain(d Domain) error {
+	if d.Name == "" && d.OutDir == "" {
+		return fmt.Errorf("out_dir is required when name is empty")
+	}
+	if d.Reload == "" {
+		return fmt.Errorf("reload is required")
+	}
+	for _, f := range d.Formats {
+		// "pem" is the legacy alias for the split-format layout now called
+		// "nginx"; kept so existing configs keep working unchanged.
+		if f != "nginx" && f != "pem" && f != "haproxy" {
+			return fmt.Errorf("unknown format %q", f)
+		}
+	}
+	if _, err := d.FileMode(); err != nil {
+		return err
+	}
+	return validateBasename(d.Basename)
+}
+
+// dnsNameRe is the RFC 1123 subdomain form Kubernetes requires of namespace and
+// Secret names.
+var dnsNameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
+// validateK8sDomain rejects the file-target keys outright instead of ignoring
+// them: a config that carries out_dir next to target: k8s is describing an
+// output that will never be written, and silence there costs an outage.
+func validateK8sDomain(d Domain) error {
+	if d.K8s.Namespace == "" || d.K8s.Secret == "" {
+		return fmt.Errorf("k8s.namespace and k8s.secret are required for target %q", TargetK8s)
+	}
+	for _, f := range []struct{ what, v string }{
+		{"k8s.namespace", d.K8s.Namespace}, {"k8s.secret", d.K8s.Secret},
+	} {
+		if len(f.v) > 253 || !dnsNameRe.MatchString(f.v) {
+			return fmt.Errorf("%s %q is not a valid DNS-1123 subdomain", f.what, f.v)
+		}
+	}
+	for _, f := range []struct{ what, v string }{
+		{"out_dir", d.OutDir}, {"basename", d.Basename}, {"owner", d.Owner},
+		{"group", d.Group}, {"mode", d.Mode}, {"reload", d.Reload},
+	} {
+		if f.v != "" {
+			return fmt.Errorf("%s is a file-target setting and has no effect with target %q", f.what, TargetK8s)
+		}
+	}
+	if len(d.Formats) > 0 {
+		return fmt.Errorf("formats is a file-target setting and has no effect with target %q", TargetK8s)
 	}
 	return nil
 }

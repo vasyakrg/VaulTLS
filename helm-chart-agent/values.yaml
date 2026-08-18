@@ -1,0 +1,65 @@
+image:
+  repository: ghcr.io/vasyakrg/vaultls-agent
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# VaulTLS service account credentials. The chart renders them into a Secret and
+# passes the secret through the VAULTLS_SECRET env var, which config.yaml
+# expands — the value never appears in the ConfigMap.
+vaultls:
+  url: https://vaultls.example.com
+  clientId: ""
+  secret: ""
+  insecureSkipVerify: false
+  # Use a Secret you manage yourself instead of the one rendered from the values
+  # above. It must hold the keys client_id and secret.
+  existingSecret: ""
+
+# Cron expression for the reconcile loop, plus a random delay on top of it.
+schedule: "0 3 * * *"
+jitter: 30m
+
+log:
+  level: info
+  format: json
+
+# Certificates to keep in sync. Every entry writes one kubernetes.io/tls Secret.
+# The labels are what a Kyverno (or reflector) policy selects on to replicate
+# the Secret into other namespaces.
+certificates:
+  - name: "*.example.com"
+    # certId: 42          # pin an exact certificate instead of matching by name
+    namespace: default
+    secretName: wildcard-example-com
+    includeCA: true
+    labels:
+      vaultls.io/replicate: "true"
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+metrics:
+  enabled: true
+  port: 9105
+  serviceMonitor:
+    enabled: false
+    interval: 60s
+    labels: {}
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

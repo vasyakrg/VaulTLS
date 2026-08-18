@@ -1,0 +1,16 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vaultls-agent.fullname" . }}
+  labels:
+    {{- include "vaultls-agent.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+  selector:
+    {{- include "vaultls-agent.selectorLabels" . | nindent 4 }}
+{{- end }}

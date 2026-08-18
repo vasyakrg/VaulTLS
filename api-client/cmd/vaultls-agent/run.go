@@ -14,6 +14,7 @@ func cmdRun(args []string) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	configPath := fs.String("config", "/etc/vaultls/config.yaml", "path to config.yaml")
 	once := fs.Bool("once", false, "run one reconcile pass and exit")
+	noSelfUpdate := fs.Bool("no-self-update", false, "skip the daily GitHub release check (use in containers)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -26,7 +27,7 @@ func cmdRun(args []string) int {
 		}
 		return 0
 	}
-	if err := app.Run(ctx, *configPath, ""); err != nil && err != context.Canceled {
+	if err := app.Run(ctx, *configPath, app.Options{NoSelfUpdate: *noSelfUpdate}); err != nil && err != context.Canceled {
 		os.Stderr.WriteString(err.Error() + "\n")
 		return 1
 	}

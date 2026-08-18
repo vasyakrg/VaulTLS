@@ -1,0 +1,19 @@
+vaultls-agent is deployed. It keeps these Secrets up to date:
+
+{{- range .Values.certificates }}
+  - {{ .namespace }}/{{ .secretName }} ({{ .name | default (printf "cert_id=%v" .certId) }})
+{{- end }}
+
+Check what it did:
+
+  kubectl logs -n {{ .Release.Namespace }} deploy/{{ include "vaultls-agent.fullname" . }}
+{{- range (.Values.certificates | first | list) }}
+  kubectl get secret -n {{ .namespace }} {{ .secretName }} -o jsonpath='{.metadata.annotations}'
+{{- end }}
+
+The deployed serial, cert id and last check are recorded as vaultls.io/*
+annotations on each Secret — that is the agent's state, so deleting a Secret
+makes the next run recreate it.
+
+To replicate the Secrets into other namespaces, point your Kyverno policy at the
+labels configured under certificates[].labels. See helm-chart-agent/README.md.

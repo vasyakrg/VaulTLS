@@ -36,3 +36,15 @@ domains:
     group: ssl-cert
     mode: "0640"
     reload: "systemctl reload nginx"
+  # A domain can instead keep a Kubernetes Secret up to date. Mixing both target
+  # kinds in one config is fine; the k8s target needs a service account with
+  # get/create/update/patch on the named Secret, so it is normally deployed with
+  # the helm-chart-agent chart rather than as a .deb on a node.
+  # - name: "*.example.com"
+  #   target: k8s
+  #   k8s:
+  #     namespace: default
+  #     secret: wildcard-example-com
+  #     include_ca: true
+  #     labels:
+  #       vaultls.io/replicate: "true"
