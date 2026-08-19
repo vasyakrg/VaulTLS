@@ -1,0 +1,116 @@
+{{- if and .Values.metrics.enabled .Values.metrics.prometheusRule.enabled }}
+{{- $a := .Values.metrics.prometheusRule.alerts }}
+{{- $job := include "vaultls-agent.fullname" . }}
+{{- /* Every expression is pinned to this release: one cluster may run several
+       agents, and an alert must name the one that is actually broken. */ -}}
+{{- $sel := printf `{job="%s",namespace="%s"}` $job .Release.Namespace }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "vaultls-agent.fullname" . }}
+  {{- with .Values.metrics.prometheusRule.namespace }}
+  namespace: {{ . | quote }}
+  {{- end }}
+  labels:
+    {{- include "vaultls-agent.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "vaultls-agent.fullname" . }}
+      {{- with .Values.metrics.prometheusRule.interval }}
+      interval: {{ . }}
+      {{- end }}
+      rules:
+        {{- if $a.down.enabled }}
+        # Needs the ServiceMonitor: `up` comes from the scrape, not from the
+        # agent. vaultls_agent_up is only ever set to 1, so it can never report
+        # a dead pod by itself.
+        - alert: VaulTLSAgentDown
+          expr: {{ printf "up%s == 0" $sel }}
+          for: {{ $a.down.for }}
+          labels:
+            severity: {{ $a.down.severity }}
+          annotations:
+            summary: 'vaultls-agent {{ $job }} is not scrapeable'
+            description: 'The agent stopped serving /metrics — certificates in Secrets are no longer refreshed.'
+        {{- end }}
+        {{- if $a.missingCerts.enabled }}
+        - alert: VaulTLSAgentNoCertificates
+          expr: {{ printf "absent(vaultls_cert_expiry_timestamp_seconds%s) == 1" $sel }}
+          for: {{ $a.missingCerts.for }}
+          labels:
+            severity: {{ $a.missingCerts.severity }}
+          annotations:
+            summary: 'vaultls-agent {{ $job }} tracks no certificates'
+            description: 'No vaultls_cert_expiry_timestamp_seconds series — every configured entry fails before the certificate is resolved, or certificates[] is empty.'
+        {{- end }}
+        {{- if $a.stale.enabled }}
+        # The reconcile loop runs on a cron schedule ({{ .Values.schedule }} plus
+        # up to {{ .Values.jitter }} of jitter), so afterHours must stay above one
+        # full period plus the jitter.
+        - alert: VaulTLSAgentReconcileStale
+          expr: {{ printf "time() - vaultls_last_check_timestamp_seconds%s > %v * 3600" $sel $a.stale.afterHours }}
+          for: {{ $a.stale.for }}
+          labels:
+            severity: {{ $a.stale.severity }}
+          annotations:
+            summary: 'Certificate {{ `{{ $labels.domain }}` }} ({{ `{{ $labels.out_dir }}` }}) was not checked recently'
+            description: 'Last reconcile check was {{ `{{ $value | humanizeDuration }}` }} ago — the scheduler is stuck or the pod is wedged.'
+        {{- end }}
+        {{- if $a.certExpiry.enabled }}
+        # Warning and critical are mutually exclusive so one certificate never
+        # pages twice; expired certificates drop out of both and hit
+        # VaulTLSCertExpired instead.
+        - alert: VaulTLSCertExpiringSoon
+          expr: {{ printf "(vaultls_cert_expiry_timestamp_seconds%s - time() < %v * 86400) and (vaultls_cert_expiry_timestamp_seconds%s - time() >= %v * 86400)" $sel $a.certExpiry.warningDays $sel $a.certExpiry.criticalDays }}
+          for: {{ $a.certExpiry.for }}
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Certificate {{ `{{ $labels.domain }}` }} expires in less than {{ $a.certExpiry.warningDays }}d'
+            description: 'Secret {{ `{{ $labels.out_dir }}` }} expires in {{ `{{ $value | humanizeDuration }}` }}. The agent swaps it automatically once VaulTLS issues a replacement.'
+        - alert: VaulTLSCertExpiringCritical
+          expr: {{ printf "(vaultls_cert_expiry_timestamp_seconds%s - time() < %v * 86400) and (vaultls_cert_expiry_timestamp_seconds%s - time() >= 0)" $sel $a.certExpiry.criticalDays $sel }}
+          for: {{ $a.certExpiry.for }}
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Certificate {{ `{{ $labels.domain }}` }} expires in less than {{ $a.certExpiry.criticalDays }}d'
+            description: 'Secret {{ `{{ $labels.out_dir }}` }} still carries the old certificate — check that VaulTLS issued a new one.'
+        {{- end }}
+        {{- if $a.certExpired.enabled }}
+        - alert: VaulTLSCertExpired
+          expr: {{ printf "vaultls_cert_expiry_timestamp_seconds%s - time() < 0" $sel }}
+          for: {{ $a.certExpired.for }}
+          labels:
+            severity: {{ $a.certExpired.severity }}
+          annotations:
+            summary: 'Certificate {{ `{{ $labels.domain }}` }} has EXPIRED'
+            description: 'Secret {{ `{{ $labels.out_dir }}` }} serves an expired certificate — TLS handshakes against it are failing now.'
+        {{- end }}
+        {{- if $a.reconcileErrors.enabled }}
+        - alert: VaulTLSAgentReconcileErrors
+          expr: {{ printf "increase(vaultls_reconcile_errors_total%s[%s]) > 0" $sel $a.reconcileErrors.window }}
+          for: {{ $a.reconcileErrors.for }}
+          labels:
+            severity: {{ $a.reconcileErrors.severity }}
+          annotations:
+            summary: 'vaultls-agent fails at stage {{ `{{ $labels.stage }}` }} for {{ `{{ $labels.domain }}` }}'
+            description: 'Stage write/state_write points at RBAC or the target Secret; list/password/download points at the VaulTLS API; select means no certificate matches the configured name or cert_id.'
+        {{- end }}
+        {{- if $a.authErrors.enabled }}
+        - alert: VaulTLSAgentAuthErrors
+          expr: {{ printf "increase(vaultls_scrape_token_errors_total%s[%s]) > 0" $sel $a.authErrors.window }}
+          for: {{ $a.authErrors.for }}
+          labels:
+            severity: {{ $a.authErrors.severity }}
+          annotations:
+            summary: 'vaultls-agent cannot reach or authenticate against VaulTLS'
+            description: 'The service-account credentials are rejected or the API is unreachable. No certificate can be renewed until this clears.'
+        {{- end }}
+        {{- with .Values.metrics.prometheusRule.extraRules }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
