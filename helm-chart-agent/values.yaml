@@ -51,6 +51,57 @@ metrics:
     enabled: false
     interval: 60s
     labels: {}
+  # Alert rules built on the metrics the agent actually exports in Kubernetes
+  # mode. Trust-store and self-update metrics are not covered: the container
+  # runs with --no-self-update and writes Secrets, not a host trust store.
+  prometheusRule:
+    enabled: false
+    # Render into another namespace than the release (some setups keep all
+    # rules next to Prometheus). Empty = release namespace.
+    namespace: ""
+    # Selector labels your Prometheus picks rules up by,
+    # e.g. release: kube-prometheus-stack
+    labels: {}
+    interval: ""
+    alerts:
+      # Fires on the scrape's `up` series, so it needs serviceMonitor.enabled.
+      down:
+        enabled: true
+        for: 10m
+        severity: critical
+      certExpiry:
+        enabled: true
+        warningDays: 21
+        criticalDays: 7
+        for: 1h
+      certExpired:
+        enabled: true
+        for: 5m
+        severity: critical
+      # No successful reconcile check within this window. Keep it above one
+      # `schedule` period plus `jitter`.
+      stale:
+        enabled: true
+        afterHours: 26
+        for: 30m
+        severity: warning
+      reconcileErrors:
+        enabled: true
+        window: 1h
+        for: 15m
+        severity: warning
+      authErrors:
+        enabled: true
+        window: 1h
+        for: 15m
+        severity: critical
+      # No certificate series at all: config not applied or every entry fails.
+      missingCerts:
+        enabled: true
+        for: 15m
+        severity: warning
+    # Appended verbatim to the rule group.
+    extraRules: []
 
 resources:
   requests:

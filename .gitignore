@@ -15,3 +15,4 @@ backend/encrypted.db3
 helm-chart/values-prod.yaml
 # vaultls-agent build artifacts
 api-client/dist/
+values-prod-*.yaml

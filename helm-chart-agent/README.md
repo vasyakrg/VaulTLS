@@ -45,6 +45,58 @@ land in the ConfigMap. To manage the Secret yourself, create one with the keys
 | `certificates[].labels` | `vaultls.io/replicate: "true"` | Extra labels on the Secret — what the replication policy selects on. |
 | `rbac.create` | `true` | Render a Role/RoleBinding per target namespace. |
 | `metrics.serviceMonitor.enabled` | `false` | Render a Prometheus Operator ServiceMonitor. |
+| `metrics.prometheusRule.enabled` | `false` | Render a Prometheus Operator PrometheusRule with the alerts below. |
+| `metrics.prometheusRule.labels` | `{}` | Selector labels your Prometheus picks rules up by, e.g. `release: kube-prometheus-stack`. |
+| `metrics.prometheusRule.namespace` | `""` | Render the rule into another namespace than the release. |
+| `metrics.prometheusRule.alerts.<name>.enabled` | `true` | Per-alert toggle, see [Alerts](#alerts). |
+| `metrics.prometheusRule.extraRules` | `[]` | Extra rules appended verbatim to the group. |
+
+## Alerts
+
+`metrics.prometheusRule.enabled=true` renders a PrometheusRule built on the
+metrics the agent exports **in Kubernetes mode**. Self-update and CA-trust
+metrics are deliberately not covered: the container runs with
+`--no-self-update` and writes Secrets, never a host trust store.
+
+```bash
+helm upgrade --install vaultls-agent ./helm-chart-agent \
+  --set metrics.serviceMonitor.enabled=true \
+  --set metrics.prometheusRule.enabled=true \
+  --set metrics.prometheusRule.labels.release=kube-prometheus-stack
+```
+
+| Alert | Metric | Default | Meaning |
+|---|---|---|---|
+| `VaulTLSAgentDown` | `up` | critical, `for: 10m` | Nothing answers on `/metrics` — needs `serviceMonitor.enabled`. |
+| `VaulTLSCertExpiringSoon` | `vaultls_cert_expiry_timestamp_seconds` | warning, < 21d | Expiry approaching, still outside the critical window. |
+| `VaulTLSCertExpiringCritical` | same | critical, < 7d | VaulTLS has not issued a replacement yet. |
+| `VaulTLSCertExpired` | same | critical, `for: 5m` | The Secret serves an expired certificate. |
+| `VaulTLSAgentReconcileStale` | `vaultls_last_check_timestamp_seconds` | warning, > 26h | No reconcile within the window — scheduler stuck or pod wedged. |
+| `VaulTLSAgentReconcileErrors` | `vaultls_reconcile_errors_total` | warning, any error in 1h | Labelled by `stage`; the stage names the failing step. |
+| `VaulTLSAgentAuthErrors` | `vaultls_scrape_token_errors_total` | critical, any error in 1h | Credentials rejected or the API unreachable. |
+| `VaulTLSAgentNoCertificates` | `vaultls_cert_expiry_timestamp_seconds` | warning, `for: 15m` | No certificate series at all — empty config or every entry failing early. |
+
+Every expression is pinned to `job` + `namespace` of this release, so several
+agents in one cluster never alert for each other.
+
+Two thresholds are worth tuning:
+
+- `alerts.stale.afterHours` (26) must stay above one `schedule` period plus
+  `jitter`. Loosening `schedule` without raising it produces a permanent alert.
+- `alerts.certExpiry.warningDays` / `criticalDays` should straddle the renewal
+  lead time configured in VaulTLS; otherwise the warning fires on every normal
+  rotation.
+
+`vaultls_reconcile_errors_total` carries the `stage` label — it points straight
+at the layer to look at:
+
+| Stage | Where to look |
+|---|---|
+| `target` | Malformed `certificates[]` entry. |
+| `list`, `password`, `download` | VaulTLS API or credentials. |
+| `select` | No certificate matches `name` / `certId`. |
+| `decode` | Broken PKCS#12 from the server. |
+| `write`, `state_read`, `state_write` | RBAC or the target Secret. |
 
 ## RBAC
 
