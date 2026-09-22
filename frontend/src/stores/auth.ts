@@ -22,10 +22,29 @@ export const useAuthStore = defineStore('auth', {
     },
     actions: {
         async init() {
-            this.isAuthenticated = localStorage.getItem('is_authenticated') === 'true';
-            if (this.isAuthenticated) {
-                await this.fetchCurrentUser();
+            await this.verifySession();
+        },
+
+        /**
+         * Ask the server whether the session cookie is still good. The cookie is HttpOnly,
+         * so its expiry is invisible to us — the only honest source of truth is /auth/me.
+         * Returns the resulting authentication state.
+         */
+        async verifySession(): Promise<boolean> {
+            try {
+                this.current_user = await current_user();
+                this.setAuthentication(true);
+                return true;
+            } catch {
+                this.clearSession();
+                return false;
             }
+        },
+
+        /** Drop local session state without calling the server (the token is already gone). */
+        clearSession() {
+            this.current_user = null;
+            this.setAuthentication(false);
         },
 
         // Trigger the login of a user by email and password
@@ -116,10 +135,10 @@ export const useAuthStore = defineStore('auth', {
                 if (axios.isAxiosError(err)) {
                     this.error = 'Failed to fetch current user: ' + err.response?.data?.error;
                 } else {
-                    this.error = 'FFailed to fetch current user';
+                    this.error = 'Failed to fetch current user';
                 }
                 console.error(err);
-                await this.logout();
+                this.clearSession();
             }
         },
 
@@ -129,15 +148,12 @@ export const useAuthStore = defineStore('auth', {
             this.setAuthentication(true);
         },
 
-        // Set the authentication state and store it in local storage
+        // Set the authentication state
         setAuthentication(isAuthenticated: boolean) {
-            if (isAuthenticated) {
-                this.isAuthenticated = true;
-                localStorage.setItem('is_authenticated', String(true));
-            } else {
-                this.isAuthenticated = false;
-                localStorage.removeItem('is_authenticated');
-            }
+            this.isAuthenticated = isAuthenticated;
+            // Legacy hint from older builds; it outlived the 1-hour token and caused the
+            // store to claim an authenticated session that the server had long dropped.
+            localStorage.removeItem('is_authenticated');
         },
 
         // Log out the user and clear the authentication state
@@ -145,15 +161,18 @@ export const useAuthStore = defineStore('auth', {
             try {
                 this.error = null;
                 await logout()
-                this.setAuthentication(false);
             } catch (err) {
-                // Can't fail
+                // Best effort: the token may already be expired or revoked server-side.
                 if (axios.isAxiosError(err)) {
                     this.error = 'Failed to logout: ' + err.response?.data?.error;
                 } else {
                     this.error = 'Failed to logout';
                 }
                 console.error(err);
+            } finally {
+                // Local state is dropped either way — otherwise a failed logout would leave
+                // the user looking authenticated with no usable session.
+                this.clearSession();
             }
         },
     },
