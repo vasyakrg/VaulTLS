@@ -78,6 +78,7 @@ import Message from 'primevue/message';
 import { useAuthStore } from '../stores/auth';
 import { useSetupStore } from '@/stores/setup.ts';
 import router from '@/router/router.ts';
+import { useRoute } from 'vue-router';
 
 const { t } = useI18n();
 const email = ref('');
@@ -86,6 +87,7 @@ const loginError = ref('');
 const loading = ref(false);
 const authStore = useAuthStore();
 const setupStore = useSetupStore();
+const route = useRoute();
 
 const submitLogin = async () => {
   loginError.value = '';
@@ -95,7 +97,13 @@ const submitLogin = async () => {
     if (!success) {
       loginError.value = t('login.loginFailed');
     } else {
-      await router.push('Overview');
+      // `redirect` is set by the router guard / 401 handler, so an expired session returns
+      // the user to the page they were on.
+      const redirect = route.query.redirect;
+      const isInternal = typeof redirect === 'string'
+        && redirect.startsWith('/')
+        && !redirect.startsWith('//');
+      await router.push(isInternal ? redirect : { name: 'Overview' });
     }
   } finally {
     loading.value = false;

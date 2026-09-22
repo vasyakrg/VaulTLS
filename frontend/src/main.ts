@@ -12,6 +12,7 @@ import { VaulTLSPreset } from './theme/preset'
 import App from './App.vue'
 import { useSetupStore } from '@/stores/setup.ts'
 import { useAuthStore } from '@/stores/auth.ts'
+import { onSessionExpired } from '@/api/sessionExpired.ts'
 
 async function initApp() {
   const pinia = createPinia()
@@ -25,6 +26,16 @@ async function initApp() {
   await setupStore.init()
   const authStore = useAuthStore()
   await authStore.init()
+
+  // Any 401 outside the login/probe endpoints means the session is gone: drop local state
+  // and send the user to the login screen instead of leaving them clicking through tabs
+  // that answer with errors.
+  onSessionExpired(() => {
+    authStore.clearSession()
+    const current = router.currentRoute.value
+    if (current.name === 'Login' || current.name === 'FirstSetup') return
+    router.push({ name: 'Login', query: { redirect: current.fullPath } })
+  })
 
   app.use(router)
   app.mount('#app')

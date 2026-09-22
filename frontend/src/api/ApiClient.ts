@@ -1,6 +1,6 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import {useAuthStore} from "@/stores/auth.ts";
+import { handleResponseError } from '@/api/errorInterceptor.ts';
 const API_URL = `${window.location.origin}/api`;
 
 class ApiClient {
@@ -17,13 +17,7 @@ class ApiClient {
 
         this.client.interceptors.response.use(
             (response) => response,
-            (error) => {
-                if (error.response?.status === 401) {
-                    const authStore = useAuthStore();
-                    authStore.logout();
-                }
-                return Promise.reject(error);
-            }
+            (error) => Promise.reject(handleResponseError(error))
         );
 
     }

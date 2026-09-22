@@ -11,7 +11,7 @@ use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
-use crate::auth::session_auth::{generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin, Claims};
+use crate::auth::session_auth::{build_auth_cookie, generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin, Claims};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
@@ -190,16 +190,7 @@ pub(crate) async fn login(
             let jwt_key = state.settings.get_jwt_key()?;
             let token = generate_token(&jwt_key, user.id, user.role, true)?;
 
-            let mut cookie = Cookie::build(("auth_token", token))
-                .http_only(true)
-                .same_site(SameSite::Lax)
-                .secure(true);
-
-            if let Ok(insecure) = env::var("VAULTLS_INSECURE") && insecure == "true" {
-                cookie = cookie.secure(false);
-            }
-
-            jar.add_private(cookie);
+            jar.add_private(build_auth_cookie(token));
 
             info!(user=user.name, "Successful password-based user login.");
 
@@ -368,16 +359,7 @@ pub(crate) async fn oidc_callback(
             let jwt_key = state.settings.get_jwt_key()?;
             let token = generate_token(&jwt_key, user.id, user.role, false)?;
 
-            let mut cookie = Cookie::build(("auth_token", token))
-                .http_only(true)
-                .same_site(SameSite::Lax)
-                .secure(true);
-
-            if let Ok(insecure) = env::var("VAULTLS_INSECURE") && insecure == "true" {
-                cookie = cookie.secure(false);
-            }
-
-            jar.add_private(cookie);
+            jar.add_private(build_auth_cookie(token));
 
             info!(user=user.name, "Successful oidc-based user login");
 

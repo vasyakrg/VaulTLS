@@ -2,8 +2,9 @@ use std::{env, fs};
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
-use rocket::{get, routes, Build, Config, Rocket};
+use rocket::{catch, catchers, get, routes, Build, Config, Rocket};
 use rocket::fairing::AdHoc;
+use rocket::serde::json::Json;
 use rocket_okapi::openapi_get_routes;
 use rocket::http::ContentType;
 use rocket::response::content::RawHtml;
@@ -17,6 +18,7 @@ use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::certs::tls_cert::migrate_ca_storage;
 use crate::constants::{API_PORT, DB_FILE_PATH, VAULTLS_VERSION};
+use crate::data::error::ErrorResponse;
 use crate::data::objects::AppState;
 use crate::db::VaulTLSDB;
 use crate::helper::get_secret;
@@ -284,7 +286,21 @@ pub async fn create_rocket() -> Rocket<Build> {
         .attach(acme::NonceFairing)
         .mount("/api", routes![scalar_ui, scalar_js])
         .mount("/api", routes![crate::metrics::metrics])
+        .register("/api", catchers![unauthorized_catcher, forbidden_catcher])
         .attach(AdHoc::config::<Settings>())
+}
+
+/// Authentication guards reject with a bare status, so without these catchers Rocket would
+/// answer an expired session with an HTML error page. The frontend reads `error` off a JSON
+/// body, so mirror the `ApiError` shape here.
+#[catch(401)]
+fn unauthorized_catcher() -> Json<ErrorResponse> {
+    Json(ErrorResponse { error: "Session expired or not authenticated".to_string() })
+}
+
+#[catch(403)]
+fn forbidden_catcher() -> Json<ErrorResponse> {
+    Json(ErrorResponse { error: "Insufficient permissions".to_string() })
 }
 
 pub async fn create_test_rocket() -> Rocket<Build> {
@@ -440,6 +456,7 @@ pub async fn create_test_rocket() -> Rocket<Build> {
         )
         .mount("/api", routes![scalar_ui, scalar_js])
         .mount("/api", routes![crate::metrics::metrics])
+        .register("/api", catchers![unauthorized_catcher, forbidden_catcher])
 }
 
 #[cfg(test)]
