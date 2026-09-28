@@ -1,6 +1,6 @@
 use crate::constants::{DB_FILE_PATH, TEMP_DB_FILE_PATH};
 use crate::data::enums::{CAType, CertificateRenewMethod, UserRole};
-use crate::data::objects::{AuditEntry, AuditFilter, AuditLogRow, AuditPage, Group, GroupDetail, ServiceAccount, User};
+use crate::data::objects::{AuditEntry, AuditFilter, AuditLogRow, AuditPage, Group, GroupDetail, Name, ServiceAccount, User};
 use crate::helper::get_secret;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -411,6 +411,19 @@ impl VaulTLSDB {
         })
     }
 
+    /// Batch form of `user_shares_group_with_cert` for listing views: every
+    /// certificate id the user can reach through any of their groups.
+    pub(crate) async fn group_shared_cert_ids(&self, user_id: i64) -> Result<Vec<i64>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT gc.certificate_id FROM group_certificates gc \
+                 JOIN group_users gu ON gu.group_id = gc.group_id \
+                 WHERE gu.user_id = ?1")?;
+            let rows = stmt.query_map(params![user_id], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// Retrieve the certificate's cert data with id from the database
     /// Returns the id of the user the certificate belongs to and the cert data
     pub(crate) async fn get_user_cert_by_id(&self, id: i64) -> Result<Certificate> {
@@ -434,6 +447,15 @@ impl VaulTLSDB {
                 params![id],
                 |row| Ok((row.get(0)?, row.get(1).unwrap_or_default(), row.get(2)?)),
             )?)
+        })
+    }
+
+    /// The certificate's CN without touching the data blob — audit target labels only.
+    pub(crate) async fn get_user_cert_name(&self, id: i64) -> Result<Name> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare("SELECT name FROM user_certificates WHERE id = ?1")?;
+
+            Ok(stmt.query_row(params![id], |row| row.get(0))?)
         })
     }
 

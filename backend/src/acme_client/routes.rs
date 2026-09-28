@@ -299,7 +299,7 @@ pub async fn issue_acme_client_order(
                         Some("certificate".into()), Some(result_cert_id.to_string()), Some(cn),
                         crate::data::enums::AuditResult::Success,
                         Some(format!("ACME renewal: v{old_version} → v{new_version}, fingerprint {fingerprint}")),
-                        None,
+                        auth.ip.clone(),
                     ).await;
                 }
 

@@ -3,6 +3,7 @@ use std::env;
 use openidconnect::{Nonce, PkceCodeVerifier};
 use openssl::x509::X509;
 use rocket_okapi::openapi;
+use rocket_okapi::JsonSchema;
 use rocket::{delete, get, post, put, State};
 use rocket::response::Redirect;
 use rocket::serde::json::Json;
@@ -151,9 +152,19 @@ pub(crate) async fn audit_actor(
     claims: &Claims,
 ) -> (Option<i64>, String, AuditActorType) {
     if let Some(service) = &claims.service {
+        // Сервисный аккаунт подписывается именем и логином владельца: в журнале
+        // должно быть видно, ЧЕЙ сервис действует, а не только номер аккаунта.
+        let label = match state.db.get_service_account_by_id(service.account_id).await {
+            Ok(Some(sa)) => {
+                let owner = state.db.get_user_name(sa.user_id).await
+                    .unwrap_or_else(|_| sa.user_id.to_string());
+                format!("{} ({})", sa.name, owner)
+            }
+            _ => format!("service:{}", service.account_id), // аккаунт уже удалён
+        };
         return (
             Some(service.account_id),
-            format!("service:{}", service.account_id),
+            label,
             AuditActorType::Service,
         );
     }
@@ -381,13 +392,25 @@ pub(crate) async fn get_current_user(
     Ok(Json(user))
 }
 
+/// One entry of `GET /certificates`: the certificate plus a server-computed flag
+/// telling whether the current principal may replace it (PUT) as a group member.
+#[derive(serde::Serialize, JsonSchema)]
+pub struct CertificateListEntry {
+    #[serde(flatten)]
+    pub certificate: Certificate,
+    /// Участник групп, в которые расшарен серт: даёт право замены файла
+    /// (PUT /certificates/<id>). Сервисным токенам не выставляется — они
+    /// ограничены сертификатами своего владельца и не наследуют группы.
+    pub managed_via_group: bool,
+}
+
 #[openapi(tag = "Certificates")]
 #[get("/certificates")]
 /// Get all certificates. A local admin receives every certificate; everyone else (OIDC admin, user, service) receives certificates they own or can reach through a shared group. Requires authentication.
 pub(crate) async fn get_certificates(
     state: &State<AppState>,
     authentication: Authenticated
-) -> Result<Json<Vec<Certificate>>, ApiError> {
+) -> Result<Json<Vec<CertificateListEntry>>, ApiError> {
     if authentication.claims.is_service() && !authentication.claims.has_scope("cert:read") {
         return Err(ApiError::Forbidden(None));
     }
@@ -396,7 +419,15 @@ pub(crate) async fn get_certificates(
     } else {
         state.db.get_visible_certs(authentication.claims.id).await?
     };
-    Ok(Json(certificates))
+    let shared: HashSet<i64> = if authentication.claims.is_service() {
+        HashSet::new()
+    } else {
+        state.db.group_shared_cert_ids(authentication.claims.id).await?.into_iter().collect()
+    };
+    let entries = certificates.into_iter()
+        .map(|c| CertificateListEntry { managed_via_group: shared.contains(&c.id), certificate: c })
+        .collect();
+    Ok(Json(entries))
 }
 
 #[openapi(tag = "Certificates")]
@@ -438,7 +469,7 @@ pub(crate) async fn create_ca(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::CreateCa,
-        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(Json(ca.id))
 }
@@ -530,7 +561,7 @@ pub(crate) async fn import_ca(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::ImportCa,
-        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(Json(ca.id))
 }
@@ -765,7 +796,9 @@ pub(crate) async fn import_certificate(
 #[openapi(tag = "Certificates")]
 #[put("/certificates/<id>", data = "<form>")]
 /// Replace the contents of an imported certificate, keeping its id.
-/// The previous contents move into the version history.
+/// Allowed for the owner, a local admin, or a member of a group the certificate
+/// is shared with; the owner of the record never changes. Revoke/delete remain
+/// owner/local-admin-only. The previous contents move into the version history.
 pub(crate) async fn update_certificate(
     state: &State<AppState>,
     id: i64,
@@ -777,8 +810,9 @@ pub(crate) async fn update_certificate(
     let existing = state.db.get_user_cert_by_id(id).await
         .map_err(|_| ApiError::NotFound(None))?;
 
-    // Авторизация: владелец или локальный админ; сервис — только со cert:issue
-    // и только на сертификатах своего владельца.
+    // Авторизация: владелец, локальный админ или участник группы, в которую
+    // расшарен серт (замена файла); сервис — только со cert:issue и только на
+    // сертификатах своего владельца (группы на сервисные токены не действуют).
     if authentication.claims.is_service() {
         if !authentication.claims.has_scope("cert:issue") {
             return Err(ApiError::Forbidden(None));
@@ -786,7 +820,10 @@ pub(crate) async fn update_certificate(
         if existing.user_id != authentication.claims.id {
             return Err(ApiError::Forbidden(None));
         }
-    } else if !authentication.claims.is_local_admin() && existing.user_id != authentication.claims.id {
+    } else if !authentication.claims.is_local_admin()
+        && existing.user_id != authentication.claims.id
+        && !state.db.user_shares_group_with_cert(authentication.claims.id, id).await?
+    {
         return Err(ApiError::Forbidden(None));
     }
     // Владелец записи не меняется: UPDATE в replace_certificate не трогает user_id.
@@ -1015,7 +1052,7 @@ pub(crate) async fn update_certificate(
         Some("certificate".into()), Some(id.to_string()), Some(existing.name.cn.clone()),
         AuditResult::Success,
         Some(format!("v{} → v{}, fingerprint {}{}", existing.version, new_version, fingerprint, forced_note)),
-        None).await;
+        authentication.ip.clone()).await;
 
     Ok(Json(state.db.get_user_cert_by_id(id).await?))
 }
@@ -1435,7 +1472,7 @@ pub(crate) async fn delete_certificate_version(
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DeleteCertificateVersion,
         Some("certificate".into()), Some(id.to_string()), Some(certificate.name.cn.clone()),
-        AuditResult::Success, Some(format!("version {version}")), None).await;
+        AuditResult::Success, Some(format!("version {version}")), authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -1528,8 +1565,8 @@ pub(crate) async fn download_certificate(
 
                 let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
                 record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
-                    Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-                    Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), None).await;
+                    Some("certificate".into()), Some(id.to_string()), Some(certificate.name.cn.clone()), AuditResult::Success,
+                    Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), authentication.ip.clone()).await;
 
                 return Ok(DownloadResponse::new_typed(
                     zip_bytes,
@@ -1548,8 +1585,8 @@ pub(crate) async fn download_certificate(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DownloadCertificate,
-        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-        Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), None).await;
+        Some("certificate".into()), Some(id.to_string()), Some(certificate.name.cn.clone()), AuditResult::Success,
+        Some(format!("{} v{}", download_format.clone().unwrap_or_else(|| "pkcs12".into()), served_version)), authentication.ip.clone()).await;
 
     Ok(DownloadResponse::new(certificate.data.into_bytes(), &file_name))
 }
@@ -1582,9 +1619,10 @@ pub(crate) async fn fetch_certificate_password(
     let served_version = version.unwrap_or(current_version);
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
+    let cert_name = state.db.get_user_cert_name(id).await?;
     record_audit(state, aid, alabel, atype, AuditAction::FetchCertificatePassword,
-        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success,
-        Some(format!("v{served_version}")), None).await;
+        Some("certificate".into()), Some(id.to_string()), Some(cert_name.cn.clone()), AuditResult::Success,
+        Some(format!("v{served_version}")), authentication.ip.clone()).await;
 
     Ok(Json(password))
 }
@@ -1605,7 +1643,7 @@ pub(crate) async fn delete_ca(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DeleteCa,
-        Some("ca".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("ca".into()), Some(id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -1626,7 +1664,7 @@ pub(crate) async fn delete_user_cert(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DeleteCertificate,
-        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("certificate".into()), Some(id.to_string()), Some(cert.name.cn.clone()), AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -1767,7 +1805,7 @@ pub(crate) async fn revoke_certificate(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::RevokeCertificate,
-        Some("certificate".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("certificate".into()), Some(id.to_string()), Some(cert.name.cn.clone()), AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -1886,7 +1924,7 @@ pub(crate) async fn update_settings(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::UpdateSettings,
-        Some("settings".into()), None, None, AuditResult::Success, None, None).await;
+        Some("settings".into()), None, None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -1939,7 +1977,7 @@ pub(crate) async fn create_user(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::CreateUser,
-        Some("user".into()), Some(user.id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("user".into()), Some(user.id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(Json(user.id))
 }
@@ -1975,7 +2013,7 @@ pub(crate) async fn update_user(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::UpdateUser,
-        Some("user".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("user".into()), Some(id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -1997,7 +2035,7 @@ pub(crate) async fn delete_user(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DeleteUser,
-        Some("user".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("user".into()), Some(id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -2146,7 +2184,7 @@ pub(crate) async fn create_service_account(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::CreateServiceAccount,
-        Some("service_account".into()), Some(saved.id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("service_account".into()), Some(saved.id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(Json(ServiceAccountCreated {
         id: saved.id,
@@ -2199,7 +2237,7 @@ pub(crate) async fn revoke_service_account(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::RevokeServiceAccount,
-        Some("service_account".into()), Some(sid.to_string()), None, AuditResult::Success, None, None).await;
+        Some("service_account".into()), Some(sid.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -2218,7 +2256,7 @@ pub(crate) async fn delete_service_account(
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DeleteServiceAccount,
-        Some("service_account".into()), Some(sid.to_string()), None, AuditResult::Success, None, None).await;
+        Some("service_account".into()), Some(sid.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
     Ok(())
 }
@@ -2243,7 +2281,7 @@ pub(crate) async fn create_group(state: &State<AppState>, payload: Json<GroupReq
 
     let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::CreateGroup,
-        Some("group".into()), Some(g.id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("group".into()), Some(g.id.to_string()), None, AuditResult::Success, None, auth.ip.clone()).await;
 
     Ok(Json(g.id))
 }
@@ -2255,7 +2293,7 @@ pub(crate) async fn update_group(state: &State<AppState>, id: i64, payload: Json
 
     let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
-        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, None, auth.ip.clone()).await;
 
     Ok(())
 }
@@ -2267,7 +2305,7 @@ pub(crate) async fn delete_group(state: &State<AppState>, id: i64, auth: Authent
 
     let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::DeleteGroup,
-        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, None, None).await;
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, None, auth.ip.clone()).await;
 
     Ok(())
 }
@@ -2279,7 +2317,7 @@ pub(crate) async fn set_group_users(state: &State<AppState>, id: i64, payload: J
 
     let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
-        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("members".into()), None).await;
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("members".into()), auth.ip.clone()).await;
 
     Ok(())
 }
@@ -2291,7 +2329,7 @@ pub(crate) async fn set_group_certificates(state: &State<AppState>, id: i64, pay
 
     let (aid, alabel, atype) = audit_actor(state, &auth.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::UpdateGroup,
-        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("certificates".into()), None).await;
+        Some("group".into()), Some(id.to_string()), None, AuditResult::Success, Some("certificates".into()), auth.ip.clone()).await;
 
     Ok(())
 }

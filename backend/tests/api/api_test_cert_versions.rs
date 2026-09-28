@@ -100,8 +100,11 @@ async fn replacing_internally_issued_cert_is_rejected() -> Result<()> {
     Ok(())
 }
 
+/// Участник группы, в которую расшарен серт, может заменить его содержимое
+/// (PUT /certificates/<id>). Замена не меняет владельца записи; флаг
+/// managed_via_group в списке виден участнику.
 #[tokio::test]
-async fn group_member_may_read_but_not_replace() -> Result<()> {
+async fn group_member_may_replace_shared_cert() -> Result<()> {
     use serde_json::json;
     let client = VaulTLSClient::new_authenticated().await; // local admin id=1
     client.create_user().await?;                           // user id=2
@@ -116,11 +119,20 @@ async fn group_member_may_read_but_not_replace() -> Result<()> {
     client.put(format!("/groups/{gid}/certificates")).header(ContentType::JSON)
         .body(json!({"ids":[id]}).to_string()).dispatch().await;
 
-    client.switch_user().await?; // под user id=2
+    client.switch_user().await?; // под user id=2 — участником группы
+
+    let list: Value = serde_json::from_str(
+        &client.get("/certificates").dispatch().await.into_string().await.unwrap())?;
+    let entry = list.as_array().unwrap().iter()
+        .find(|c| c["id"].as_i64() == Some(id)).unwrap();
+    assert_eq!(entry["managed_via_group"].as_bool(), Some(true),
+        "участник группы обязан видеть флаг managed_via_group");
 
     assert_eq!(client.get(format!("/certificates/{id}/versions")).dispatch().await.status(), Status::Ok);
 
-    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("shared.example.com", &ca_pem, &ca_key_pem);
+    // замена: leaf живёт дольше исходного (+90d), иначе отклоняется как «не улучшение»
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "shared.example.com", &ca_pem, &ca_key_pem, 0, 200);
     let boundary = "VER5";
     let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 2);
     let resp = client
@@ -129,7 +141,65 @@ async fn group_member_may_read_but_not_replace() -> Result<()> {
         .body(body)
         .dispatch()
         .await;
-    assert_eq!(resp.status(), Status::Forbidden, "участник группы читает, но не заменяет");
+    assert_eq!(resp.status(), Status::Ok, "участник группы заменяет расшаренный серт");
+    let updated: Value = serde_json::from_str(&resp.into_string().await.unwrap())?;
+    assert_eq!(updated["user_id"].as_i64(), Some(1), "замена не меняет владельца записи");
+    assert_eq!(updated["version"].as_i64(), Some(2));
+    Ok(())
+}
+
+/// Пользователь вне группы по-прежнему не может заменять чужой серт: расширение
+/// касается только участников групп, куда серт расшарен.
+#[tokio::test]
+async fn non_member_cannot_replace_shared_cert() -> Result<()> {
+    use serde_json::json;
+    use vaultls::data::api::CreateUserRequest;
+    use vaultls::data::enums::UserRole;
+    use crate::common::constants::TEST_PASSWORD;
+
+    let client = VaulTLSClient::new_authenticated().await; // local admin id=1
+    client.create_user().await?;                           // user id=2 — попадёт в группу
+
+    let outsider_req = CreateUserRequest {
+        user_name: "test3".to_string(),
+        user_email: "test3@example.com".to_string(),
+        password: Some(TEST_PASSWORD.to_string()),
+        role: UserRole::User,
+    };
+    let resp = client.post("/users").header(ContentType::JSON)
+        .body(serde_json::to_string(&outsider_req)?).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let (id, ca_pem, ca_key_pem) = import_leaf(&client, "outsider.example.com", 1).await;
+
+    let gid: i64 = serde_json::from_str(
+        &client.post("/groups").header(ContentType::JSON)
+            .body(json!({"name":"Outsiders"}).to_string())
+            .dispatch().await.into_string().await.unwrap())?;
+    client.put(format!("/groups/{gid}/users")).header(ContentType::JSON)
+        .body(json!({"ids":[2]}).to_string()).dispatch().await;
+    client.put(format!("/groups/{gid}/certificates")).header(ContentType::JSON)
+        .body(json!({"ids":[id]}).to_string()).dispatch().await;
+
+    client.logout().await?;
+    client.login("test3@example.com", TEST_PASSWORD).await?; // user id=3, вне группы
+
+    let list: Value = serde_json::from_str(
+        &client.get("/certificates").dispatch().await.into_string().await.unwrap())?;
+    assert!(list.as_array().unwrap().iter()
+        .all(|c| c["id"].as_i64() != Some(id)),
+        "серт, расшаренный в группу, для не-участника вообще невидим");
+
+    let (leaf, key) = crate::common::helper::leaf_signed_by_pem("outsider.example.com", &ca_pem, &ca_key_pem);
+    let boundary = "VER21";
+    let body = multipart_replace(boundary, &leaf, &key, &ca_pem, 3);
+    let resp = client
+        .put(format!("/certificates/{id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body)
+        .dispatch()
+        .await;
+    assert_eq!(resp.status(), Status::Forbidden, "не-участник группы не заменяет");
     Ok(())
 }
 

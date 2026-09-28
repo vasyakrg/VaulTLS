@@ -100,10 +100,14 @@ pub(crate) fn build_auth_cookie(token: String) -> Cookie<'static> {
 /// Struct for Rocket guard
 pub struct Authenticated {
     pub claims: Claims,
+    /// Client IP for audit rows, resolved once per request (`ip_header`-aware —
+    /// the same value the `Option<IpAddr>` extractor hands to login/logout).
+    pub ip: Option<String>,
 }
 
 pub struct AuthenticatedPrivileged {
     pub claims: Claims,
+    pub ip: Option<String>,
 }
 
 /// Service-token-only claim block (absent for human tokens).
@@ -148,7 +152,10 @@ impl<'r> FromRequest<'r> for Authenticated {
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         match authenticate_auth_token(request) {
-            Some(claims) => Outcome::Success(Authenticated { claims }),
+            Some(claims) => Outcome::Success(Authenticated {
+                claims,
+                ip: request.client_ip().map(|ip| ip.to_string()),
+            }),
             None => Outcome::Error((Status::Unauthorized, ()))
         }
     }
@@ -165,7 +172,10 @@ impl<'r> FromRequest<'r> for AuthenticatedPrivileged {
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let Some(claims) =  authenticate_auth_token(request) else { return Outcome::Error((Status::Unauthorized, ())) };
         if claims.role == UserRole::Admin {
-            Outcome::Success(AuthenticatedPrivileged { claims })
+            Outcome::Success(AuthenticatedPrivileged {
+                claims,
+                ip: request.client_ip().map(|ip| ip.to_string()),
+            })
         } else {
             Outcome::Error((Status::Forbidden, ()))
         }
@@ -176,6 +186,7 @@ impl_openapi_auth!(AuthenticatedPrivileged, "UserRole::Admin");
 
 pub struct AuthenticatedLocalAdmin {
     pub claims: Claims,
+    pub ip: Option<String>,
 }
 
 #[rocket::async_trait]
@@ -185,7 +196,10 @@ impl<'r> FromRequest<'r> for AuthenticatedLocalAdmin {
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let Some(claims) = authenticate_auth_token(request) else { return Outcome::Error((Status::Unauthorized, ())) };
         if claims.is_local_admin() {
-            Outcome::Success(AuthenticatedLocalAdmin { claims })
+            Outcome::Success(AuthenticatedLocalAdmin {
+                claims,
+                ip: request.client_ip().map(|ip| ip.to_string()),
+            })
         } else {
             Outcome::Error((Status::Forbidden, ()))
         }

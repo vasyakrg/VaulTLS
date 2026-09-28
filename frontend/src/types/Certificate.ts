@@ -33,4 +33,5 @@ export interface Certificate {
     version: number;                      // номер текущей версии содержимого
     fingerprint?: string | null;          // SHA-256 текущей версии в hex
     is_imported: boolean;                 // только импортированные можно заменять
+    managed_via_group?: boolean;          // текущий пользователь — участник группы, в которую расшарен серт (даёт право замены)
 }

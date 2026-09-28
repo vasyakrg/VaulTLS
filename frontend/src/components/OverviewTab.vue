@@ -168,7 +168,7 @@
               @click="confirmRevocation(data)"
             />
             <Button
-              v-if="authStore.isAdmin"
+              v-if="canManage(data)"
               icon="pi pi-trash"
               severity="danger"
               outlined
@@ -545,7 +545,8 @@ const canDownload = (): boolean => true
 
 // Whether the current user may manage (revoke/delete) a certificate. Mirrors the
 // backend: only the local admin or the certificate's owner. Group visibility grants
-// read/download access but never management of certificates owned by others.
+// read/download access and — for replacement only — managed_via_group; revoke and
+// delete stay owner/admin-only.
 const canManage = (cert: Certificate): boolean => {
   if (authStore.isLocalAdmin) return true
   return cert.user_id === authStore.current_user?.id
@@ -554,9 +555,10 @@ const canManage = (cert: Certificate): boolean => {
 // Whether the current user may replace a certificate's contents. Mirrors the backend's
 // rejection rules so the button (and its inevitable 400) never even appears: only
 // imported, non-revoked, non-ACME TLS certificates are eligible, and only for someone
-// who can already manage the certificate.
+// who can manage the certificate or is a member of a group the certificate is shared
+// with (managed_via_group, computed server-side; revoke/delete stay owner/admin-only).
 const canUpdate = (cert: Certificate): boolean => {
-  if (!canManage(cert)) return false
+  if (!canManage(cert) && !cert.managed_via_group) return false
   if (!cert.is_imported || cert.revoked_at) return false
   if (isAcmeCert(cert)) return false
   return cert.certificate_type === CertificateType.TLSClient || cert.certificate_type === CertificateType.TLSServer
