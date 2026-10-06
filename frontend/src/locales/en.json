@@ -165,7 +165,7 @@
     "subtitle": "Manage application users",
     "colRole": "Role",
     "roleUser": "User",
-    "roleAdmin": "Admin",
+    "roleAdmin": "Operator",
     "noUsers": "No users found.",
     "createUser": "Create New User",
     "createModal": {

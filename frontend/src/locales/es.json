@@ -166,7 +166,7 @@
     "subtitle": "Gestionar usuarios de la aplicación",
     "colRole": "Rol",
     "roleUser": "Usuario",
-    "roleAdmin": "Administrador",
+    "roleAdmin": "Operador",
     "noUsers": "No se encontraron usuarios.",
     "createUser": "Crear nuevo usuario",
     "createModal": {

@@ -110,7 +110,7 @@ During the first setup a TLS Certificate Authority is automatically created. If 
 Users can either log in via password or OIDC. If a user first logs in via OIDC, their e-mail is matched with all VaulTLS users and linked.
 If no user is found, a new one is created.
 
-Users can only see certificates created for them. Only admins can create new certificates.
+Users can only see certificates created for them. Only operators (the Admin role; local admins included) can create new certificates.
 User certificates can be downloaded through the web interface.
 
 The current CA certificate to be integrated with your reverse proxy is available as a file at `/app/data/ca/ca.cert`
