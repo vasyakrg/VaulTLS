@@ -150,7 +150,15 @@
     "deleteModal": {
       "title": "Delete Certificate Authority",
       "confirm": "Are you sure you want to delete the CA {name}?"
-    }
+    },
+    "copyLinkCertPem": "Copy link: CA certificate (PEM)",
+    "copyLinkCertDer": "Copy link: CA certificate (DER)",
+    "copyLinkFullchain": "Copy link: full chain (PEM)",
+    "copyLinkCrl": "Copy link: CRL",
+    "copyLinkSshPub": "Copy link: CA public key",
+    "copyLinkKrl": "Copy link: KRL",
+    "linkCopied": "Direct link copied",
+    "copyFailed": "Failed to copy link"
   },
   "users": {
     "title": "Users",
@@ -367,7 +375,15 @@
     "importing": "Importing...",
     "errorTitle": "Import Failed",
     "errorGeneric": "An unexpected error occurred",
-    "errorCaCertRequired": "CA certificate file is required"
+    "errorCaCertRequired": "CA certificate file is required",
+    "source": "Source",
+    "sourceFile": "From file",
+    "sourceUrl": "From URL",
+    "caCertUrl": "CA certificate URL (.pem / .crt)",
+    "caKeyUrl": "CA private key URL (.pem / .key)",
+    "urlPlaceholder": "https://example.com/ca.pem",
+    "errorCaCertUrlRequired": "CA certificate URL is required",
+    "errorInvalidUrl": "Enter a valid http(s) URL"
   },
   "nav": {
     "certificates": "Certificates",

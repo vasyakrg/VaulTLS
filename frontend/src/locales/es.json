@@ -151,7 +151,15 @@
     "deleteModal": {
       "title": "Eliminar Autoridad de Certificación",
       "confirm": "¿Está seguro de que desea eliminar la CA {name}?"
-    }
+    },
+    "copyLinkCertPem": "Copiar enlace: certificado CA (PEM)",
+    "copyLinkCertDer": "Copiar enlace: certificado CA (DER)",
+    "copyLinkFullchain": "Copiar enlace: cadena completa (PEM)",
+    "copyLinkCrl": "Copiar enlace: CRL",
+    "copyLinkSshPub": "Copiar enlace: clave pública CA",
+    "copyLinkKrl": "Copiar enlace: KRL",
+    "linkCopied": "Enlace directo copiado",
+    "copyFailed": "Error al copiar el enlace"
   },
   "users": {
     "title": "Usuarios",
@@ -360,7 +368,15 @@
     "importing": "Importando...",
     "errorTitle": "Error al importar",
     "errorGeneric": "Se produjo un error inesperado",
-    "errorCaCertRequired": "El archivo de certificado CA es obligatorio"
+    "errorCaCertRequired": "El archivo de certificado CA es obligatorio",
+    "source": "Origen",
+    "sourceFile": "Desde archivo",
+    "sourceUrl": "Desde URL",
+    "caCertUrl": "URL del certificado CA (.pem / .crt)",
+    "caKeyUrl": "URL de la clave privada CA (.pem / .key)",
+    "urlPlaceholder": "https://example.com/ca.pem",
+    "errorCaCertUrlRequired": "La URL del certificado CA es obligatoria",
+    "errorInvalidUrl": "Introduzca una URL http(s) válida"
   },
   "nav": {
     "certificates": "Certificados",

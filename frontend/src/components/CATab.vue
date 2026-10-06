@@ -93,7 +93,6 @@
               @click="downloadCA(data.id)"
             />
             <Button
-              v-if="data.has_private_key"
               icon="pi pi-ellipsis-v"
               severity="secondary"
               outlined
@@ -103,9 +102,8 @@
               @click="(event) => { crlMenuRefs[data.id]?.toggle(event) }"
             />
             <Menu
-              v-if="data.has_private_key"
               :ref="(el) => { crlMenuRefs[data.id] = el as InstanceType<typeof Menu> | null }"
-              :model="getCrlMenuItems(data)"
+              :model="getCaMenuItems(data)"
               popup
             />
             <Button
@@ -239,10 +237,12 @@ import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
 import { FilterMatchMode } from '@primevue/core/api'
 import Menu from 'primevue/menu'
+import { useToast } from 'primevue/usetoast'
 import ImportCaDialog from '@/components/dialogs/ImportCaDialog.vue'
 import BaseModal from '@/components/BaseModal.vue'
 
 const { t } = useI18n()
+const toast = useToast()
 
 const vTooltip = Tooltip
 
@@ -351,29 +351,90 @@ const downloadCRL = async (caId: number, format: string = 'der') => {
 
 const crlMenuRefs = ref<Record<number, InstanceType<typeof Menu> | null>>({})
 
-const getCrlMenuItems = (ca: CA) => {
-  if (ca.ca_type === CAType.TLS) {
-    return [
-      {
-        label: `${t('ca.downloadCrl')} (${t('ca.downloadCrlDer')})`,
-        icon: 'pi pi-file',
-        command: () => downloadCRL(ca.id, 'der'),
-      },
-      {
-        label: `${t('ca.downloadCrl')} (${t('ca.downloadCrlPem')})`,
-        icon: 'pi pi-file',
-        command: () => downloadCRL(ca.id, 'pem'),
-      },
-    ]
-  } else {
-    return [
-      {
-        label: t('ca.downloadKrl'),
-        icon: 'pi pi-file',
-        command: () => downloadCRL(ca.id),
-      },
-    ]
+// Direct download links are public on the backend (no auth), so they can be
+// used from CI/scripts: curl -fsSLo ca.crt <origin>/api/certificates/ca/<id>/download
+const caLink = (caId: number, path: string): string =>
+  `${window.location.origin}/api/certificates/ca/${caId}${path}`
+
+const copyToClipboard = async (text: string) => {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // Clipboard API is unavailable in insecure contexts (plain http)
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      ta.remove()
+    }
+    toast.add({ severity: 'success', summary: t('ca.linkCopied'), detail: text, life: 3000 })
+  } catch {
+    toast.add({ severity: 'error', summary: t('ca.copyFailed'), life: 3000 })
   }
+}
+
+const copyLinkItem = (label: string, url: string) => ({
+  label,
+  icon: 'pi pi-link',
+  command: () => copyToClipboard(url),
+})
+
+const getCaMenuItems = (ca: CA) => {
+  const hasKey = ca.has_private_key === true
+  const items: any[] = []
+
+  if (ca.ca_type === CAType.TLS) {
+    if (hasKey) {
+      items.push(
+        {
+          label: `${t('ca.downloadCrl')} (${t('ca.downloadCrlDer')})`,
+          icon: 'pi pi-file',
+          command: () => downloadCRL(ca.id, 'der'),
+        },
+        {
+          label: `${t('ca.downloadCrl')} (${t('ca.downloadCrlPem')})`,
+          icon: 'pi pi-file',
+          command: () => downloadCRL(ca.id, 'pem'),
+        },
+        { separator: true },
+      )
+    }
+    items.push(
+      copyLinkItem(t('ca.copyLinkCertPem'), caLink(ca.id, '/download')),
+      copyLinkItem(t('ca.copyLinkCertDer'), caLink(ca.id, '/download?format=der')),
+      copyLinkItem(t('ca.copyLinkFullchain'), caLink(ca.id, '/fullchain')),
+    )
+    if (hasKey) {
+      items.push(
+        copyLinkItem(`${t('ca.copyLinkCrl')} (${t('ca.downloadCrlDer')})`, caLink(ca.id, '/crl?format=der')),
+        copyLinkItem(`${t('ca.copyLinkCrl')} (${t('ca.downloadCrlPem')})`, caLink(ca.id, '/crl?format=pem')),
+      )
+    }
+  } else {
+    if (hasKey) {
+      items.push(
+        {
+          label: t('ca.downloadKrl'),
+          icon: 'pi pi-file',
+          command: () => downloadCRL(ca.id),
+        },
+        { separator: true },
+      )
+    }
+    items.push(
+      copyLinkItem(t('ca.copyLinkSshPub'), caLink(ca.id, '/download')),
+    )
+    if (hasKey) {
+      items.push(
+        copyLinkItem(t('ca.copyLinkKrl'), caLink(ca.id, '/crl')),
+      )
+    }
+  }
+  return items
 }
 </script>
 

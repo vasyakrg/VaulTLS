@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
-import type {CA, CARequirements} from '@/types/CA';
-import {createCA, deleteCA, downloadCAByID, downloadCRL, fetchCAs, importCa} from "@/api/cas.ts";
+import type {CA, CAImportUrlRequest, CARequirements} from '@/types/CA';
+import {createCA, deleteCA, downloadCAByID, downloadCRL, fetchCAs, importCa, importCaUrl} from "@/api/cas.ts";
 import axios from 'axios';
 
 export const useCAStore = defineStore('ca', {
@@ -104,6 +104,25 @@ export const useCAStore = defineStore('ca', {
                     this.error = 'Failed to import CA: ' + err.response?.data?.error;
                 } else {
                     this.error = 'Failed to import CA';
+                }
+                console.error(err);
+                throw err;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async importCaUrl(payload: CAImportUrlRequest): Promise<void> {
+            this.loading = true;
+            this.error = null;
+            try {
+                await importCaUrl(payload);
+                await this.fetchCAs();
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to import CA from URL: ' + err.response?.data?.error;
+                } else {
+                    this.error = 'Failed to import CA from URL';
                 }
                 console.error(err);
                 throw err;

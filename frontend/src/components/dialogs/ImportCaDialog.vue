@@ -13,20 +13,39 @@
   >
     <div class="vt-form">
       <div class="vt-field">
-        <label>{{ $t('importCa.caCertFile') }}</label>
-        <div class="drop-zone" :class="{ 'drag-over': dragging.cert }" @dragover.prevent="dragging.cert = true" @dragleave="dragging.cert = false" @drop.prevent="onDropCaCert">
-          <input type="file" accept=".pem,.crt,.cer" @change="onCaCertChange" />
-          <p class="drop-hint">{{ caCertFile ? caCertFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
-        </div>
+        <label>{{ $t('importCa.source') }}</label>
+        <SelectButton v-model="sourceMode" :options="sourceOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
       </div>
 
-      <div class="vt-field">
-        <label>{{ $t('importCa.caKeyFile') }} <span class="vt-optional">({{ $t('importCa.optional') }})</span></label>
-        <div class="drop-zone" :class="{ 'drag-over': dragging.key }" @dragover.prevent="dragging.key = true" @dragleave="dragging.key = false" @drop.prevent="onDropCaKey">
-          <input type="file" accept=".pem,.key" @change="onCaKeyChange" />
-          <p class="drop-hint">{{ caKeyFile ? caKeyFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+      <template v-if="sourceMode === 'file'">
+        <div class="vt-field">
+          <label>{{ $t('importCa.caCertFile') }}</label>
+          <div class="drop-zone" :class="{ 'drag-over': dragging.cert }" @dragover.prevent="dragging.cert = true" @dragleave="dragging.cert = false" @drop.prevent="onDropCaCert">
+            <input type="file" accept=".pem,.crt,.cer" @change="onCaCertChange" />
+            <p class="drop-hint">{{ caCertFile ? caCertFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+          </div>
         </div>
-      </div>
+
+        <div class="vt-field">
+          <label>{{ $t('importCa.caKeyFile') }} <span class="vt-optional">({{ $t('importCa.optional') }})</span></label>
+          <div class="drop-zone" :class="{ 'drag-over': dragging.key }" @dragover.prevent="dragging.key = true" @dragleave="dragging.key = false" @drop.prevent="onDropCaKey">
+            <input type="file" accept=".pem,.key" @change="onCaKeyChange" />
+            <p class="drop-hint">{{ caKeyFile ? caKeyFile.name : 'Перетащите файл или нажмите для выбора' }}</p>
+          </div>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="vt-field">
+          <label>{{ $t('importCa.caCertUrl') }}</label>
+          <InputText v-model="caCertUrl" :placeholder="$t('importCa.urlPlaceholder')" class="vt-input-full" />
+        </div>
+
+        <div class="vt-field">
+          <label>{{ $t('importCa.caKeyUrl') }} <span class="vt-optional">({{ $t('importCa.optional') }})</span></label>
+          <InputText v-model="caKeyUrl" :placeholder="$t('importCa.urlPlaceholder')" class="vt-input-full" />
+        </div>
+      </template>
 
       <div class="vt-field">
         <label>{{ $t('importCa.name') }} <span class="vt-optional">({{ $t('importCa.optional') }})</span></label>
@@ -42,10 +61,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
 import InputText from 'primevue/inputtext'
+import SelectButton from 'primevue/selectbutton'
 import { useCAStore } from '@/stores/cas'
 import BaseModal from '@/components/BaseModal.vue'
 
@@ -59,8 +79,16 @@ const { t } = useI18n()
 const toast = useToast()
 const caStore = useCAStore()
 
+const sourceMode = ref<'file' | 'url'>('file')
+const sourceOptions = computed(() => [
+  { label: t('importCa.sourceFile'), value: 'file' },
+  { label: t('importCa.sourceUrl'), value: 'url' },
+])
+
 const caCertFile = ref<File | null>(null)
 const caKeyFile = ref<File | null>(null)
+const caCertUrl = ref('')
+const caKeyUrl = ref('')
 const name = ref('')
 const submitting = ref(false)
 const validationErrors = ref<string[]>([])
@@ -82,9 +110,21 @@ const onDropCaKey = (e: DragEvent) => {
   caKeyFile.value = e.dataTransfer?.files?.[0] ?? null
 }
 
+const isValidHttpUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 const resetForm = () => {
+  sourceMode.value = 'file'
   caCertFile.value = null
   caKeyFile.value = null
+  caCertUrl.value = ''
+  caKeyUrl.value = ''
   name.value = ''
   validationErrors.value = []
 }
@@ -96,19 +136,38 @@ const close = () => {
 
 const submit = async () => {
   validationErrors.value = []
-  if (!caCertFile.value) {
-    validationErrors.value.push(t('importCa.errorCaCertRequired'))
-    return
-  }
 
-  const form = new FormData()
-  form.append('ca_cert', caCertFile.value)
-  if (caKeyFile.value) form.append('ca_key', caKeyFile.value)
-  if (name.value.trim()) form.append('name', name.value.trim())
+  if (sourceMode.value === 'file') {
+    if (!caCertFile.value) {
+      validationErrors.value.push(t('importCa.errorCaCertRequired'))
+      return
+    }
+  } else {
+    if (!caCertUrl.value.trim()) {
+      validationErrors.value.push(t('importCa.errorCaCertUrlRequired'))
+      return
+    }
+    if (!isValidHttpUrl(caCertUrl.value.trim()) || (caKeyUrl.value.trim() && !isValidHttpUrl(caKeyUrl.value.trim()))) {
+      validationErrors.value.push(t('importCa.errorInvalidUrl'))
+      return
+    }
+  }
 
   submitting.value = true
   try {
-    await caStore.importCa(form)
+    if (sourceMode.value === 'file') {
+      const form = new FormData()
+      form.append('ca_cert', caCertFile.value!)
+      if (caKeyFile.value) form.append('ca_key', caKeyFile.value)
+      if (name.value.trim()) form.append('name', name.value.trim())
+      await caStore.importCa(form)
+    } else {
+      await caStore.importCaUrl({
+        ca_cert_url: caCertUrl.value.trim(),
+        ca_key_url: caKeyUrl.value.trim() || undefined,
+        name: name.value.trim() || undefined,
+      })
+    }
     emit('imported')
     close()
   } catch (err: any) {

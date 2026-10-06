@@ -22,3 +22,9 @@ export interface CARequirements {
     validity_duration?: number;         // Validity duration
     validity_unit?: ValidityUnit;       // Validity unit (hours, days, months, years)
 }
+
+export interface CAImportUrlRequest {
+    ca_cert_url: string;                // http(s) URL of the CA certificate (PEM or DER)
+    ca_key_url?: string;                // Optional http(s) URL of the CA private key
+    name?: string;                      // Optional CN override
+}

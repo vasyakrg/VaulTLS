@@ -56,6 +56,16 @@ pub struct CreateCARequest {
     pub validity_unit: Option<TimespanUnit>,
 }
 
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ImportCaUrlRequest {
+    /// http(s) URL of the CA certificate (PEM or DER)
+    pub ca_cert_url: String,
+    /// Optional http(s) URL of the CA private key (PEM or DER)
+    pub ca_key_url: Option<String>,
+    /// Optional CN override; defaults to the certificate's CN
+    pub name: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 pub struct CreateUserCertificateRequest {
     pub cert_name: Name,

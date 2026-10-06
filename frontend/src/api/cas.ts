@@ -1,5 +1,5 @@
 import ApiClient from "@/api/ApiClient.ts";
-import type {CA, CARequirements} from "@/types/CA.ts";
+import type {CA, CAImportUrlRequest, CARequirements} from "@/types/CA.ts";
 
 export const fetchCAs = async (): Promise<CA[]> => {
     return await ApiClient.get<CA[]>(`/certificates/ca`);
@@ -23,4 +23,8 @@ export const downloadCRL = async (id: number, format: string = 'der'): Promise<v
 
 export const importCa = async (form: FormData): Promise<number> => {
     return await ApiClient.postForm<number>('/certificates/ca/import', form);
+};
+
+export const importCaUrl = async (payload: CAImportUrlRequest): Promise<number> => {
+    return await ApiClient.post<number>('/certificates/ca/import-url', payload);
 };

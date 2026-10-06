@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::env;
+use std::sync::OnceLock;
+use std::time::Duration;
 use openidconnect::{Nonce, PkceCodeVerifier};
 use openssl::x509::X509;
 use rocket_okapi::openapi;
@@ -19,7 +21,7 @@ use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, ImportCaUrlRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::{AppState, AuditEntry, Group, GroupDetail, Name, ServiceAccount, User};
@@ -526,21 +528,45 @@ pub(crate) async fn import_ca(
     form: rocket::form::Form<ImportCaForm<'_>>,
     authentication: AuthenticatedLocalAdmin,
 ) -> Result<Json<i64>, ApiError> {
+    let cert_bytes = read_tempfile(&form.ca_cert).await?;
+    let key_bytes = match &form.ca_key {
+        Some(f) => Some(read_tempfile(f).await?),
+        None => None,
+    };
+
+    let ca_id = persist_imported_ca(
+        state,
+        &authentication,
+        &cert_bytes,
+        key_bytes.as_deref(),
+        form.name.as_deref(),
+    ).await?;
+    Ok(Json(ca_id))
+}
+
+/// Shared tail of both CA import paths (file upload and URL): parse, persist, audit.
+async fn persist_imported_ca(
+    state: &State<AppState>,
+    authentication: &AuthenticatedLocalAdmin,
+    cert_bytes: &[u8],
+    key_bytes: Option<&[u8]>,
+    name_override: Option<&str>,
+) -> Result<i64, ApiError> {
     use crate::certs::import::{parse_cert, parse_private_key};
 
-    let cert_bytes = read_tempfile(&form.ca_cert).await?;
-    let cert = parse_cert(&cert_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let cert = parse_cert(cert_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let key_der = match &form.ca_key {
-        Some(f) => {
-            let kb = read_tempfile(f).await?;
-            let key = parse_private_key(&kb).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let key_der = match key_bytes {
+        Some(kb) => {
+            let key = parse_private_key(kb).map_err(|e| ApiError::BadRequest(e.to_string()))?;
             key.private_key_to_der().map_err(ApiError::from)?
         }
         None => Vec::new(),
     };
 
-    let cn = form.name.clone().unwrap_or_else(|| cn_from_cert(&cert));
+    let cn = name_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| cn_from_cert(&cert));
     let not_after_ms = asn1_to_unix_ms(cert.not_after())?;
     let not_before_ms = asn1_to_unix_ms(cert.not_before())?;
 
@@ -563,7 +589,91 @@ pub(crate) async fn import_ca(
     record_audit(state, aid, alabel, atype, AuditAction::ImportCa,
         Some("ca".into()), Some(ca.id.to_string()), None, AuditResult::Success, None, authentication.ip.clone()).await;
 
-    Ok(Json(ca.id))
+    Ok(ca.id)
+}
+
+const CA_IMPORT_URL_MAX_BYTES: usize = 10 * 1024 * 1024;
+const CA_IMPORT_URL_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const CA_IMPORT_URL_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+static IMPORT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn import_http_client() -> &'static reqwest::Client {
+    IMPORT_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(concat!("VaulTLS/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(CA_IMPORT_URL_CONNECT_TIMEOUT)
+            .timeout(CA_IMPORT_URL_TOTAL_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .expect("failed to build CA import HTTP client")
+    })
+}
+
+/// Download an http(s) URL into memory, capping the body at `CA_IMPORT_URL_MAX_BYTES`.
+async fn fetch_url_limited(url: &str) -> Result<Vec<u8>, ApiError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| ApiError::BadRequest(format!("invalid URL: {url}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ApiError::BadRequest("only http(s) URLs are supported".into()));
+    }
+
+    let resp = import_http_client()
+        .get(parsed)
+        .send()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("failed to fetch {url}: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ApiError::BadRequest(format!("failed to fetch {url}: HTTP {}", resp.status())));
+    }
+
+    if let Some(len) = resp.content_length() {
+        if len as usize > CA_IMPORT_URL_MAX_BYTES {
+            return Err(ApiError::BadRequest(format!(
+                "response from {url} is too large (limit {} bytes)", CA_IMPORT_URL_MAX_BYTES
+            )));
+        }
+    }
+
+    let mut resp = resp;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("failed to read response from {url}: {e}")))?
+    {
+        if buf.len().saturating_add(chunk.len()) > CA_IMPORT_URL_MAX_BYTES {
+            return Err(ApiError::BadRequest(format!(
+                "response from {url} is too large (limit {} bytes)", CA_IMPORT_URL_MAX_BYTES
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+#[openapi(tag = "Certificates")]
+#[post("/certificates/ca/import-url", format = "json", data = "<payload>")]
+/// Import a CA certificate (optionally with its private key) downloaded from http(s) URLs. Requires admin role.
+pub(crate) async fn import_ca_url(
+    state: &State<AppState>,
+    payload: Json<ImportCaUrlRequest>,
+    authentication: AuthenticatedLocalAdmin,
+) -> Result<Json<i64>, ApiError> {
+    let cert_bytes = fetch_url_limited(&payload.ca_cert_url).await?;
+    let key_bytes = match &payload.ca_key_url {
+        Some(u) => Some(fetch_url_limited(u).await?),
+        None => None,
+    };
+
+    let ca_id = persist_imported_ca(
+        state,
+        &authentication,
+        &cert_bytes,
+        key_bytes.as_deref(),
+        payload.name.as_deref(),
+    ).await?;
+    Ok(Json(ca_id))
 }
 
 #[derive(rocket::form::FromForm)]

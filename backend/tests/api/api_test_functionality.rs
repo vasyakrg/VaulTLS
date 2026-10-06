@@ -1111,3 +1111,107 @@ async fn import_leaf_with_ca_type_mismatch_rejected() {
         "Expected CA/type error, got: {body_text}"
     );
 }
+
+#[tokio::test]
+async fn import_ca_url_from_local_http_server() -> Result<()> {
+    use std::io::{Read, Write};
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("URL Imported CA");
+
+    // Минимальный HTTP-сервер: два последовательных ответа (сертификат, затем ключ)
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for body in [ca_pem, ca_key_pem] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    let client = VaulTLSClient::new_authenticated().await;
+    let req = serde_json::json!({
+        "ca_cert_url": format!("http://{addr}/ca.pem"),
+        "ca_key_url": format!("http://{addr}/ca.key"),
+        "name": "URL Imported CA",
+    });
+    let resp = client.post("/certificates/ca/import-url")
+        .header(ContentType::JSON)
+        .body(req.to_string())
+        .dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "import-url failed: {status} body={body_text}");
+    server.join().unwrap();
+
+    // Импортированный CA виден в списке, помечен как imported и имеет ключ
+    let resp = client.get("/certificates/ca").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let cas: Vec<Value> = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let ours = cas.iter().find(|c| c["name"]["cn"] == "URL Imported CA")
+        .expect("imported CA not found in list");
+    assert_eq!(ours["is_imported"], Value::Bool(true));
+    assert_eq!(ours["has_private_key"], Value::Bool(true));
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_ca_url_rejects_non_http_scheme() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let req = serde_json::json!({ "ca_cert_url": "ftp://example.com/ca.pem" });
+    let resp = client.post("/certificates/ca/import-url")
+        .header(ContentType::JSON)
+        .body(req.to_string())
+        .dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(body_text.contains("http(s)"), "expected scheme error, got: {body_text}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_ca_url_rejects_too_large_content_length() -> Result<()> {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = stream.read(&mut buf);
+        // Обещаем гигабайт, тело не шлём — лимит должен сработать по заголовку
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 99999999\r\nConnection: close\r\n\r\n").unwrap();
+        stream.flush().unwrap();
+    });
+
+    let client = VaulTLSClient::new_authenticated().await;
+    let req = serde_json::json!({ "ca_cert_url": format!("http://{addr}/ca.pem") });
+    let resp = client.post("/certificates/ca/import-url")
+        .header(ContentType::JSON)
+        .body(req.to_string())
+        .dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(body_text.contains("too large"), "expected size error, got: {body_text}");
+    server.join().unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_ca_url_requires_local_admin() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated_unprivileged().await;
+    let req = serde_json::json!({ "ca_cert_url": "http://127.0.0.1:9/ca.pem" });
+    let resp = client.post("/certificates/ca/import-url")
+        .header(ContentType::JSON)
+        .body(req.to_string())
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden);
+    Ok(())
+}
