@@ -496,6 +496,24 @@
       "title": "Desactivar cuenta ACME",
       "confirm": "¿Está seguro de que desea desactivar la cuenta ACME {name}? La cuenta ya no podrá emitir certificados.",
       "deactivate": "Desactivar"
+    },
+    "purge": "Eliminar permanentemente",
+    "purgeModal": {
+      "title": "Eliminar cuenta ACME permanentemente",
+      "purge": "Eliminar permanentemente",
+      "confirm": "Esto eliminará permanentemente la cuenta desactivada \"{name}\" junto con todos sus pedidos. Los certificados emitidos se conservan. ¿Está seguro?"
+    },
+    "revokeOrder": "Revocar certificado",
+    "deleteOrder": "Eliminar pedido",
+    "revokeOrderModal": {
+      "title": "Revocar certificado del pedido",
+      "revoke": "Revocar",
+      "confirm": "¿Revocar el certificado emitido para el pedido #{id}? Se añadirá a la CRL de la CA."
+    },
+    "deleteOrderModal": {
+      "title": "Eliminar pedido ACME",
+      "delete": "Eliminar",
+      "confirm": "¿Eliminar el pedido #{id}? Esta acción no se puede deshacer."
     }
   },
   "import": {

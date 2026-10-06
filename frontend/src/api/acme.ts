@@ -20,3 +20,16 @@ export const updateAcmeAccount = async (id: number, req: UpdateAcmeAccountReques
 export const deleteAcmeAccount = async (id: number): Promise<void> => {
     await ApiClient.delete(`/acme/accounts/${id}`);
 };
+
+// Полное удаление деактивированного аккаунта вместе с его заказами (локальный админ)
+export const purgeAcmeAccount = async (id: number): Promise<void> => {
+    await ApiClient.delete(`/acme/accounts/${id}/purge`);
+};
+
+export const deleteAcmeOrder = async (id: number): Promise<void> => {
+    await ApiClient.delete(`/acme/orders/${id}`);
+};
+
+export const revokeAcmeOrder = async (id: number): Promise<void> => {
+    await ApiClient.post(`/acme/orders/${id}/revoke`);
+};

@@ -1942,6 +1942,38 @@ async fn create_krl_params(state: &State<AppState>, ca: &CA) -> Result<Vec<Vec<u
     Ok(revoked_serials)
 }
 
+/// Отзыв сертификата + обновление CRL/KRL его CA. Возвращает сертификат
+/// для аудита. Права вызывающий проверяет сам; повторный отзыв — ошибка.
+pub(crate) async fn revoke_cert_and_update_crl(
+    state: &State<AppState>,
+    cert_id: i64,
+) -> Result<Certificate, ApiError> {
+    let cert = state.db.get_user_cert_by_id(cert_id).await?;
+    if cert.revoked_at.is_some() {
+        return Err(ApiError::BadRequest("certificate is already revoked".into()));
+    }
+    let ca_id = cert.ca_id.ok_or_else(|| ApiError::BadRequest("ACME certificates cannot be revoked via an internal CA".into()))?;
+    let mut ca = state.db.get_ca_by_id(ca_id).await.map_err(|_| ApiError::NotFound(None))?;
+    if !ca.has_private_key() {
+        return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
+    }
+
+    state.db.revoke_user_cert(cert_id).await.map_err(|e| ApiError::Other(e.to_string()))?;
+    match ca.ca_type {
+        CAType::TLS => {
+            let (revoked_params, crl_next_update_hours) = create_crl_params(state, &ca).await?;
+            create_and_save_crl(&mut ca, revoked_params, crl_next_update_hours)?;
+            state.db.increase_ca_crl_number(ca.id, ca.crl_number).await?;
+        }
+        CAType::SSH => {
+            let revoked_serials = create_krl_params(state, &ca).await?;
+            create_and_save_krl(&mut ca, &revoked_serials)?;
+            state.db.increase_ca_crl_number(ca.id, ca.crl_number).await?;
+        }
+    }
+    Ok(cert)
+}
+
 #[openapi(tag = "Certificates")]
 #[post("/certificates/<id>/revoke")]
 /// Revoke a user-owned certificate. Requires being the owner or a local admin.
@@ -1955,25 +1987,7 @@ pub(crate) async fn revoke_certificate(
         || (!authentication.claims.is_service() && cert.user_id == authentication.claims.id);
     if !allowed { return Err(ApiError::Forbidden(None)); }
 
-    let ca_id = cert.ca_id.ok_or_else(|| ApiError::BadRequest("ACME certificates cannot be revoked via an internal CA".into()))?;
-    let mut ca = state.db.get_ca_by_id(ca_id).await.map_err(|_| ApiError::NotFound(None))?;
-    if !ca.has_private_key() {
-        return Err(ApiError::BadRequest("This CA has no private key; cannot generate CRL/KRL".into()));
-    }
-
-    state.db.revoke_user_cert(id).await.map_err(|e| ApiError::Other(e.to_string()))?;
-    match ca.ca_type {
-        CAType::TLS => {
-            let (revoked_params, crl_next_update_hours) = create_crl_params(state, &ca).await?;
-            create_and_save_crl(&mut ca, revoked_params, crl_next_update_hours)?;
-            state.db.increase_ca_crl_number(ca.id, ca.crl_number).await?;
-        }
-        CAType::SSH => {
-            let revoked_serials = create_krl_params(state, &ca).await?;
-            create_and_save_krl(&mut ca, &revoked_serials)?;
-            state.db.increase_ca_crl_number(ca.id, ca.crl_number).await?;
-        }
-    }
+    revoke_cert_and_update_crl(state, id).await?;
 
     let (aid, alabel, atype) = audit_actor(state, &authentication.claims).await;
     record_audit(state, aid, alabel, atype, AuditAction::RevokeCertificate,

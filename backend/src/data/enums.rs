@@ -213,6 +213,7 @@ pub enum AuditAction {
     CreateGroup, UpdateGroup, DeleteGroup,
     CreateServiceAccount, RevokeServiceAccount, DeleteServiceAccount,
     UpdateSettings,
+    DeleteAcmeAccount, DeleteAcmeOrder,
 }
 
 impl AuditAction {
@@ -239,6 +240,8 @@ impl AuditAction {
             AuditAction::RevokeServiceAccount => "revoke_service_account",
             AuditAction::DeleteServiceAccount => "delete_service_account",
             AuditAction::UpdateSettings => "update_settings",
+            AuditAction::DeleteAcmeAccount => "delete_acme_account",
+            AuditAction::DeleteAcmeOrder => "delete_acme_order",
         }
     }
 }
@@ -269,6 +272,8 @@ impl std::str::FromStr for AuditAction {
             "revoke_service_account" => Ok(AuditAction::RevokeServiceAccount),
             "delete_service_account" => Ok(AuditAction::DeleteServiceAccount),
             "update_settings" => Ok(AuditAction::UpdateSettings),
+            "delete_acme_account" => Ok(AuditAction::DeleteAcmeAccount),
+            "delete_acme_order" => Ok(AuditAction::DeleteAcmeOrder),
             _ => Err(()),
         }
     }

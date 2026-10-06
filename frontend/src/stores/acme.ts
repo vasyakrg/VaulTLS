@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import type { AcmeAccount, AcmeOrder, CreateAcmeAccountRequest, CreateAcmeAccountResponse, UpdateAcmeAccountRequest } from '@/types/Acme';
-import { fetchAcmeAccounts, fetchAcmeOrders, createAcmeAccount, updateAcmeAccount, deleteAcmeAccount } from '@/api/acme.ts';
+import { fetchAcmeAccounts, fetchAcmeOrders, createAcmeAccount, updateAcmeAccount, deleteAcmeAccount, purgeAcmeAccount, deleteAcmeOrder, revokeAcmeOrder } from '@/api/acme.ts';
 import axios from 'axios';
 
 export const useAcmeStore = defineStore('acme', {
@@ -116,6 +116,64 @@ export const useAcmeStore = defineStore('acme', {
                     this.error = 'Failed to delete ACME account';
                 }
                 console.error(err);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        // Полное удаление деактивированного аккаунта (локальный админ)
+        async purgeAccount(id: number): Promise<void> {
+            this.loading = true;
+            this.error = null;
+            try {
+                await purgeAcmeAccount(id);
+                await Promise.all([this.fetchAccounts(), this.fetchOrders()]);
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to purge ACME account: ' + err.response?.data?.error;
+                } else {
+                    this.error = 'Failed to purge ACME account';
+                }
+                console.error(err);
+                throw err;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async deleteOrder(id: number): Promise<void> {
+            this.loading = true;
+            this.error = null;
+            try {
+                await deleteAcmeOrder(id);
+                await this.fetchOrders();
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to delete ACME order: ' + err.response?.data?.error;
+                } else {
+                    this.error = 'Failed to delete ACME order';
+                }
+                console.error(err);
+                throw err;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async revokeOrder(id: number): Promise<void> {
+            this.loading = true;
+            this.error = null;
+            try {
+                await revokeAcmeOrder(id);
+                await this.fetchOrders();
+            } catch (err) {
+                if (axios.isAxiosError(err)) {
+                    this.error = 'Failed to revoke ACME order: ' + err.response?.data?.error;
+                } else {
+                    this.error = 'Failed to revoke ACME order';
+                }
+                console.error(err);
+                throw err;
             } finally {
                 this.loading = false;
             }

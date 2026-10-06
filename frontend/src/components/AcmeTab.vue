@@ -105,6 +105,17 @@
               :aria-label="$t('acme.deactivate')"
               @click="confirmDeletion(data)"
             />
+            <Button
+              :id="'PurgeButton-' + data.id"
+              v-if="authStore.isLocalAdmin && data.status === 'deactivated'"
+              icon="pi pi-trash"
+              severity="danger"
+              outlined
+              size="small"
+              v-tooltip.top="$t('acme.purge')"
+              :aria-label="$t('acme.purge')"
+              @click="confirmPurge(data)"
+            />
           </div>
         </template>
       </Column>
@@ -150,6 +161,33 @@
               {{ data.error.length > 40 ? data.error.slice(0, 40) + '…' : data.error }}
             </span>
             <span v-else class="vt-muted">—</span>
+          </template>
+        </Column>
+        <Column v-if="authStore.isLocalAdmin" :header="$t('common.actions')">
+          <template #body="{ data }">
+            <div class="vt-row-actions">
+              <Button
+                v-if="data.certificate_id !== null"
+                :id="'RevokeOrderButton-' + data.id"
+                icon="pi pi-ban"
+                severity="danger"
+                outlined
+                size="small"
+                v-tooltip.top="$t('acme.revokeOrder')"
+                :aria-label="$t('acme.revokeOrder')"
+                @click="confirmOrderRevoke(data)"
+              />
+              <Button
+                :id="'DeleteOrderButton-' + data.id"
+                icon="pi pi-trash"
+                severity="danger"
+                outlined
+                size="small"
+                v-tooltip.top="$t('acme.deleteOrder')"
+                :aria-label="$t('acme.deleteOrder')"
+                @click="confirmOrderDelete(data)"
+              />
+            </div>
           </template>
         </Column>
 
@@ -420,6 +458,35 @@
     >
       <p>{{ $t('acme.deactivateModal.confirm', { name: accountToDelete?.name }) }}</p>
     </BaseModal>
+
+    <!-- Purge Confirmation Dialog (deactivated accounts, local admin) -->
+    <BaseModal
+      v-model:visible="isPurgeModalVisible"
+      :title="$t('acme.purgeModal.title')"
+      :submitLabel="$t('acme.purgeModal.purge')"
+      submitSeverity="danger"
+      submit-id="ConfirmPurgeButton"
+      @submit="purgeAccount"
+      @cancel="closePurgeModal"
+      width="400px"
+    >
+      <p>{{ $t('acme.purgeModal.confirm', { name: accountToPurge?.name }) }}</p>
+    </BaseModal>
+
+    <!-- Order Action Confirmation Dialog -->
+    <BaseModal
+      v-model:visible="isOrderModalVisible"
+      :title="orderAction === 'revoke' ? $t('acme.revokeOrderModal.title') : $t('acme.deleteOrderModal.title')"
+      :submitLabel="orderAction === 'revoke' ? $t('acme.revokeOrderModal.revoke') : $t('acme.deleteOrderModal.delete')"
+      submitSeverity="danger"
+      submit-id="ConfirmOrderActionButton"
+      @submit="submitOrderAction"
+      @cancel="closeOrderModal"
+      width="400px"
+    >
+      <p v-if="orderAction === 'revoke'">{{ $t('acme.revokeOrderModal.confirm', { id: orderToAct?.id }) }}</p>
+      <p v-else>{{ $t('acme.deleteOrderModal.confirm', { id: orderToAct?.id }) }}</p>
+    </BaseModal>
   </div>
 </template>
 
@@ -430,7 +497,7 @@ import { useAcmeStore } from '@/stores/acme'
 import { useCAStore } from '@/stores/cas'
 import { useAuthStore } from '@/stores/auth'
 import { useUserStore } from '@/stores/users'
-import type { AcmeAccount, CreateAcmeAccountResponse } from '@/types/Acme'
+import type { AcmeAccount, AcmeOrder, CreateAcmeAccountResponse } from '@/types/Acme'
 import { CAType } from '@/types/CA'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -671,6 +738,61 @@ const deleteAccount = async () => {
   if (accountToDelete.value) {
     await acmeStore.deleteAccount(accountToDelete.value.id)
     closeDeleteModal()
+  }
+}
+
+// purge modal actions (deactivated accounts, local admin)
+const isPurgeModalVisible = ref(false)
+const accountToPurge = ref<AcmeAccount | null>(null)
+
+const confirmPurge = (account: AcmeAccount) => {
+  accountToPurge.value = account
+  isPurgeModalVisible.value = true
+}
+
+const closePurgeModal = () => {
+  accountToPurge.value = null
+  isPurgeModalVisible.value = false
+}
+
+const purgeAccount = async () => {
+  if (!accountToPurge.value) return
+  try {
+    await acmeStore.purgeAccount(accountToPurge.value.id)
+  } finally {
+    closePurgeModal()
+  }
+}
+
+// order action modal (revoke certificate / delete order, local admin)
+const isOrderModalVisible = ref(false)
+const orderToAct = ref<AcmeOrder | null>(null)
+const orderAction = ref<'revoke' | 'delete'>('delete')
+
+const confirmOrderRevoke = (order: AcmeOrder) => {
+  orderToAct.value = order
+  orderAction.value = 'revoke'
+  isOrderModalVisible.value = true
+}
+
+const confirmOrderDelete = (order: AcmeOrder) => {
+  orderToAct.value = order
+  orderAction.value = 'delete'
+  isOrderModalVisible.value = true
+}
+
+const closeOrderModal = () => {
+  orderToAct.value = null
+  isOrderModalVisible.value = false
+}
+
+const submitOrderAction = async () => {
+  if (!orderToAct.value) return
+  try {
+    if (orderAction.value === 'revoke') await acmeStore.revokeOrder(orderToAct.value.id)
+    else await acmeStore.deleteOrder(orderToAct.value.id)
+  } finally {
+    closeOrderModal()
   }
 }
 </script>

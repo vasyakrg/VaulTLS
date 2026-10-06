@@ -74,6 +74,7 @@ const ACTIONS = [
   'update_certificate','delete_certificate_version',
   'create_user','update_user','delete_user','create_group','update_group','delete_group',
   'create_service_account','revoke_service_account','delete_service_account','update_settings',
+  'delete_acme_account','delete_acme_order',
 ];
 
 const rows = ref<AuditLogRow[]>([]);

@@ -503,6 +503,24 @@
       "title": "Deactivate ACME Account",
       "confirm": "Are you sure you want to deactivate the ACME account {name}? The account will no longer be able to issue certificates.",
       "deactivate": "Deactivate"
+    },
+    "purge": "Delete permanently",
+    "purgeModal": {
+      "title": "Delete ACME Account Permanently",
+      "purge": "Delete Permanently",
+      "confirm": "This will permanently delete the deactivated account \"{name}\" together with all its orders. Issued certificates are kept. Are you sure?"
+    },
+    "revokeOrder": "Revoke certificate",
+    "deleteOrder": "Delete order",
+    "revokeOrderModal": {
+      "title": "Revoke Order Certificate",
+      "revoke": "Revoke",
+      "confirm": "Revoke the certificate issued for order #{id}? It will be added to the CA's CRL."
+    },
+    "deleteOrderModal": {
+      "title": "Delete ACME Order",
+      "delete": "Delete",
+      "confirm": "Delete order #{id}? This action cannot be undone."
     }
   },
   "audit": {

@@ -988,6 +988,25 @@ impl VaulTLSDB {
         })
     }
 
+    /// Полное удаление ACME-аккаунта вместе с его заказами (вызывается
+    /// только для деактивированных аккаунтов). Выпущенные сертификаты
+    /// остаются, связь с аккаунтом сбрасывается (FK ON DELETE SET NULL).
+    pub(crate) async fn delete_acme_account(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM acme_orders WHERE account_id = ?1", params![id])?;
+            conn.execute("DELETE FROM acme_accounts WHERE id = ?1", params![id])?;
+            Ok(())
+        })
+    }
+
+    /// Полное удаление заказа ACME (админская очистка истории).
+    pub(crate) async fn delete_acme_order(&self, id: i64) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute("DELETE FROM acme_orders WHERE id = ?1", params![id])?;
+            Ok(())
+        })
+    }
+
     pub(crate) async fn insert_acme_order(
         &self,
         account_id: i64,
