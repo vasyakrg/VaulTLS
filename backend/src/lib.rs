@@ -306,7 +306,10 @@ fn forbidden_catcher() -> Json<ErrorResponse> {
 
 pub async fn create_test_rocket() -> Rocket<Build> {
     let db = VaulTLSDB::new(false, true).expect("Failed opening SQLite database");
+    // ACME включён, чтобы интеграционные тесты могли гонять протокольные
+    // маршруты /api/acme (guard AcmeEnabled отдаёт 404 при выключенном ACME).
     let settings = Settings::default();
+    settings.set_acme_enabled(true);
     let oidc = None;
 
     let mail_settings = settings.get_mail();
@@ -372,6 +375,11 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 list_service_accounts,
                 revoke_service_account,
                 delete_service_account,
+                get_acme_orders,
+                get_acme_accounts,
+                create_acme_account,
+                update_acme_account,
+                delete_acme_account,
                 get_acme_client_providers,
                 create_acme_client_provider,
                 delete_acme_client_provider,
@@ -437,6 +445,11 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 list_service_accounts,
                 revoke_service_account,
                 delete_service_account,
+                get_acme_orders,
+                get_acme_accounts,
+                create_acme_account,
+                update_acme_account,
+                delete_acme_account,
                 get_acme_client_providers,
                 create_acme_client_provider,
                 delete_acme_client_provider,
@@ -459,6 +472,8 @@ pub async fn create_test_rocket() -> Rocket<Build> {
         )
         .mount("/api", routes![scalar_ui, scalar_js])
         .mount("/api", routes![crate::metrics::metrics])
+        .mount("/api/acme", acme::protocol_routes())
+        .attach(acme::NonceFairing)
         .register("/api", catchers![unauthorized_catcher, forbidden_catcher])
 }
 

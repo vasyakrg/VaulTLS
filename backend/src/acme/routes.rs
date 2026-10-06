@@ -187,8 +187,28 @@ pub(crate) async fn new_account(
 
     let thumbprint = jwk_thumbprint(&jwk)?;
 
-    let final_account = if account.acme_jwk.is_some() {
-        account.clone()
+    // EAB-креды уже привязаны к аккаунту. По RFC 8555 §7.3.1 возвращать
+    // существующий аккаунт можно только при том же ключе; если предъявлен
+    // другой ключ — отказ: иначе клиент уходит с kid, привязанным к чужому
+    // ключу, и получает невнятный "Signature verification failed" на первом
+    // же POST вместо внятной ошибки на регистрации.
+    let already_registered = account.acme_jwk.is_some();
+
+    let final_account = if already_registered {
+        let presented_thumbprint = jwk_thumbprint(&jwk)?;
+        match state.db.get_acme_account_by_jwk_thumbprint(presented_thumbprint).await {
+            Ok(existing) if existing.id == account.id => account.clone(),
+            Ok(_) => {
+                return Err(AcmeError::unauthorized(
+                    "account key is already registered to another ACME account",
+                ));
+            }
+            Err(_) => {
+                return Err(AcmeError::unauthorized(
+                    "EAB credentials are already bound to a different account key",
+                ));
+            }
+        }
     } else {
         if let Ok(existing) = state.db.get_acme_account_by_jwk_thumbprint(thumbprint.clone()).await {
             if existing.id != account.id {
@@ -219,7 +239,9 @@ pub(crate) async fn new_account(
     let body_bytes = serde_json::to_vec(&resp_body)
         .map_err(|_| AcmeError::server_internal("Serialization failed"))?;
 
-    Ok(AcmeCreatedResponse { status: Status::Created, location: account_url, body: body_bytes })
+    // RFC 8555 §7.3.1: 201 для нового аккаунта, 200 для уже существующего.
+    let status = if already_registered { Status::Ok } else { Status::Created };
+    Ok(AcmeCreatedResponse { status, location: account_url, body: body_bytes })
 }
 
 #[post("/new-order", data = "<jws>")]

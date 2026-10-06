@@ -448,6 +448,11 @@ impl Settings {
         settings.set_password_enabled(password_enabled)
     }
 
+    /// Включить/выключить ACME-протокол без записи в файл (используется тестовым рокетом).
+    pub(crate) fn set_acme_enabled(&self, enabled: bool) {
+        self.0.write().acme.enabled = enabled;
+    }
+
     pub(crate) fn set_db_encrypted(&self) -> Result<(), ApiError>{
         let mut settings = self.0.write();
         settings.set_db_encrypted()
