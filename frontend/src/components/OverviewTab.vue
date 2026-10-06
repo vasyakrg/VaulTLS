@@ -499,7 +499,8 @@ const acmeClientStore = useAcmeClientStore()
 
 // local state
 const showImport = ref(false)
-const hideAcmeCerts = ref(localStorage.getItem('hideAcmeCerts') === 'true')
+// ACME-серты скрыты по умолчанию; явное 'false' в localStorage их возвращает
+const hideAcmeCerts = ref(localStorage.getItem('hideAcmeCerts') !== 'false')
 watch(hideAcmeCerts, (val) => localStorage.setItem('hideAcmeCerts', String(val)))
 const typeFilter = ref<CertificateType | null>(null)
 const caFilter = ref<string | null>(null)
@@ -632,14 +633,22 @@ const certTypeOptions = computed(() => [
 
 const typeFilterOptions = computed(() => certTypeOptions.value)
 
-// Distinct issuers present among the currently loaded certificates, for the CA filter.
+// CA filter: полный список CA (и внутренних, и импортированных) + ACME-провайдеры,
+// чтобы фильтр не зависел от того, чьи сертификаты сейчас есть в списке.
+// Эмиттеры из сертификатов добавляются как fallback (например, провайдер у не-админа).
 const caFilterOptions = computed(() => {
-  const seen = new Map<string, string>()
+  const options = new Map<string, string>()
+  for (const ca of caStore.cas.values()) {
+    options.set(`ca:${ca.id}`, `${ca.name.cn} (ID: ${ca.id})`)
+  }
+  for (const p of acmeClientStore.providers) {
+    options.set(`acme:${p.id}`, p.name)
+  }
   for (const cert of certificates.value.values()) {
     const key = caKey(cert)
-    if (!seen.has(key)) seen.set(key, caName(cert) || t('overview.noCa'))
+    if (!options.has(key)) options.set(key, caName(cert) || t('overview.noCa'))
   }
-  return Array.from(seen, ([value, label]) => ({ value, label })).sort((a, b) =>
+  return Array.from(options, ([value, label]) => ({ value, label })).sort((a, b) =>
     a.label.localeCompare(b.label),
   )
 })

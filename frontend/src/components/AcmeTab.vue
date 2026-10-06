@@ -21,9 +21,12 @@
 
     <!-- Accounts Table -->
     <DataTable
-      :value="accountsArray"
+      :value="accountsTableRows"
       dataKey="id"
       class="vt-table"
+      paginator
+      :rows="rowsPerPage"
+      :rowsPerPageOptions="[15, 30]"
     >
       <template #header>
         <div class="vt-table-header">
@@ -35,6 +38,25 @@
             />
             {{ $t('acme.hideDeactivated') }}
           </label>
+          <div class="vt-filter-row">
+            <div class="p-input-icon-left vt-search-wrap">
+              <i class="pi pi-search" />
+              <InputText
+                v-model="accountSearch"
+                :placeholder="$t('common.search')"
+                class="vt-search"
+              />
+            </div>
+            <Select
+              v-model="accountStatusFilter"
+              :options="accountStatusOptions"
+              optionLabel="label"
+              optionValue="value"
+              :placeholder="$t('acme.colStatus')"
+              showClear
+              class="vt-type-filter"
+            />
+          </div>
         </div>
       </template>
 
@@ -129,10 +151,36 @@
     <div class="vt-orders-section">
       <h2 class="vt-section-title">{{ $t('acme.ordersTitle') }}</h2>
       <DataTable
-        :value="ordersArray"
+        :value="ordersTableRows"
         dataKey="id"
         class="vt-table"
+        paginator
+        :rows="rowsPerPage"
+        :rowsPerPageOptions="[15, 30]"
       >
+        <template #header>
+          <div class="vt-table-header">
+            <div class="vt-filter-row">
+              <div class="p-input-icon-left vt-search-wrap">
+                <i class="pi pi-search" />
+                <InputText
+                  v-model="orderSearch"
+                  :placeholder="$t('common.search')"
+                  class="vt-search"
+                />
+              </div>
+              <Select
+                v-model="orderStatusFilter"
+                :options="orderStatusOptions"
+                optionLabel="label"
+                optionValue="value"
+                :placeholder="$t('acme.colStatus')"
+                showClear
+                class="vt-type-filter"
+              />
+            </div>
+          </div>
+        </template>
         <Column field="id" :header="$t('acme.colId')" sortable />
         <Column field="account_name" :header="$t('acme.colAccount')" sortable />
         <Column field="status" :header="$t('acme.colStatus')" sortable>
@@ -492,6 +540,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Tooltip from 'primevue/tooltip'
 import { useAcmeStore } from '@/stores/acme'
 import { useCAStore } from '@/stores/cas'
@@ -509,6 +558,7 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import BaseModal from '@/components/BaseModal.vue'
 
 const vTooltip = Tooltip
+const { t, te } = useI18n()
 
 // stores
 const acmeStore = useAcmeStore()
@@ -531,12 +581,64 @@ const caOptions = computed(() =>
 )
 
 const hideDeactivated = ref(true)
-const accountsArray = computed(() => {
-  const all = Array.from(acmeStore.accounts.values())
-  return hideDeactivated.value ? all.filter((a) => a.status !== 'deactivated') : all
-})
+const accountsArray = computed(() => Array.from(acmeStore.accounts.values()))
 
 const ordersArray = computed(() => Array.from(acmeStore.orders.values()))
+
+// search / filters / pagination (15/30)
+const rowsPerPage = ref(15)
+const accountSearch = ref('')
+const accountStatusFilter = ref<string | null>(null)
+const orderSearch = ref('')
+const orderStatusFilter = ref<string | null>(null)
+
+const statusLabel = (status: string): string =>
+  te(`acme.${status}`) ? t(`acme.${status}`) : status
+
+const accountStatusOptions = computed(() =>
+  [...new Set(Array.from(acmeStore.accounts.values()).map((a) => a.status))]
+    .sort()
+    .map((s) => ({ label: statusLabel(s), value: s })),
+)
+
+// Явно выбранный статус имеет приоритет над чекбоксом «скрыть деактивированные»
+const accountsTableRows = computed(() => {
+  let rows = accountsArray.value
+  if (accountStatusFilter.value !== null) {
+    rows = rows.filter((a) => a.status === accountStatusFilter.value)
+  }
+  const q = accountSearch.value.trim().toLowerCase()
+  if (q) {
+    rows = rows.filter((a) =>
+      a.name.toLowerCase().includes(q) ||
+      (a.allowed_domains ?? '').toLowerCase().includes(q) ||
+      String(a.id).includes(q))
+  }
+  return rows
+})
+
+const orderStatusOptions = computed(() =>
+  [...new Set(ordersArray.value.map((o) => o.status))]
+    .sort()
+    .map((s) => ({ label: statusLabel(s), value: s })),
+)
+
+// Поиск по доменам, имени аккаунта, id и тексту ошибки
+const ordersTableRows = computed(() => {
+  let rows = ordersArray.value
+  if (orderStatusFilter.value !== null) {
+    rows = rows.filter((o) => o.status === orderStatusFilter.value)
+  }
+  const q = orderSearch.value.trim().toLowerCase()
+  if (q) {
+    rows = rows.filter((o) =>
+      o.account_name.toLowerCase().includes(q) ||
+      String(o.id).includes(q) ||
+      (o.error ?? '').toLowerCase().includes(q) ||
+      o.identifiers.some((i) => i.value.toLowerCase().includes(q)))
+  }
+  return rows
+})
 
 const acmeDirectoryUrl = window.location.origin + '/api/acme/directory'
 
@@ -847,6 +949,36 @@ const submitOrderAction = async () => {
   align-items: center;
   gap: 16px;
   padding: 4px 0;
+  flex-wrap: wrap;
+}
+
+.vt-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+
+.vt-search-wrap i {
+  position: absolute;
+  left: 10px;
+  color: var(--vt-muted);
+  z-index: 1;
+}
+
+.vt-search {
+  padding-left: 32px;
+}
+
+.vt-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+}
+
+.vt-type-filter {
+  min-width: 160px;
 }
 
 .vt-checkbox-label {
