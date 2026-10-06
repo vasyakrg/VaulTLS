@@ -544,6 +544,13 @@ pub(crate) async fn import_ca(
     Ok(Json(ca_id))
 }
 
+/// SHA-256 отпечаток DER сертификата — тот же hex-формат, что хранится в
+/// user_certificates.fingerprint.
+fn leaf_fingerprint_hex(cert: &X509) -> Option<String> {
+    cert.digest(openssl::hash::MessageDigest::sha256()).ok()
+        .map(|d| d.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 /// Shared tail of both CA import paths (file upload and URL): parse, persist, audit.
 async fn persist_imported_ca(
     state: &State<AppState>,
@@ -555,6 +562,14 @@ async fn persist_imported_ca(
     use crate::certs::import::{parse_cert, parse_private_key};
 
     let cert = parse_cert(cert_bytes).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    let cert_der = cert.to_der().map_err(ApiError::from)?;
+    // Дубликат CA: точно такой же сертификат уже числится в базе (в т.ч. созданный внутри)
+    if let Some(existing) = state.db.find_ca_by_cert_der(&cert_der).await? {
+        return Err(ApiError::BadRequest(format!(
+            "identical CA already exists (id {})", existing.id
+        )));
+    }
 
     let key_der = match key_bytes {
         Some(kb) => {
@@ -576,7 +591,7 @@ async fn persist_imported_ca(
         created_on: not_before_ms,
         valid_until: not_after_ms,
         ca_type: crate::data::enums::CAType::TLS,
-        cert: cert.to_der().map_err(ApiError::from)?,
+        cert: cert_der,
         key: key_der,
         crl_number: 0,
         is_imported: true,
@@ -627,12 +642,10 @@ async fn fetch_url_limited(url: &str) -> Result<Vec<u8>, ApiError> {
         return Err(ApiError::BadRequest(format!("failed to fetch {url}: HTTP {}", resp.status())));
     }
 
-    if let Some(len) = resp.content_length() {
-        if len as usize > CA_IMPORT_URL_MAX_BYTES {
-            return Err(ApiError::BadRequest(format!(
-                "response from {url} is too large (limit {} bytes)", CA_IMPORT_URL_MAX_BYTES
-            )));
-        }
+    if resp.content_length().is_some_and(|len| len as usize > CA_IMPORT_URL_MAX_BYTES) {
+        return Err(ApiError::BadRequest(format!(
+            "response from {url} is too large (limit {} bytes)", CA_IMPORT_URL_MAX_BYTES
+        )));
     }
 
     let mut resp = resp;
@@ -781,6 +794,22 @@ pub(crate) async fn import_certificate(
             (leaf, chain, CertData::Pkcs12(p12.to_der()?))
         };
 
+    // 1b) Дубликат листа: тот же сертификат уже есть в основной таблице или
+    //     в истории версий — импорт отклоняем с указанием существующей записи.
+    if let Some(fp) = leaf_fingerprint_hex(&leaf) {
+        if let Some(existing) = state.db.find_cert_by_fingerprint(fp.clone()).await? {
+            return Err(ApiError::BadRequest(format!(
+                "identical certificate already exists (id {}, version {})",
+                existing.id, existing.version
+            )));
+        }
+        if let Some((cert_id, version)) = state.db.find_cert_version_by_fingerprint(fp.clone()).await? {
+            return Err(ApiError::BadRequest(format!(
+                "identical certificate already exists (id {}, version {})", cert_id, version
+            )));
+        }
+    }
+
     // 2) Resolve CA: explicit ca_id, else auto from chain.
     let ca_id = match form.ca_id {
         Some(id) => {
@@ -829,29 +858,34 @@ pub(crate) async fn import_certificate(
                 ));
             }
             let issuer_der = issuer.to_der()?;
-            match state.db.find_imported_ca_by_cert(&issuer_der).await? {
+            // Точное совпадение важнее SKI-эвристики: не плодим дубль CA,
+            // если его сертификат уже в базе (в т.ч. создан внутри).
+            match state.db.find_ca_by_cert_der(&issuer_der).await? {
                 Some(existing) => existing.id,
-                None => {
-                    let cn = cn_from_cert(&issuer);
-                    let not_after_ms = asn1_to_unix_ms(issuer.not_after())?;
-                    let not_before_ms = asn1_to_unix_ms(issuer.not_before())?;
-                    let ca = CA {
-                        id: -1,
-                        name: crate::data::objects::Name::from(cn),
-                        created_on: not_before_ms,
-                        valid_until: not_after_ms,
-                        ca_type: CAType::TLS,
-                        cert: issuer_der,
-                        key: Vec::new(),
-                        crl_number: 0,
-                        is_imported: true,
-                    };
-                    let saved_ca = state.db.insert_ca(ca).await?;
-                    if saved_ca.has_private_key() {
-                        save_ca(&saved_ca)?;
+                None => match state.db.find_imported_ca_by_cert(&issuer_der).await? {
+                    Some(existing) => existing.id,
+                    None => {
+                        let cn = cn_from_cert(&issuer);
+                        let not_after_ms = asn1_to_unix_ms(issuer.not_after())?;
+                        let not_before_ms = asn1_to_unix_ms(issuer.not_before())?;
+                        let ca = CA {
+                            id: -1,
+                            name: crate::data::objects::Name::from(cn),
+                            created_on: not_before_ms,
+                            valid_until: not_after_ms,
+                            ca_type: CAType::TLS,
+                            cert: issuer_der,
+                            key: Vec::new(),
+                            crl_number: 0,
+                            is_imported: true,
+                        };
+                        let saved_ca = state.db.insert_ca(ca).await?;
+                        if saved_ca.has_private_key() {
+                            save_ca(&saved_ca)?;
+                        }
+                        saved_ca.id
                     }
-                    saved_ca.id
-                }
+                },
             }
         }
     };
@@ -993,6 +1027,29 @@ pub(crate) async fn update_certificate(
             (leaf, chain, CertData::Pkcs12(p12.to_der()?))
         };
 
+    // 1b) Замена не должна превращать запись в дубликат другой записи.
+    //     Совпадение с собственной историей (восстановление прежней версии)
+    //     и повтор той же версии — разрешены.
+    if let Some(fp) = leaf_fingerprint_hex(&leaf) {
+        match state.db.find_cert_by_fingerprint(fp.clone()).await? {
+            Some(dup) if dup.id != existing.id => {
+                return Err(ApiError::BadRequest(format!(
+                    "identical certificate already exists (id {}, version {})",
+                    dup.id, dup.version
+                )));
+            }
+            _ => {}
+        }
+        match state.db.find_cert_version_by_fingerprint(fp.clone()).await? {
+            Some((cert_id, version)) if cert_id != existing.id => {
+                return Err(ApiError::BadRequest(format!(
+                    "identical certificate already exists (id {}, version {})", cert_id, version
+                )));
+            }
+            _ => {}
+        }
+    }
+
     // 2) CN обязан совпадать.
     let new_cn = cn_from_cert(&leaf);
     if new_cn != existing.name.cn {
@@ -1078,22 +1135,27 @@ pub(crate) async fn update_certificate(
             return Err(ApiError::BadRequest("leaf is not signed by the provided CA chain".into()));
         }
         let issuer_der = issuer.to_der()?;
-        match state.db.find_imported_ca_by_cert(&issuer_der).await? {
+        // Точное DER-совпадение приоритетнее SKI-эвристики: если такой CA уже
+        // числится (в т.ч. создан внутри), линкуемся на него, а не плодим дубль.
+        match state.db.find_ca_by_cert_der(&issuer_der).await? {
             Some(found) => found.id,
-            None => {
-                let ca = CA {
-                    id: -1,
-                    name: crate::data::objects::Name::from(cn_from_cert(&issuer)),
-                    created_on: asn1_to_unix_ms(issuer.not_before())?,
-                    valid_until: asn1_to_unix_ms(issuer.not_after())?,
-                    ca_type: CAType::TLS,
-                    cert: issuer_der,
-                    key: Vec::new(),
-                    crl_number: 0,
-                    is_imported: true,
-                };
-                state.db.insert_ca(ca).await?.id
-            }
+            None => match state.db.find_imported_ca_by_cert(&issuer_der).await? {
+                Some(found) => found.id,
+                None => {
+                    let ca = CA {
+                        id: -1,
+                        name: crate::data::objects::Name::from(cn_from_cert(&issuer)),
+                        created_on: asn1_to_unix_ms(issuer.not_before())?,
+                        valid_until: asn1_to_unix_ms(issuer.not_after())?,
+                        ca_type: CAType::TLS,
+                        cert: issuer_der,
+                        key: Vec::new(),
+                        crl_number: 0,
+                        is_imported: true,
+                    };
+                    state.db.insert_ca(ca).await?.id
+                }
+            },
         }
     };
 

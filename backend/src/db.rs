@@ -1367,6 +1367,50 @@ impl VaulTLSDB {
         Ok(None)
     }
 
+    /// Точное совпадение сертификата (canonical DER) среди всех CA, включая
+    /// созданные внутри, — для отказа от импорта дубликатов CA.
+    pub(crate) async fn find_ca_by_cert_der(&self, cert_der: &[u8]) -> Result<Option<CA>> {
+        for ca in self.get_all_ca().await? {
+            if ca.cert == cert_der {
+                return Ok(Some(ca));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Запись сертификата с данным отпечатком листа (sha256 hex, как в колонке
+    /// fingerprint) — для отказа от импорта дубликатов.
+    pub(crate) async fn find_cert_by_fingerprint(&self, fingerprint: String) -> Result<Option<Certificate>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, created_on, valid_until, data, password, user_id, type, renew_method, ca_id, revoked_at, acme_provider_id, version, fingerprint, is_imported \
+                 FROM user_certificates WHERE fingerprint = ?1 ORDER BY id LIMIT 1",
+            )?;
+            let row = stmt.query_row(params![fingerprint], Certificate::from_row);
+            match row {
+                Ok(cert) => Ok(Some(cert)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow!(e)),
+            }
+        })
+    }
+
+    /// Версия в истории замен с данным отпечатком — (cert_id, version).
+    pub(crate) async fn find_cert_version_by_fingerprint(&self, fingerprint: String) -> Result<Option<(i64, i64)>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let row = conn.query_row(
+                "SELECT cert_id, version FROM certificate_versions WHERE fingerprint = ?1 ORDER BY id LIMIT 1",
+                params![fingerprint],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            );
+            match row {
+                Ok(v) => Ok(Some(v)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(anyhow!(e)),
+            }
+        })
+    }
+
     pub(crate) async fn insert_service_account(&self, mut sa: ServiceAccount) -> Result<ServiceAccount> {
         db_do!(self.pool, |conn: &Connection| {
             let scopes_csv = sa.scopes.join(",");

@@ -1215,3 +1215,227 @@ async fn import_ca_url_requires_local_admin() -> Result<()> {
     assert_eq!(resp.status(), Status::Forbidden);
     Ok(())
 }
+
+#[tokio::test]
+async fn import_ca_duplicate_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (ca_pem, _ca_key_pem) = crate::common::helper::self_signed_ca_pem("Dup CA");
+
+    let boundary = "D1";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client.post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let ca_id: i64 = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+
+    // Тот же сертификат повторно — отказ с указанием id существующего CA
+    let boundary = "D2";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client.post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(
+        body_text.contains(&format!("already exists (id {ca_id})")),
+        "expected duplicate error mentioning id {ca_id}, got: {body_text}"
+    );
+
+    // В списке по-прежнему ровно один такой CA
+    let resp = client.get("/certificates/ca").dispatch().await;
+    let cas: Vec<Value> = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    assert_eq!(
+        cas.iter().filter(|c| c["name"]["cn"] == "Dup CA").count(),
+        1,
+        "duplicate CA must not be inserted"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_ca_url_duplicate_is_rejected() -> Result<()> {
+    use std::io::{Read, Write};
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("URL Dup CA");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let serve_pem = ca_pem.clone();
+    let server = std::thread::spawn(move || {
+        for body in [serve_pem, ca_key_pem] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    let client = VaulTLSClient::new_authenticated().await;
+    let req = serde_json::json!({
+        "ca_cert_url": format!("http://{addr}/ca.pem"),
+        "ca_key_url": format!("http://{addr}/ca.key"),
+    });
+    let resp = client.post("/certificates/ca/import-url")
+        .header(ContentType::JSON)
+        .body(req.to_string())
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let ca_id: i64 = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    server.join().unwrap();
+
+    // Тот же сертификат по файлу — отказ как дубликат импорта по URL
+    let boundary = "UD1";
+    let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+    let resp = client.post("/certificates/ca/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(
+        body_text.contains(&format!("already exists (id {ca_id})")),
+        "expected duplicate error mentioning id {ca_id}, got: {body_text}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_cert_duplicate_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Dup Leaf CA");
+    let (leaf_pem, leaf_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("dup-leaf.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "L1";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1);
+    let resp = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let first: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let cert_id = first["id"].as_i64().unwrap();
+
+    // Повторный импорт того же листа — отказ с id существующей записи
+    let boundary = "L2";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_pem, &leaf_key_pem, &ca_pem, 1);
+    let resp = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(
+        body_text.contains(&format!("already exists (id {cert_id}, version 1)")),
+        "expected duplicate error mentioning id {cert_id}, got: {body_text}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn import_cert_duplicate_from_version_history_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Hist Dup CA");
+    let (leaf_a_pem, leaf_a_key_pem) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "hist-dup.example.com", &ca_pem, &ca_key_pem, 0, 90);
+    let (leaf_b_pem, leaf_b_key_pem) = crate::common::helper::leaf_signed_by_pem_with_validity(
+        "hist-dup.example.com", &ca_pem, &ca_key_pem, 0, 180);
+
+    // Импорт листа A
+    let boundary = "H1";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_a_pem, &leaf_a_key_pem, &ca_pem, 1);
+    let resp = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let first: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let cert_id = first["id"].as_i64().unwrap();
+
+    // Замена на B (тот же CN, больший срок) — A уходит в историю версий
+    let boundary = "H2";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_b_pem, &leaf_b_key_pem, &ca_pem, 1);
+    let resp = client.put(format!("/certificates/{cert_id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "replace failed: {status} body={body_text}");
+
+    // Повторный импорт A — отказ по записи в ИСТОРИИ версий той же записи
+    let boundary = "H3";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_a_pem, &leaf_a_key_pem, &ca_pem, 1);
+    let resp = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(
+        body_text.contains(&format!("already exists (id {cert_id}, version 1)")),
+        "expected duplicate error referencing version history, got: {body_text}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn update_rejects_duplicate_of_other_record() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (ca_pem, ca_key_pem) = crate::common::helper::self_signed_ca_pem("Cross Dup CA");
+    // Два разных листа с одинаковым CN (разные ключи и серийники)
+    let (leaf_a_pem, leaf_a_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("cross-dup.example.com", &ca_pem, &ca_key_pem);
+    let (leaf_b_pem, leaf_b_key_pem) =
+        crate::common::helper::leaf_signed_by_pem("cross-dup.example.com", &ca_pem, &ca_key_pem);
+
+    let boundary = "X1";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_a_pem, &leaf_a_key_pem, &ca_pem, 1);
+    let resp = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let first: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let a_id = first["id"].as_i64().unwrap();
+
+    let boundary = "X2";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_b_pem, &leaf_b_key_pem, &ca_pem, 1);
+    let resp = client.post("/certificates/import")
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let second: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let b_id = second["id"].as_i64().unwrap();
+    assert_ne!(a_id, b_id);
+
+    // Попытка заменить B материалом A — кросс-записной дубликат, отказ
+    let boundary = "X3";
+    let body = crate::common::helper::multipart_import_leaf(boundary, &leaf_a_pem, &leaf_a_key_pem, &ca_pem, 1);
+    let resp = client.put(format!("/certificates/{b_id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::BadRequest, "got: {status} body={body_text}");
+    assert!(
+        body_text.contains(&format!("already exists (id {a_id}")),
+        "expected duplicate error mentioning id {a_id}, got: {body_text}"
+    );
+
+    // Замена B самим собой (тот же материал) разрешена — это no-op-замена;
+    // срок не продлевается, поэтому нужен force (клиент — локальный админ)
+    let boundary = "X4";
+    let body = crate::common::helper::multipart_import_leaf_with_fields(
+        boundary, &leaf_b_pem, &leaf_b_key_pem, &ca_pem, 1, &[("force", "true")]);
+    let resp = client.put(format!("/certificates/{b_id}"))
+        .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+        .body(body).dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "self-replace must be allowed: {status} body={body_text}");
+    Ok(())
+}
