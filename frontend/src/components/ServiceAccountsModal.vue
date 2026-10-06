@@ -42,10 +42,15 @@
         <input v-model="scopeIssue" type="checkbox" class="vt-checkbox" />
         {{ $t('serviceAccounts.scopeCertIssue') }}
       </label>
+      <!-- acme:create позволяет сервису самому заводить ACME-аккаунты — только для админа -->
+      <label v-if="authStore.isAdmin" class="vt-checkbox-label">
+        <input v-model="scopeAcme" type="checkbox" class="vt-checkbox" />
+        {{ $t('serviceAccounts.scopeAcmeCreate') }}
+      </label>
       <Button
         :label="$t('serviceAccounts.create')"
         icon="pi pi-plus"
-        :disabled="!newName || (!scopeRead && !scopeIssue) || store.loading"
+        :disabled="!newName || (!scopeRead && !scopeIssue && !scopeAcme) || store.loading"
         @click="onCreate"
       />
     </div>
@@ -122,6 +127,7 @@ const authStore = useAuthStore()
 const newName = ref('')
 const scopeRead = ref(true)
 const scopeIssue = ref(false)
+const scopeAcme = ref(false)
 const copied = ref<string | null>(null)
 
 watch(
@@ -132,6 +138,7 @@ watch(
       newName.value = ''
       scopeRead.value = true
       scopeIssue.value = false
+      scopeAcme.value = false
       store.fetchForUser(props.user.id)
     }
   },
@@ -142,6 +149,7 @@ const onCreate = async () => {
   const scopes: string[] = []
   if (scopeRead.value) scopes.push('cert:read')
   if (scopeIssue.value && authStore.isAdmin) scopes.push('cert:issue')
+  if (scopeAcme.value && authStore.isAdmin) scopes.push('acme:create')
   await store.create(props.user.id, { name: newName.value, scopes })
   newName.value = ''
 }

@@ -7,8 +7,8 @@ use rocket_okapi::openapi;
 use crate::acme::guard::AcmeEnabled;
 use crate::acme::types::{AcmeAccount, AdminAcmeOrder, CreateAcmeAccountRequest, CreateAcmeAccountResponse, UpdateAcmeAccountRequest};
 use crate::api::{audit_actor, record_audit, revoke_cert_and_update_crl};
-use crate::auth::session_auth::{AuthenticatedLocalAdmin, AuthenticatedPrivileged};
-use crate::data::enums::{AuditAction, AuditResult};
+use crate::auth::session_auth::{Authenticated, AuthenticatedLocalAdmin, AuthenticatedPrivileged};
+use crate::data::enums::{AuditAction, AuditResult, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::AppState;
 use uuid::Uuid;
@@ -37,12 +37,24 @@ pub async fn get_acme_accounts(
 
 #[openapi(tag = "ACME")]
 #[post("/acme/accounts", format = "json", data = "<req>")]
+/// Создание ACME-аккаунта (EAB-креды). Доступно роли Admin (включая OIDC) и
+/// сервисным токенам со скоупом `acme:create` — чтобы автоматизация могла
+/// сама заводить аккаунты и выпускать/обновлять сертификаты через протокол.
+/// ACME-аккаунт привязывается к владельцу токена (для сервиса — к его owner).
 pub async fn create_acme_account(
     state: &State<AppState>,
-    auth: AuthenticatedPrivileged,
+    auth: Authenticated,
     req: Json<CreateAcmeAccountRequest>,
     _acme: AcmeEnabled,
 ) -> Result<Json<CreateAcmeAccountResponse>, ApiError> {
+    if auth.claims.is_service() {
+        if !auth.claims.has_scope("acme:create") {
+            return Err(ApiError::Forbidden(None));
+        }
+    } else if auth.claims.role != UserRole::Admin {
+        return Err(ApiError::Forbidden(None));
+    }
+
     let eab_kid = Uuid::new_v4().to_string();
 
     let mut eab_hmac_key = vec![0u8; 32];

@@ -229,7 +229,8 @@
     "copy": "Copy",
     "copied": "Copied",
     "scopeCertRead": "Read & download certificates (cert:read)",
-    "scopeCertIssue": "Issue certificates (cert:issue)"
+    "scopeCertIssue": "Issue certificates (cert:issue)",
+    "scopeAcmeCreate": "Create ACME accounts (acme:create) — allows the service to issue and renew its own TLS certificates via ACME"
   },
   "profile": {
     "title": "Profile",

@@ -15,8 +15,10 @@ granular scopes; each service account is bound to one owning user.
 
 - **Mechanism:** service account `client_id` + `secret` → `POST /auth/token` → short JWT
   (1 h) in the response body → client sends `Authorization: Bearer <jwt>`.
-- **Scopes (this iteration):** `cert:read`, `cert:issue`. (`cert:revoke`, `ca:manage`
-  deliberately deferred — the model is extensible.)
+- **Scopes:** `cert:read`, `cert:issue`, `acme:create` (added 2026-10-06: allows a service
+  to create ACME accounts via `POST /api/acme/accounts` and issue/renew its own TLS
+  certificates through the ACME protocol; the account is bound to the token owner).
+  (`cert:revoke`, `ca:manage` deliberately deferred — the model is extensible.)
 - **Binding:** each service account is tied to one `user_id` (owner). It issues certs
   only for that user and reads/downloads only that user's certs. Minimizes blast radius.
 - **Management UI:** in the Users section, a per-user modal (Admin only).
@@ -114,6 +116,11 @@ fn require_scope(&self, scope: &str) -> Result<(), ApiError>
 - **Read** (`GET /certificates`, `/certificates/<id>/download`, `/certificates/<id>/password`):
   keep `Authenticated`; if the token is a service token, require `cert:read`. Ownership is
   already enforced via `claims.id == owner`.
+- **ACME account creation** (`POST /api/acme/accounts`, added 2026-10-06): guard
+  `Authenticated`; service requires scope `acme:create`, human requires role Admin. The
+  created ACME account is bound to `claims.id` (the service's owner), so certificates
+  issued through the ACME protocol belong to the owner and are readable/downloadable
+  with `cert:read`.
 - Endpoints NOT in scope for services (user management, settings, CA management, revoke)
   stay `AuthenticatedPrivileged`; a service token has `role = User` so it is rejected there.
 

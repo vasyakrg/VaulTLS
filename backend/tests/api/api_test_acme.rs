@@ -14,7 +14,7 @@ use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
 use openssl::sign::Signer;
-use rocket::http::{ContentType, Status};
+use rocket::http::{ContentType, Header, Status};
 use serde_json::{json, Value};
 
 use crate::common::test_client::VaulTLSClient;
@@ -443,5 +443,78 @@ async fn acme_order_revoke_and_delete() -> Result<()> {
     let resp = client.get("/certificates").dispatch().await;
     let certs: Vec<Value> = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
     assert!(certs.iter().any(|c| c["id"].as_i64() == Some(cert_id)), "certificate must survive order deletion");
+    Ok(())
+}
+
+/// Создать сервисный аккаунт под user 1 (локальный админ) и обменять его на
+/// Bearer-токен.
+async fn service_token(client: &VaulTLSClient, name: &str, scopes: &[&str]) -> Result<String> {
+    let scopes_json = serde_json::to_string(scopes).unwrap();
+    let resp = client.post("/users/1/service-accounts")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"name":"{name}","scopes":{scopes_json}}}"#))
+        .dispatch().await;
+    let status = resp.status();
+    let body = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "create service account failed: {status} {body}");
+    let sa: Value = serde_json::from_str(&body).unwrap();
+
+    let resp = client.post("/auth/token")
+        .header(ContentType::JSON)
+        .body(format!(r#"{{"client_id":{},"secret":{}}}"#,
+            serde_json::to_string(sa["client_id"].as_str().unwrap()).unwrap(),
+            serde_json::to_string(sa["secret"].as_str().unwrap()).unwrap()))
+        .dispatch().await;
+    let status = resp.status();
+    let body = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "token exchange failed: {status} {body}");
+    let tv: Value = serde_json::from_str(&body).unwrap();
+    Ok(tv["access_token"].as_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn service_with_acme_create_scope_can_create_account() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let token = service_token(&client, "acme-automation", &["cert:read", "acme:create"]).await?;
+    let bearer = Header::new("Authorization", format!("Bearer {token}"));
+
+    // Сервис со скоупом acme:create создаёт ACME-аккаунт и получает EAB-креды
+    let resp = client.post("/acme/accounts")
+        .header(ContentType::JSON)
+        .header(bearer)
+        .body(r#"{"name":"ci-tls","allowed_domains":["*.ci.internal"],"ca_id":1,"auto_validate":true}"#)
+        .dispatch().await;
+    let status = resp.status();
+    let body = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "service account creation failed: {status} {body}");
+    let created: Value = serde_json::from_str(&body).unwrap();
+    assert!(!created["eab_kid"].as_str().unwrap().is_empty());
+    assert!(!created["eab_hmac_key"].as_str().unwrap().is_empty());
+
+    // Протокол доступен без скоупов: регистрация аккаунтного ключа с EAB
+    let key = gen_key();
+    let eab_kid = created["eab_kid"].as_str().unwrap().to_string();
+    let eab_hmac = created["eab_hmac_key"].as_str().unwrap().to_string();
+    let nonce = fresh_nonce(&client).await;
+    let resp = client.post(format!("{ACME_BASE}/new-account"))
+        .header(ContentType::JSON)
+        .body(new_account_jws(&key, &nonce, &eab_kid, &eab_hmac))
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Created, "protocol registration with service EAB failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn service_without_acme_create_scope_is_rejected() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let token = service_token(&client, "plain-reader", &["cert:read"]).await?;
+    let bearer = Header::new("Authorization", format!("Bearer {token}"));
+
+    let resp = client.post("/acme/accounts")
+        .header(ContentType::JSON)
+        .header(bearer)
+        .body(r#"{"name":"nope","allowed_domains":["*.ci.internal"],"ca_id":1,"auto_validate":true}"#)
+        .dispatch().await;
+    assert_eq!(resp.status(), Status::Forbidden, "service without scope must be rejected");
     Ok(())
 }

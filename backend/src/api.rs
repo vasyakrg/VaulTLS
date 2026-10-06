@@ -2304,7 +2304,7 @@ pub(crate) async fn service_token(
     }))
 }
 
-const ALLOWED_SCOPES: [&str; 2] = ["cert:read", "cert:issue"];
+const ALLOWED_SCOPES: [&str; 3] = ["cert:read", "cert:issue", "acme:create"];
 /// Скоупы, которые обычный пользователь вправе выдать своему сервисному аккаунту.
 /// Выпуск сертификатов (`cert:issue`) остаётся за админом.
 const SELF_SERVICE_SCOPES: [&str; 1] = ["cert:read"];
