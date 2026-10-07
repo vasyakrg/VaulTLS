@@ -52,8 +52,12 @@
       <Column field="name.cn" :header="$t('common.colName')" sortable>
         <template #body="{ data }">
           <div>{{ data.name.cn }}</div>
-          <div v-if="certsByCaId.get(data.id)?.length" class="vt-ca-certs">
-            {{ certsByCaId.get(data.id)!.join(', ') }}
+          <div
+            v-if="certsByCaId.get(data.id)?.length"
+            class="vt-ca-certs"
+            :title="certsByCaId.get(data.id)!.join(', ')"
+          >
+            {{ caCertsSummary(data.id) }}
           </div>
         </template>
       </Column>
@@ -263,6 +267,16 @@ const error = computed(() => caStore.error)
 const hasAnyOU = computed(() => casArray.value.some((ca) => ca.name.ou))
 
 // map ca_id -> list of certificate names issued by that CA
+// Первые несколько имён сертов ЦА, остальное — счётчиком; полный список в tooltip.
+const CA_CERTS_PREVIEW = 3
+
+const caCertsSummary = (caId: number): string => {
+  const names = certsByCaId.value.get(caId) ?? []
+  const head = names.slice(0, CA_CERTS_PREVIEW).join(', ')
+  const rest = names.length - CA_CERTS_PREVIEW
+  return rest > 0 ? `${head} +${rest}` : head
+}
+
 const certsByCaId = computed(() => {
   const map = new Map<number, string[]>()
   for (const cert of certStore.certificates.values()) {
@@ -513,6 +527,12 @@ const getCaMenuItems = (ca: CA) => {
   color: var(--vt-muted);
   margin-top: 2px;
   line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+  max-width: 420px;
 }
 
 .vt-row-actions {
