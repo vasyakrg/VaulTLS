@@ -35,6 +35,7 @@ async fn test_sql_injection_prevention() -> Result<()> {
     let malicious_login = LoginRequest{
         email: "mal@example.com'; DROP TABLE users; --".to_string(),
         password: "password".to_string(),
+        include_token: false,
     };
     let request = client
         .post("/auth/login")
@@ -213,7 +214,8 @@ async fn password_disabled_login() -> Result<()> {
 
     let login_data = LoginRequest{
         email: TEST_USER_EMAIL.to_string(),
-        password: TEST_PASSWORD.to_string()
+        password: TEST_PASSWORD.to_string(),
+        include_token: false,
     };
 
     let request = client

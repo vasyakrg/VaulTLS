@@ -14,14 +14,14 @@ use tracing::{debug, info, trace, warn};
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
 use crate::auth::service_auth::{verify_secret, hash_secret, generate_credentials};
-use crate::auth::session_auth::{build_auth_cookie, generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin, Claims};
+use crate::auth::session_auth::{build_auth_cookie, generate_service_token, generate_token, invalidate_token, Authenticated, AuthenticatedPrivileged, AuthenticatedLocalAdmin, Claims, SESSION_TTL_SECS};
 use crate::certs::common::{get_password, save_ca, Certificate, CA};
 use crate::certs::import::find_issuing_ca;
 use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, ImportCaUrlRequest, IsSetupResponse, LoginRequest, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, ImportCaUrlRequest, IsSetupResponse, LoginRequest, LoginResponse, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::{AppState, AuditEntry, Group, GroupDetail, Name, ServiceAccount, User};
@@ -182,7 +182,7 @@ pub(crate) async fn login(
     jar: &CookieJar<'_>,
     remote: Option<std::net::IpAddr>,
     login_req_opt: Json<LoginRequest>
-) -> Result<(), ApiError> {
+) -> Result<Json<LoginResponse>, ApiError> {
     if !state.settings.get_password_enabled() {
         warn!("Password login is disabled.");
         return Err(ApiError::Unauthorized(Some("Password login is disabled".to_string())))
@@ -203,7 +203,7 @@ pub(crate) async fn login(
             let jwt_key = state.settings.get_jwt_key()?;
             let token = generate_token(&jwt_key, user.id, user.role, true)?;
 
-            jar.add_private(build_auth_cookie(token));
+            jar.add_private(build_auth_cookie(token.clone()));
 
             info!(user=user.name, "Successful password-based user login.");
 
@@ -216,7 +216,14 @@ pub(crate) async fn login(
             record_audit(state, Some(user.id), user.name.clone(), AuditActorType::User,
                 AuditAction::Login, None, None, None, AuditResult::Success, None, ip.clone()).await;
 
-            return Ok(());
+            // Сырой JWT в теле — только по явному запросу: в куке он лежит
+            // зашифрованным (private cookie), и из неё его для Bearer не достать.
+            let access_token = login_req_opt.include_token.then_some(token);
+            return Ok(Json(LoginResponse {
+                access_token,
+                token_type: "Bearer".to_string(),
+                expires_in: SESSION_TTL_SECS,
+            }));
         } else if let Password::V1(hash_string) = password_hash {
             // User tried to supply a hashed password, but has not been migrated yet
             // Require user to supply plaintext password to log in

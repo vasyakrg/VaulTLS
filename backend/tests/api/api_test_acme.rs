@@ -17,6 +17,7 @@ use openssl::sign::Signer;
 use rocket::http::{ContentType, Header, Status};
 use serde_json::{json, Value};
 
+use crate::common::constants::*;
 use crate::common::test_client::VaulTLSClient;
 use anyhow::Result;
 
@@ -516,5 +517,56 @@ async fn service_without_acme_create_scope_is_rejected() -> Result<()> {
         .body(r#"{"name":"nope","allowed_domains":["*.ci.internal"],"ca_id":1,"auto_validate":true}"#)
         .dispatch().await;
     assert_eq!(resp.status(), Status::Forbidden, "service without scope must be rejected");
+    Ok(())
+}
+
+#[tokio::test]
+async fn admin_login_token_works_as_bearer_on_acme_admin_routes() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    let (account_id, _kid, _hmac) = create_eab_account(&client, &["*.haproxy-viz.internal"]).await;
+
+    // Логин локального админа с include_token → сырой JWT в теле ответа
+    let resp = client.post("/auth/login")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"email":{},"password":{},"include_token":true}}"#,
+            serde_json::to_string(TEST_USER_EMAIL)?,
+            serde_json::to_string(TEST_PASSWORD)?,
+        ))
+        .dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "login failed: {status} {body_text}");
+    let body: Value = serde_json::from_str(&body_text).unwrap();
+    assert_eq!(body["token_type"], "Bearer");
+    let token = body["access_token"].as_str().expect("access_token in body").to_string();
+
+    // Без include_token токен в теле не отдаётся
+    let resp = client.post("/auth/login")
+        .header(ContentType::JSON)
+        .body(format!(
+            r#"{{"email":{},"password":{}}}"#,
+            serde_json::to_string(TEST_USER_EMAIL)?,
+            serde_json::to_string(TEST_PASSWORD)?,
+        ))
+        .dispatch().await;
+    let body: Value = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    assert!(body.get("access_token").is_none(), "no token without include_token");
+
+    // Bearer-токен админа проходит админские маршруты ACME
+    let bearer = Header::new("Authorization", format!("Bearer {token}"));
+    let resp = client.delete(format!("/acme/accounts/{account_id}"))
+        .header(bearer)
+        .dispatch().await;
+    let status = resp.status();
+    let body_text = resp.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::Ok, "admin bearer DELETE failed: {status} {body_text}");
+
+    // Аккаунт деактивирован
+    let resp = client.get("/acme/accounts").dispatch().await;
+    let accounts: Vec<Value> = serde_json::from_str(&resp.into_string().await.unwrap()).unwrap();
+    let acc = accounts.iter().find(|a| a["id"].as_i64() == Some(account_id))
+        .expect("account still listed");
+    assert_eq!(acc["status"], "deactivated");
     Ok(())
 }

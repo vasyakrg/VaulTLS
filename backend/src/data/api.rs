@@ -33,7 +33,21 @@ pub struct SetupRequest {
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct LoginRequest {
     pub email: String,
-    pub password: String
+    pub password: String,
+    /// Вернуть JWT в теле ответа (для автоматизации с Bearer). Кука
+    /// `auth_token` ставится в любом случае. Токен человеческий: TTL 1 час,
+    /// живёт в JTI-хранилище, slide-renewal работает только через куку.
+    #[serde(default)]
+    pub include_token: bool,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct LoginResponse {
+    /// JWT для `Authorization: Bearer` — только при include_token=true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    pub token_type: String,
+    pub expires_in: u64,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

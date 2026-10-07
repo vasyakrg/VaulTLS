@@ -48,7 +48,7 @@ macro_rules! impl_openapi_auth {
 }
 
 /// Lifetime of a human session token.
-const SESSION_TTL_SECS: u64 = 60 * 60;
+pub(crate) const SESSION_TTL_SECS: u64 = 60 * 60;
 /// A cookie-backed session is re-issued once less than this much of its lifetime is left,
 /// so an actively browsing user is never dropped mid-session.
 const SESSION_RENEW_THRESHOLD_SECS: u64 = 15 * 60;

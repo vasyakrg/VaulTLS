@@ -201,7 +201,8 @@ impl VaulTLSClient {
     pub(crate) async fn login(&self, user_email: &str, user_password: &str) -> Result<()> {
         let login_data = LoginRequest{
             email: user_email.to_string(),
-            password: user_password.to_string()
+            password: user_password.to_string(),
+            include_token: false,
         };
 
         let request = self
