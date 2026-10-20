@@ -156,6 +156,79 @@ impl OpenApiResponderInner for DownloadResponse {
     }
 }
 
+/// Response of the public CA bundle endpoint: either the concatenated PEM of
+/// every imported TLS CA with `ETag`/`Last-Modified` attached, or — when the
+/// client's validators say its copy is current — a bodiless `304 Not Modified`
+/// carrying the same validators.
+#[derive(Debug)]
+pub struct CABundleResponse {
+    body: Option<DownloadResponse>,
+    etag: String,
+    last_modified: String,
+}
+
+impl CABundleResponse {
+    /// A full 200 response with the bundle body.
+    pub fn fresh(body: DownloadResponse, etag: String, last_modified: String) -> Self {
+        Self { body: Some(body), etag, last_modified }
+    }
+
+    /// A 304 with the validators and no body.
+    pub fn not_modified(etag: String, last_modified: String) -> Self {
+        Self { body: None, etag, last_modified }
+    }
+}
+
+impl<'r> Responder<'r, 'static> for CABundleResponse {
+    fn respond_to(self, req: &'r Request<'_>) -> rocket::response::Result<'static> {
+        match self.body {
+            Some(body) => {
+                let mut response = body.respond_to(req)?;
+                response.adjoin_header(Header::new("ETag", self.etag));
+                response.adjoin_header(Header::new("Last-Modified", self.last_modified));
+                Ok(response)
+            }
+            None => Response::build()
+                .status(Status::NotModified)
+                .header(Header::new("ETag", self.etag))
+                .header(Header::new("Last-Modified", self.last_modified))
+                .ok(),
+        }
+    }
+}
+
+impl OpenApiResponderInner for CABundleResponse {
+    fn responses(_gen: &mut OpenApiGenerator) -> Result<Responses, OpenApiError> {
+        let mut responses = Responses::default();
+
+        let pem_content = {
+            let mut content = okapi::Map::new();
+            content.insert(
+                "application/x-pem-file".to_string(),
+                MediaType { schema: None, ..Default::default() },
+            );
+            content
+        };
+        responses.responses.insert(
+            "200".to_string(),
+            RefOr::Object(OAResponse {
+                description: "Concatenated PEM of every imported TLS CA, ordered by id".to_string(),
+                content: pem_content,
+                ..Default::default()
+            }),
+        );
+        responses.responses.insert(
+            "304".to_string(),
+            RefOr::Object(OAResponse {
+                description: "The client's cached copy is still current".to_string(),
+                ..Default::default()
+            }),
+        );
+
+        Ok(responses)
+    }
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct CreateUserRequest {
     pub user_name: String,

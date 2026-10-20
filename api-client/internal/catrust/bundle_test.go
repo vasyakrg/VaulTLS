@@ -100,9 +100,25 @@ func TestParseBundleDeduplicates(t *testing.T) {
 	}
 }
 
+func TestParseBundleEmptyIsValid(t *testing.T) {
+	for label, raw := range map[string][]byte{
+		"empty":      nil,
+		"whitespace": []byte("\n  \n"),
+	} {
+		t.Run(label, func(t *testing.T) {
+			got, err := ParseBundle(raw, ".crt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 0 {
+				t.Fatalf("got %d anchors, want 0", len(got))
+			}
+		})
+	}
+}
+
 func TestParseBundleRejectsGarbage(t *testing.T) {
 	cases := map[string][]byte{
-		"empty":            []byte(""),
 		"no pem":           []byte("not a certificate at all"),
 		"wrong block type": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{1, 2, 3}}),
 		"undecodable der":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{1, 2, 3}}),

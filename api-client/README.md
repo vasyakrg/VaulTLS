@@ -121,7 +121,7 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 | `log.format` | string | Log format: `text` (default) or `json`. |
 | `log.file` | string | Optional file path. When set, logs are written there (e.g. `/var/log/vaultls-agent.log`) instead of stderr. Unset → stderr, captured by journald (`journalctl -u vaultls-agent`). |
 | `exporter.listen` | `host:port` | Address for the Prometheus `/metrics` endpoint. Default: `127.0.0.1:9105`. |
-| `ca_trust.enabled` | bool | Publish the VaulTLS root CAs into the host's system trust store. Default `false`. |
+| `ca_trust.enabled` | bool | Publish the server's imported CAs (the public CA bundle) into the host's system trust store. Default `false`. |
 | `ca_trust.anchor_dir` | string | Anchor directory; auto-detected (Debian/RHEL) if unset. |
 | `ca_trust.update_command` | string | Command to apply the trust store; auto-detected (Debian/RHEL) if unset. |
 
@@ -292,9 +292,9 @@ Save and reload: `sudo systemctl daemon-reload && sudo systemctl restart vaultls
 ## System trust store (optional)
 
 By default the agent only writes certificates into `out_dir`. It can also keep
-the VaulTLS root CAs in the host's system trust store, so `curl`, `psql`,
-`openssl s_client` and anything else on the box accepts VaulTLS-issued
-certificates without a per-command `--cacert`.
+the server's imported CAs in the host's system trust store, so `curl`, `psql`,
+`openssl s_client` and anything else on the box accepts certificates chaining
+to them without a per-command `--cacert`.
 
 This is **off by default** — enabling it changes trust for the whole host:
 
@@ -319,15 +319,19 @@ ca_trust:
   update_command: "/opt/pki/refresh.sh"
 ```
 
-The CAs come from the server's public `GET /api/certificates/ca/bundle`, so the
-service account needs no extra scope. Each CA is written as its own file named
+The CAs come from the server's public `GET /api/certificates/ca/bundle`, which
+carries **only imported CAs** — never the CAs VaulTLS generated itself — in a
+stable id order, so the service account needs no extra scope. Each CA is
+written as its own file named
 `vaultls-<slug of CN>-<first 8 hex chars of the SHA-256 fingerprint>`, with a
 `.crt` extension (Debian) or `.pem` extension (RHEL/anchor_dir under
 `/etc/pki/`) — e.g. `vaultls-vaultls-root-ca-1a2b3c4d.crt`. The agent records
 what it owns in `/etc/ssl/vaultls/ca-trust.json`. Only files listed there are
 ever removed — anchors placed by anything else are left alone. The check runs
 on every startup and on every scheduled cycle, so a rotated CA is picked up
-even when no certificate changed.
+even when no certificate changed. An empty bundle (no imported CAs on the
+server) is valid: the agent retires every anchor it owns and leaves foreign
+anchors alone.
 
 Setting `enabled: false` later does **not** remove already-installed CAs:
 dropping host trust is an explicit operator action. `apt purge vaultls-agent`

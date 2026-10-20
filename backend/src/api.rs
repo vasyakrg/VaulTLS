@@ -21,7 +21,7 @@ use crate::data::enums::{CertData, CertificateRenewMethod};
 use crate::certs::ssh_cert::{create_and_save_krl, create_krl, get_ssh_pem, retrieve_krl, SSHCertificateBuilder};
 use crate::certs::tls_cert::{create_and_save_crl, create_crl, get_timestamp, get_tls_pem, retrieve_crl, save_crl, TLSCertificateBuilder};
 use crate::constants::VAULTLS_VERSION;
-use crate::data::api::{CallbackQuery, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, ImportCaUrlRequest, IsSetupResponse, LoginRequest, LoginResponse, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
+use crate::data::api::{CallbackQuery, CABundleResponse, ChangePasswordRequest, CreateCARequest, CreateServiceAccountRequest, CreateUserCertificateRequest, CreateUserRequest, DownloadResponse, GroupMembersRequest, GroupRequest, ImportCaUrlRequest, IsSetupResponse, LoginRequest, LoginResponse, ServiceAccountCreated, ServiceTokenRequest, ServiceTokenResponse, SetupRequest, compute_cert_status, CertStatusResponse};
 use crate::data::enums::{AuditAction, AuditActorType, AuditResult, CAType, CertificateType, CertStatus, DataFormat, PasswordRule, TimespanUnit, UserRole};
 use crate::data::error::ApiError;
 use crate::data::objects::{AppState, AuditEntry, Group, GroupDetail, Name, ServiceAccount, User};
@@ -1479,24 +1479,96 @@ pub(crate) async fn download_current_tls_ca(
 
 #[openapi(tag = "Certificates")]
 #[get("/certificates/ca/bundle")]
-/// Public: all TLS CA certificates concatenated as one PEM (trust pool for reverse proxies).
+/// Public: every imported TLS CA concatenated as one PEM, ordered by id
+/// (trust pool for hosts and reverse proxies). Carries ETag/Last-Modified and
+/// answers If-None-Match/If-Modified-Since with 304, so caches refetch only
+/// when the set actually changed.
 pub(crate) async fn download_ca_bundle(
     state: &State<AppState>,
-) -> Result<DownloadResponse, ApiError> {
+    validators: CacheValidators,
+) -> Result<CABundleResponse, ApiError> {
     let all = state.db.get_all_ca().await?;
+    // get_all_ca orders by id ASC, so the concatenation is stable for a given set.
+    // Generated CAs are deliberately excluded: hosts should only trust CAs the
+    // administrator explicitly imported. created_on is unix milliseconds.
     let mut bundle: Vec<u8> = Vec::new();
-    for ca in all.iter().filter(|c| c.ca_type == CAType::TLS) {
+    let mut last_modified_secs: i64 = 0;
+    for ca in all.iter().filter(|c| c.ca_type == CAType::TLS && c.is_imported) {
         let pem = get_tls_pem(ca).map_err(ApiError::OpenSsl)?;
         bundle.extend_from_slice(&pem);
+        last_modified_secs = last_modified_secs.max(ca.created_on / 1000);
     }
-    if bundle.is_empty() {
-        return Err(ApiError::NotFound(None));
+    // Strong validator over the exact bytes; a rotation, an import or a removal
+    // all change the digest.
+    let digest = openssl::hash::hash(openssl::hash::MessageDigest::sha256(), &bundle)
+        .map_err(ApiError::OpenSsl)?;
+    let etag = format!("\"{}\"", digest.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    let last_modified = http_date(last_modified_secs);
+
+    if bundle_request_is_current(&validators, &etag, last_modified_secs) {
+        return Ok(CABundleResponse::not_modified(etag, last_modified));
     }
-    Ok(DownloadResponse::new_typed(
-        bundle,
-        "ca-bundle.crt",
-        ContentType::new("application", "x-pem-file"),
+    // An empty bundle (no imported CAs yet) is a valid empty trust pool, not a
+    // 404: consumers keep caching it and hosts converge to zero anchors.
+    Ok(CABundleResponse::fresh(
+        DownloadResponse::new_typed(bundle, "ca-bundle.crt", ContentType::new("application", "x-pem-file")),
+        etag,
+        last_modified,
     ))
+}
+
+/// Request guard carrying the client's cache validators (`If-None-Match` /
+/// `If-Modified-Since`), so the bundle handler can answer conditional GETs.
+pub(crate) struct CacheValidators {
+    if_none_match: Option<String>,
+    if_modified_since: Option<String>,
+}
+
+#[rocket::async_trait]
+impl<'r> rocket::request::FromRequest<'r> for CacheValidators {
+    type Error = ();
+
+    async fn from_request(req: &'r rocket::request::Request<'_>) -> rocket::request::Outcome<Self, Self::Error> {
+        rocket::request::Outcome::Success(CacheValidators {
+            if_none_match: req.headers().get_one("If-None-Match").map(str::to_string),
+            if_modified_since: req.headers().get_one("If-Modified-Since").map(str::to_string),
+        })
+    }
+}
+
+impl<'r> rocket_okapi::request::OpenApiFromRequest<'r> for CacheValidators {
+    fn from_request_input(
+        _gen: &mut rocket_okapi::r#gen::OpenApiGenerator,
+        _name: String,
+        _required: bool,
+    ) -> rocket_okapi::Result<rocket_okapi::request::RequestHeaderInput> {
+        Ok(rocket_okapi::request::RequestHeaderInput::None)
+    }
+}
+
+/// RFC 9110 conditional-request check for the CA bundle: `If-None-Match` wins
+/// when present (exact tag match or `*`), otherwise a parsable
+/// `If-Modified-Since` not older than the current Last-Modified triggers a 304.
+fn bundle_request_is_current(validators: &CacheValidators, etag: &str, last_modified_secs: i64) -> bool {
+    if let Some(inm) = validators.if_none_match.as_deref() {
+        let inm = inm.trim();
+        return inm == "*"
+            || inm.split(',').any(|tag| tag.trim() == etag);
+    }
+    if let Some(ims) = validators.if_modified_since.as_deref()
+        && let Ok(ims) = chrono::DateTime::parse_from_rfc2822(ims.trim())
+    {
+        return ims.timestamp() >= last_modified_secs;
+    }
+    false
+}
+
+/// Format a unix timestamp as an HTTP-date (IMF-fixdate).
+fn http_date(unix_secs: i64) -> String {
+    chrono::DateTime::from_timestamp(unix_secs.max(0), 0)
+        .unwrap_or_default()
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string()
 }
 
 #[openapi(tag = "Certificates")]

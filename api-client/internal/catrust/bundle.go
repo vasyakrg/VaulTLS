@@ -1,6 +1,6 @@
-// Package catrust keeps the VaulTLS root CAs present in the host's system trust
-// store, so that any local client — curl, psql, openssl — accepts certificates
-// issued by VaulTLS.
+// Package catrust keeps the CAs from the server's imported trust pool present
+// in the host's system trust store, so that any local client — curl, psql,
+// openssl — accepts certificates chaining to them.
 package catrust
 
 import (
@@ -24,6 +24,10 @@ type Anchor struct {
 // dropping duplicates. One certificate per file is deliberate:
 // update-ca-certificates hashes only the first block of a multi-cert file, so
 // every certificate after the first would silently never be trusted.
+//
+// An empty input is valid and yields zero anchors: the server's bundle carries
+// only imported CAs, and none being imported yet is a normal state, not an
+// error.
 func ParseBundle(raw []byte, ext string) ([]Anchor, error) {
 	var out []Anchor
 	seen := map[string]bool{}
@@ -61,9 +65,9 @@ func ParseBundle(raw []byte, ext string) ([]Anchor, error) {
 	if len(bytes.TrimSpace(rest)) != 0 {
 		return nil, fmt.Errorf("ca bundle: %d trailing bytes after the last PEM block (truncated response?)", len(rest))
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("ca bundle: no certificates found")
-	}
+	// An empty body is a valid empty trust pool: the server sends one when no
+	// CA is imported yet. Sync then converges the host to zero vaultls anchors
+	// instead of erroring on every run.
 	return out, nil
 }
 

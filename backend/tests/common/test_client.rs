@@ -316,6 +316,24 @@ impl VaulTLSClient {
         Ok(())
     }
 
+    /// Import an external self-signed CA (cert only, no key). Requires an
+    /// authenticated admin client.
+    pub(crate) async fn import_ca(&self, cn: &str) -> Result<()> {
+        let (ca_pem, _key_pem) = crate::common::helper::self_signed_ca_pem(cn);
+        let boundary = "IMPORT-BOUNDARY";
+        let body = crate::common::helper::multipart_one_file(boundary, "ca_cert", "ca.pem", &ca_pem);
+
+        let response = self
+            .post("/certificates/ca/import")
+            .header(ContentType::new("multipart", "form-data").with_params(("boundary", boundary)))
+            .body(body)
+            .dispatch()
+            .await;
+        assert_eq!(response.status(), Status::Ok);
+
+        Ok(())
+    }
+
     pub(crate) async fn create_ssh_ca(&self) -> Result<()> {
         let data = CreateCARequest {
             ca_name: TEST_SSH_CA_NAME.to_string().into(),

@@ -144,6 +144,49 @@ func TestSyncRemovesRetiredAnchor(t *testing.T) {
 	}
 }
 
+// An empty bundle is the server saying "no imported CAs" — a state to converge
+// to, not an error: our anchors come off the host and the update command runs
+// once to apply the removal.
+func TestSyncEmptyBundleRetiresEverything(t *testing.T) {
+	h := newHarness(t, selfSigned(t, "Root A"))
+	if _, err := h.sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h.fetcher.body = nil
+	h.runner.calls = 0
+
+	res, err := h.sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Installed != 0 || !res.Changed {
+		t.Fatalf("res = %+v, want 0 installed and changed", res)
+	}
+	if names := anchorNames(t, h.anchorDir); len(names) != 0 {
+		t.Fatalf("anchor dir holds %v, want it empty", names)
+	}
+	if h.runner.calls != 1 {
+		t.Fatalf("update command called %d times, want 1", h.runner.calls)
+	}
+	st, err := ReadState(h.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Certs) != 0 {
+		t.Fatalf("state still owns %d anchors", len(st.Certs))
+	}
+
+	// A repeat stays a no-op.
+	h.runner.calls = 0
+	res, err = h.sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || h.runner.calls != 0 {
+		t.Fatalf("second empty sync: res = %+v, update calls = %d", res, h.runner.calls)
+	}
+}
+
 func TestSyncRestoresDeletedAnchor(t *testing.T) {
 	h := newHarness(t, selfSigned(t, "Root A"))
 	if _, err := h.sync(context.Background()); err != nil {
