@@ -1490,19 +1490,21 @@ pub(crate) async fn download_ca_bundle(
     let all = state.db.get_all_ca().await?;
     // get_all_ca orders by id ASC, so the concatenation is stable for a given set.
     // Generated CAs are deliberately excluded: hosts should only trust CAs the
-    // administrator explicitly imported. created_on is unix milliseconds.
+    // administrator explicitly imported.
     let mut bundle: Vec<u8> = Vec::new();
-    let mut last_modified_secs: i64 = 0;
     for ca in all.iter().filter(|c| c.ca_type == CAType::TLS && c.is_imported) {
         let pem = get_tls_pem(ca).map_err(ApiError::OpenSsl)?;
         bundle.extend_from_slice(&pem);
-        last_modified_secs = last_modified_secs.max(ca.created_on / 1000);
     }
     // Strong validator over the exact bytes; a rotation, an import or a removal
     // all change the digest.
     let digest = openssl::hash::hash(openssl::hash::MessageDigest::sha256(), &bundle)
         .map_err(ApiError::OpenSsl)?;
     let etag = format!("\"{}\"", digest.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    // Last-Modified is the set's own change time (DB-maintained), NOT max(created_on):
+    // created_on of an imported CA is its notBefore, so a deletion could move it
+    // backwards and pin If-Modified-Since clients on a stale 304.
+    let last_modified_secs = state.db.get_ca_bundle_modified().await? / 1000;
     let last_modified = http_date(last_modified_secs);
 
     if bundle_request_is_current(&validators, &etag, last_modified_secs) {

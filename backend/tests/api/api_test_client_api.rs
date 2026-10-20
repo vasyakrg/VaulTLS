@@ -225,6 +225,59 @@ async fn ca_bundle_contains_only_imported_tls_cas_in_id_order() -> Result<()> {
     Ok(())
 }
 
+/// Last-Modified must track the set's own change time, not the certificates'
+/// notBefore: deleting an imported CA has to advance it, so an
+/// If-Modified-Since from before the deletion gets a full 200 — never a stale
+/// 304 with the retired set.
+#[tokio::test]
+async fn ca_bundle_last_modified_tracks_set_changes() -> Result<()> {
+    let client = VaulTLSClient::new_authenticated().await;
+    client.import_ca("Removable CA").await?;
+
+    let resp = client.get("/certificates/ca/bundle").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let etag_before = resp.headers().get_one("ETag").unwrap().to_string();
+    let lm_before = resp.headers().get_one("Last-Modified").unwrap().to_string();
+    assert!(!resp.into_bytes().await.unwrap().is_empty());
+
+    let cas: serde_json::Value = serde_json::from_str(
+        &client.get("/certificates/ca").dispatch().await.into_string().await.unwrap(),
+    )?;
+    let id = cas
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["is_imported"].as_bool().unwrap_or(false))
+        .and_then(|c| c["id"].as_i64())
+        .expect("imported CA id");
+
+    // The DB stamp has 1-second granularity: cross into a new second so the
+    // deletion cannot land on the same value as the import.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let resp = client.delete(format!("/certificates/ca/{id}")).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+
+    let resp = client.get("/certificates/ca/bundle").dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    assert!(resp.into_bytes().await.unwrap_or_default().is_empty(), "set is empty again");
+
+    // If-Modified-Since cached BEFORE the deletion must be a 200: the set
+    // changed since. (A 304 here is exactly the stale-cache regression.)
+    let resp = client.get("/certificates/ca/bundle").header(Header::new("If-Modified-Since", lm_before)).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok, "deleting the last imported CA must invalidate If-Modified-Since caches");
+
+    // Same for the old ETag; the new one still 304s.
+    let resp = client.get("/certificates/ca/bundle").header(Header::new("If-None-Match", etag_before.clone())).dispatch().await;
+    assert_eq!(resp.status(), Status::Ok);
+    let resp = client.get("/certificates/ca/bundle").dispatch().await;
+    let etag_after = resp.headers().get_one("ETag").unwrap().to_string();
+    drop(resp.into_bytes());
+    assert_ne!(etag_after, etag_before);
+    let resp = client.get("/certificates/ca/bundle").header(Header::new("If-None-Match", etag_after)).dispatch().await;
+    assert_eq!(resp.status(), Status::NotModified);
+    Ok(())
+}
+
 #[tokio::test]
 async fn ca_bundle_conditional_requests() -> Result<()> {
     let client = VaulTLSClient::new_authenticated().await;

@@ -262,6 +262,20 @@ impl VaulTLSDB {
         })
     }
 
+    /// Unix-ms timestamp of the last membership change in the imported-TLS CA
+    /// set (the public CA bundle), maintained by the ca_bundle_state triggers.
+    /// 0 when no imported CA was ever recorded — Last-Modified then falls back
+    /// to the epoch, which is still a valid HTTP-date.
+    pub(crate) async fn get_ca_bundle_modified(&self) -> Result<i64> {
+        db_do!(self.pool, |conn: &Connection| {
+            Ok(conn.query_row(
+                "SELECT COALESCE((SELECT modified_ms FROM ca_bundle_state WHERE id = 1), 0)",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     pub(crate) async fn get_latest_tls_ca(&self) -> Result<CA> {
         let query = formatcp!("SELECT id, name, created_on, valid_until, type, certificate, key, crl_number, is_imported FROM ca_certificates WHERE type = {} ORDER BY id DESC LIMIT 1", CAType::TLS as u8);
         self.get_ca_by_query(query.to_string(), None).await
