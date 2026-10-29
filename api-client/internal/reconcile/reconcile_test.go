@@ -71,7 +71,7 @@ func TestReconcileHonorsBasename(t *testing.T) {
 	}
 	d := newDomain(dir)
 	d.Basename = "example"
-	if err := New(api, metrics.New(), time.Now, nil).Domain(context.Background(), d); err != nil {
+	if err := New(api, metrics.New(), time.Now, nil, nil).Domain(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"example.crt", "example-cert.crt", "example-chain.crt",
@@ -99,7 +99,7 @@ func TestReconcileWritesAndRenews(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now, nil)
+	r := New(api, m, time.Now, nil, nil)
 	if err := r.Domain(context.Background(), newDomain(dir)); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestReconcilePEMAliasMatchesNginx(t *testing.T) {
 		password: "pw",
 	}
 	d := config.Domain{Name: "*.example.com", OutDir: dir, Formats: []string{"pem"}, Mode: "0640", Reload: "true"}
-	if err := New(api, metrics.New(), time.Now, nil).Domain(context.Background(), d); err != nil {
+	if err := New(api, metrics.New(), time.Now, nil, nil).Domain(context.Background(), d); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"fullchain.crt", "cert.crt", "chain.crt", "privkey.key"} {
@@ -156,7 +156,7 @@ func TestReconcileSkipsWhenUnchanged(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now, nil)
+	r := New(api, m, time.Now, nil, nil)
 	ctx := context.Background()
 	d := newDomain(dir)
 	if err := r.Domain(ctx, d); err != nil {
@@ -175,7 +175,7 @@ func TestReconcileDomainNotFound(t *testing.T) {
 	dir := t.TempDir()
 	api := &fakeAPI{certs: []vaultls.Cert{{ID: 1, Name: "other", ValidUntil: 1}}}
 	m := metrics.New()
-	r := New(api, m, time.Now, nil)
+	r := New(api, m, time.Now, nil, nil)
 	if err := r.Domain(context.Background(), newDomain(dir)); err == nil {
 		t.Fatal("expected error when domain cert not found")
 	}
@@ -194,7 +194,7 @@ func TestReconcileSelectsByCertID(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now, nil)
+	r := New(api, m, time.Now, nil, nil)
 	d := newDomain(dir)
 	d.Name = "no-such-name"
 	d.CertID = 9
@@ -236,10 +236,10 @@ func TestReconcileSameNameDistinctCertsKeepSeparateSeries(t *testing.T) {
 	dA.CertID = 11
 	dB := newDomain(dirB)
 	dB.CertID = 14
-	if err := New(apiA, m, time.Now, nil).Domain(ctx, dA); err != nil {
+	if err := New(apiA, m, time.Now, nil, nil).Domain(ctx, dA); err != nil {
 		t.Fatal(err)
 	}
-	if err := New(apiB, m, time.Now, nil).Domain(ctx, dB); err != nil {
+	if err := New(apiB, m, time.Now, nil, nil).Domain(ctx, dB); err != nil {
 		t.Fatal(err)
 	}
 
@@ -274,7 +274,7 @@ func TestReconcileCertIDOnlyDistinctLabels(t *testing.T) {
 		password: "pw",
 	}
 	m := metrics.New()
-	r := New(api, m, time.Now, nil)
+	r := New(api, m, time.Now, nil, nil)
 	ctx := context.Background()
 
 	dA := config.Domain{OutDir: dirA, Formats: []string{"nginx"}, Mode: "0640", Reload: "true", CertID: 7}
@@ -343,7 +343,7 @@ func TestReconcileK8sTargetWritesSecretAndSkips(t *testing.T) {
 		K8s:    config.K8s{Namespace: "default", Secret: "wildcard-example-com", IncludeCA: true},
 	}
 	f := target.NewFactoryWithClient(k8s.NewForTest(srv.URL, "tok", srv.Client()))
-	r := New(api, metrics.New(), time.Now, f)
+	r := New(api, metrics.New(), time.Now, f, nil)
 	ctx := context.Background()
 
 	if err := r.Domain(ctx, d); err != nil {

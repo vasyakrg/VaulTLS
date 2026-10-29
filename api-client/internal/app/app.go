@@ -9,10 +9,12 @@ import (
 
 	"github.com/vasyakrg/vaultls-agent/internal/catrust"
 	"github.com/vasyakrg/vaultls-agent/internal/config"
+	"github.com/vasyakrg/vaultls-agent/internal/heartbeat"
 	"github.com/vasyakrg/vaultls-agent/internal/metrics"
 	"github.com/vasyakrg/vaultls-agent/internal/reconcile"
 	"github.com/vasyakrg/vaultls-agent/internal/scheduler"
 	"github.com/vasyakrg/vaultls-agent/internal/selfupdate"
+	"github.com/vasyakrg/vaultls-agent/internal/status"
 	"github.com/vasyakrg/vaultls-agent/internal/target"
 	"github.com/vasyakrg/vaultls-agent/internal/vaultls"
 	"github.com/vasyakrg/vaultls-agent/internal/version"
@@ -70,6 +72,30 @@ type Options struct {
 	NoSelfUpdate  bool
 }
 
+// heartbeatStateDir holds the generated agent-id file. Same ownership as the
+// CA trust state: the directory is already in the unit's ReadWritePaths. A
+// var, not a const, so tests can point it at a temp dir.
+var heartbeatStateDir = "/etc/ssl/vaultls"
+
+// sendHeartbeat reports the current status snapshot once. Best-effort by
+// design: a monitoring send must never surface as an agent failure.
+func sendHeartbeat(ctx context.Context, cfg *config.Config, api *vaultls.Client, tracker *status.Tracker, log *slog.Logger) {
+	if cfg.Heartbeat.Interval == 0 {
+		return
+	}
+	rep := heartbeat.NewReporter(api, tracker, heartbeat.Meta{
+		Version:     version.Version,
+		Schedule:    cfg.Schedule,
+		IntervalSec: int64(cfg.Heartbeat.Interval.Seconds()),
+		CATrustOn:   cfg.CATrust.Enabled,
+	}, cfg.Heartbeat.AgentID, heartbeatStateDir)
+	if err := rep.Send(ctx); err != nil {
+		log.Warn("heartbeat failed", "err", err)
+		return
+	}
+	log.Debug("heartbeat sent")
+}
+
 func Run(ctx context.Context, configPath string, opts Options) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -91,7 +117,8 @@ func Run(ctx context.Context, configPath string, opts Options) error {
 	m.SetBuildInfo(version.Version)
 
 	api := vaultls.New(cfg.Server.URL, cfg.Server.ClientID, cfg.Server.Secret, cfg.Server.InsecureSkipVerify)
-	r := reconcile.New(api, m, time.Now, target.NewFactory())
+	tracker := status.New()
+	r := reconcile.New(api, m, time.Now, target.NewFactory(), tracker)
 
 	// Exporter.
 	mux := http.NewServeMux()
@@ -126,12 +153,26 @@ func Run(ctx context.Context, configPath string, opts Options) error {
 	}
 
 	// Initial CA trust sync and domain reconcile, then the same pair on every
-	// scheduled run.
+	// scheduled run. Each pass is followed by a heartbeat so the dashboard
+	// sees fresh domain status right away, not on the next ticker beat.
 	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
+	sendHeartbeat(ctx, cfg, api, tracker, log)
+	if cfg.Heartbeat.Interval > 0 {
+		go func() {
+			rep := heartbeat.NewReporter(api, tracker, heartbeat.Meta{
+				Version:     version.Version,
+				Schedule:    cfg.Schedule,
+				IntervalSec: int64(cfg.Heartbeat.Interval.Seconds()),
+				CATrustOn:   cfg.CATrust.Enabled,
+			}, cfg.Heartbeat.AgentID, heartbeatStateDir)
+			rep.Run(ctx, cfg.Heartbeat.Interval, log)
+		}()
+	}
 	return scheduler.Run(ctx, cfg.Schedule, cfg.Jitter, func(c context.Context) {
 		SyncCATrust(c, cfg, api, m, log)
 		ReconcileAll(c, cfg, r, log)
+		sendHeartbeat(c, cfg, api, tracker, log)
 	})
 }
 
@@ -146,9 +187,11 @@ func RunOnce(ctx context.Context, configPath string) error {
 	}
 	m := metrics.New()
 	api := vaultls.New(cfg.Server.URL, cfg.Server.ClientID, cfg.Server.Secret, cfg.Server.InsecureSkipVerify)
-	r := reconcile.New(api, m, time.Now, target.NewFactory())
+	tracker := status.New()
+	r := reconcile.New(api, m, time.Now, target.NewFactory(), tracker)
 	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
+	sendHeartbeat(ctx, cfg, api, tracker, log)
 	return nil
 }
 

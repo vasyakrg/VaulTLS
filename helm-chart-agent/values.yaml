@@ -24,6 +24,14 @@ log:
   level: info
   format: json
 
+# Status reporting for the server's Agents dashboard. agentId defaults to the
+# release name: pod-local storage is ephemeral, so a generated id would show
+# every restart as a new agent. replicas > 1 share the identity (last write
+# wins) — the chart is written for a single replica.
+heartbeat:
+  interval: 5m
+  # agentId: my-stable-agent
+
 # Certificates to keep in sync. Every entry writes one kubernetes.io/tls Secret.
 # The labels are what a Kyverno (or reflector) policy selects on to replicate
 # the Secret into other namespaces.

@@ -262,3 +262,83 @@ func TestCABundleNotFound(t *testing.T) {
 		t.Fatal("expected error on 404")
 	}
 }
+
+func TestPostJSONSendsBearerAndBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "tok123", "expires_in": 3600})
+	})
+	var authHeader, body, ctype string
+	mux.HandleFunc("/api/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		ctype = r.Header.Get("Content-Type")
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		body = string(buf)
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	if err := c.PostJSON(context.Background(), "/api/agents/heartbeat", map[string]string{"agent_id": "u1"}); err != nil {
+		t.Fatalf("PostJSON = %v", err)
+	}
+	if authHeader != "Bearer tok123" {
+		t.Fatalf("missing bearer: %q", authHeader)
+	}
+	if ctype != "application/json" {
+		t.Fatalf("content type: %q", ctype)
+	}
+	if !strings.Contains(body, `"agent_id":"u1"`) {
+		t.Fatalf("body: %q", body)
+	}
+}
+
+// A 401 on the POST must trigger exactly one forced re-auth, not a failure.
+func TestPostJSONReauthsOn401(t *testing.T) {
+	mux := http.NewServeMux()
+	authCalls := 0
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		authCalls++
+		tok := "tok1"
+		if authCalls > 1 {
+			tok = "tok2"
+		}
+		json.NewEncoder(w).Encode(map[string]any{"access_token": tok, "expires_in": 3600})
+	})
+	mux.HandleFunc("/api/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer tok1" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	if err := c.PostJSON(context.Background(), "/api/agents/heartbeat", struct{}{}); err != nil {
+		t.Fatalf("PostJSON = %v", err)
+	}
+	if authCalls != 2 {
+		t.Fatalf("expected one re-auth (2 token calls), got %d", authCalls)
+	}
+}
+
+func TestPostJSONFailsOnServerRefusal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/token", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "tok123", "expires_in": 3600})
+	})
+	mux.HandleFunc("/api/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := New(srv.URL, "svc_abc", "pw", false)
+	if err := c.PostJSON(context.Background(), "/api/agents/heartbeat", struct{}{}); err == nil {
+		t.Fatal("non-2xx must be an error")
+	}
+}

@@ -48,6 +48,23 @@ func loadFile(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// parseHeartbeatInterval accepts "0"/"0s" as disabled and otherwise requires
+// at least 30s: beats faster than that only hammer the server without making
+// the dashboard meaningfully fresher.
+func parseHeartbeatInterval(raw string) (time.Duration, error) {
+	if raw == "0" || raw == "0s" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+	if d < 30*time.Second {
+		return 0, fmt.Errorf("must be 0 (disabled) or at least 30s, got %s", raw)
+	}
+	return d, nil
+}
+
 func applyDefaults(cfg *Config) error {
 	if cfg.Schedule == "" {
 		cfg.Schedule = "0 3 1 * *"
@@ -67,6 +84,14 @@ func applyDefaults(cfg *Config) error {
 			return err
 		}
 	}
+	if cfg.Heartbeat.IntervalRaw == "" {
+		cfg.Heartbeat.IntervalRaw = "5m"
+	}
+	iv, err := parseHeartbeatInterval(cfg.Heartbeat.IntervalRaw)
+	if err != nil {
+		return fmt.Errorf("invalid heartbeat.interval: %w", err)
+	}
+	cfg.Heartbeat.Interval = iv
 	for i := range cfg.Domains {
 		d := &cfg.Domains[i]
 		if d.Target == "" {

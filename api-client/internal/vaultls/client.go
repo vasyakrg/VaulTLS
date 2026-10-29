@@ -194,6 +194,55 @@ func (c *Client) get(ctx context.Context, path, tok string) (raw []byte, status 
 	return raw, resp.StatusCode, false, nil
 }
 
+// PostJSON sends an authenticated JSON POST and expects a 2xx. Unlike do() it
+// does not retry: the heartbeat calls it from a ticker, so the next beat
+// re-delivers whatever this one missed, and reconcile traffic must not wait
+// behind heartbeat backoff. A 401 triggers exactly one forced re-auth,
+// mirroring do().
+func (c *Client) PostJSON(ctx context.Context, path string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode payload: %w", err)
+	}
+	send := func(tok string) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+path, bytes.NewReader(body))
+		if err != nil {
+			return 0, fmt.Errorf("build request %s: %w", path, err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return 0, fmt.Errorf("request %s: %w", path, err)
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, nil
+	}
+
+	tok, err := c.authToken(ctx, false)
+	if err != nil {
+		return err
+	}
+	status, err := send(tok)
+	if err != nil {
+		return err
+	}
+	if status == http.StatusUnauthorized {
+		tok, err = c.authToken(ctx, true)
+		if err != nil {
+			return err
+		}
+		if status, err = send(tok); err != nil {
+			return err
+		}
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("POST %s: status %d", path, status)
+	}
+	return nil
+}
+
 func (c *Client) List(ctx context.Context) ([]Cert, error) {
 	raw, err := c.do(ctx, "/api/certificates")
 	if err != nil {

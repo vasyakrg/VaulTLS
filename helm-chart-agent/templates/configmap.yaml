@@ -19,6 +19,9 @@ data:
     exporter:
       # 0.0.0.0 so the metrics port is reachable from outside the pod.
       listen: "0.0.0.0:{{ .Values.metrics.port }}"
+    heartbeat:
+      interval: {{ .Values.heartbeat.interval | quote }}
+      agent_id: {{ default (include "vaultls-agent.fullname" .) .Values.heartbeat.agentId | quote }}
     domains:
       {{- range .Values.certificates }}
       - target: k8s

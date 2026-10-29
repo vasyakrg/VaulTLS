@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeTmp(t *testing.T, body string) string {
@@ -534,5 +535,95 @@ func TestLoadUnvalidatedStillRejectsBrokenYAML(t *testing.T) {
 	p := writeTmp(t, "domains: [unclosed")
 	if _, err := LoadUnvalidated(p); err == nil {
 		t.Fatal("malformed YAML must fail even without validation")
+	}
+}
+
+func TestHeartbeatDefaultsToFiveMinutes(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+domains:
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    reload: "true"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Heartbeat.Interval != 5*time.Minute {
+		t.Fatalf("default interval = %v, want 5m", cfg.Heartbeat.Interval)
+	}
+}
+
+func TestHeartbeatZeroDisables(t *testing.T) {
+	for _, raw := range []string{"0", "0s"} {
+		p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+heartbeat:
+  interval: '`+raw+`'
+domains:
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    reload: "true"
+`)
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("interval %q: %v", raw, err)
+		}
+		if cfg.Heartbeat.Interval != 0 {
+			t.Fatalf("interval %q = %v, want disabled", raw, cfg.Heartbeat.Interval)
+		}
+	}
+}
+
+func TestHeartbeatRejectsTooFastAndGarbage(t *testing.T) {
+	for _, raw := range []string{"10s", "nope"} {
+		p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+heartbeat:
+  interval: '`+raw+`'
+domains:
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    reload: "true"
+`)
+		if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "heartbeat.interval") {
+			t.Fatalf("interval %q must be rejected, got %v", raw, err)
+		}
+	}
+}
+
+func TestHeartbeatAcceptsExplicitIntervalAndAgentID(t *testing.T) {
+	p := writeTmp(t, `
+server:
+  url: https://vaultls.example.com
+  client_id: svc_abc
+  secret: pw
+heartbeat:
+  interval: 45s
+  agent_id: stable-pod-id
+domains:
+  - name: "*.example.com"
+    out_dir: /etc/ssl/vaultls/lets
+    reload: "true"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Heartbeat.Interval != 45*time.Second {
+		t.Fatalf("interval = %v", cfg.Heartbeat.Interval)
+	}
+	if cfg.Heartbeat.AgentID != "stable-pod-id" {
+		t.Fatalf("agent_id = %q", cfg.Heartbeat.AgentID)
 	}
 }

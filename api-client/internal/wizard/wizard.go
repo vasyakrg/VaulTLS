@@ -34,6 +34,9 @@ type renderDoc struct {
 	Exporter struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"exporter"`
+	Heartbeat struct {
+		Interval string `yaml:"interval"`
+	} `yaml:"heartbeat"`
 	CATrust *caTrustDoc    `yaml:"ca_trust,omitempty"`
 	Domains []renderDomain `yaml:"domains"`
 }
@@ -51,6 +54,7 @@ func Render(a Answers) ([]byte, error) {
 	doc.Server.Secret = a.Secret
 	doc.Schedule = "0 3 1 * *"
 	doc.Exporter.Listen = "127.0.0.1:9105"
+	doc.Heartbeat.Interval = "5m"
 	doc.Domains = []renderDomain{{
 		Name:    a.Domain,
 		Formats: []string{"nginx"},

@@ -128,6 +128,16 @@ func (c CATrust) FileExt() string {
 	return ".crt"
 }
 
+// Heartbeat configures status reporting to the server (the Agents dashboard).
+// Interval 0 disables it. AgentID overrides the locally generated UUID — for
+// pods, where a generated file dies with the container and every restart
+// would show up as a new agent.
+type Heartbeat struct {
+	IntervalRaw string        `yaml:"interval"`
+	Interval    time.Duration `yaml:"-"`
+	AgentID     string        `yaml:"agent_id"`
+}
+
 type Config struct {
 	Server    Server        `yaml:"server"`
 	Schedule  string        `yaml:"schedule"`
@@ -135,6 +145,7 @@ type Config struct {
 	JitterRaw string        `yaml:"jitter"`
 	Log       Log           `yaml:"log"`
 	CATrust   CATrust       `yaml:"ca_trust"`
+	Heartbeat Heartbeat     `yaml:"heartbeat"`
 	Exporter  struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"exporter"`

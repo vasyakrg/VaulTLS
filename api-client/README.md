@@ -147,6 +147,8 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 | `log.format` | string | Log format: `text` (default) or `json`. |
 | `log.file` | string | Optional file path. When set, logs are written there (e.g. `/var/log/vaultls-agent.log`) instead of stderr. Unset → stderr, captured by journald (`journalctl -u vaultls-agent`). |
 | `exporter.listen` | `host:port` | Address for the Prometheus `/metrics` endpoint. Default: `127.0.0.1:9105`. |
+| `heartbeat.interval` | duration string | How often to report status to the server's Agents dashboard: version, hostname, and the last reconcile outcome per domain. Default `5m`; `0` disables. Minimum 30s. Sent with the service account credentials from `server`, right after every reconcile pass too. |
+| `heartbeat.agent_id` | string | Explicit agent identity for the dashboard. By default a UUID is generated once and kept in `/etc/ssl/vaultls/agent-id`; on pods set this explicitly (e.g. from a stable label), otherwise every restart shows up as a new agent. |
 | `ca_trust.enabled` | bool | Publish the server's imported CAs (the public CA bundle) into the host's system trust store. Default `false`. |
 | `ca_trust.anchor_dir` | string | Anchor directory; auto-detected (Debian/RHEL) if unset. |
 | `ca_trust.update_command` | string | Command to apply the trust store; auto-detected (Debian/RHEL) if unset. |

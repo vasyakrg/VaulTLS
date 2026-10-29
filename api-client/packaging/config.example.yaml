@@ -13,6 +13,14 @@ log:
   # file: /var/log/vaultls-agent.log
 exporter:
   listen: "127.0.0.1:9105"
+# Status reporting for the server's Agents dashboard: version, hostname and
+# the last reconcile outcome per domain. The agent identity is a UUID kept in
+# /etc/ssl/vaultls/agent-id; set agent_id explicitly on pods, where the local
+# filesystem is ephemeral and a generated id would change on every restart.
+# interval: "0" disables reporting.
+heartbeat:
+  interval: 5m
+  # agent_id: stable-pod-id
 # Publish the VaulTLS root CAs into the host's system trust store, so any local
 # client (curl, psql, openssl) accepts certificates issued by VaulTLS.
 # OFF by default: enabling it changes trust for the WHOLE host.

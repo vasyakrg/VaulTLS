@@ -10,6 +10,7 @@ import (
 	"github.com/vasyakrg/vaultls-agent/internal/metrics"
 	"github.com/vasyakrg/vaultls-agent/internal/pki"
 	"github.com/vasyakrg/vaultls-agent/internal/reloader"
+	"github.com/vasyakrg/vaultls-agent/internal/status"
 	"github.com/vasyakrg/vaultls-agent/internal/store"
 	"github.com/vasyakrg/vaultls-agent/internal/target"
 	"github.com/vasyakrg/vaultls-agent/internal/vaultls"
@@ -28,13 +29,14 @@ type Reconciler struct {
 	m       *metrics.Metrics
 	now     Clock
 	targets *target.Factory
+	status  *status.Tracker
 }
 
-func New(api API, m *metrics.Metrics, now Clock, targets *target.Factory) *Reconciler {
+func New(api API, m *metrics.Metrics, now Clock, targets *target.Factory, st *status.Tracker) *Reconciler {
 	if targets == nil {
 		targets = target.NewFactory()
 	}
-	return &Reconciler{api: api, m: m, now: now, targets: targets}
+	return &Reconciler{api: api, m: m, now: now, targets: targets, status: st}
 }
 
 // certLabels keys metric series by the whole config entry: two entries may share
@@ -53,7 +55,7 @@ func certLabels(d config.Domain, dest string) metrics.CertLabels {
 	return metrics.CertLabels{Domain: domain, CertID: certID, OutDir: dest}
 }
 
-func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
+func (r *Reconciler) Domain(ctx context.Context, d config.Domain) (err error) {
 	tgt, err := r.targets.For(d)
 	if err != nil {
 		r.m.IncReconcileError(certLabels(d, d.OutDir), "target")
@@ -63,6 +65,28 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 	now := r.now()
 	r.m.MarkCheck(label, float64(now.Unix()))
 
+	// st mirrors this run's outcome into the heartbeat snapshot; stage marks
+	// the step about to run so an error report names where it failed. The
+	// deferred observe turns every return below into a snapshot update.
+	st := status.Domain{
+		Name: d.Name, CertID: d.CertID, Target: d.Kind(),
+		Destination: tgt.Describe(), LastCheckMS: now.UnixMilli(),
+	}
+	if r.status != nil {
+		defer func() {
+			if err != nil {
+				st.Status = "error"
+				st.Error = err.Error()
+			} else {
+				st.Status = "ok"
+				st.Stage = "" // stage only names where a failure happened
+			}
+			r.status.Observe(st)
+		}()
+	}
+	stage := func(s string) { st.Stage = s }
+
+	stage("list")
 	certs, err := r.api.List(ctx)
 	if err != nil {
 		r.m.IncReconcileError(label, "list")
@@ -70,6 +94,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 		return fmt.Errorf("list certs: %w", err)
 	}
 
+	stage("select")
 	cert, ok := selectCert(certs, d)
 	if !ok {
 		r.m.IncReconcileError(label, "select")
@@ -78,6 +103,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 
 	r.m.SetCertExpiry(label, float64(cert.ValidUntil)/1000.0)
 
+	stage("state_read")
 	prev, err := tgt.LoadState(ctx)
 	if err != nil {
 		r.m.IncReconcileError(label, "state_read")
@@ -94,19 +120,23 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 			return fmt.Errorf("write state: %w", err)
 		}
 		r.m.SetCertSerial(label, prev.Serial)
+		st.Serial, st.ExpiryMS = prev.Serial, prev.ValidUntil
 		return nil
 	}
 
+	stage("password")
 	password, err := r.api.Password(ctx, cert.ID)
 	if err != nil {
 		r.m.IncReconcileError(label, "password")
 		return fmt.Errorf("get password: %w", err)
 	}
+	stage("download")
 	p12, err := r.api.Download(ctx, cert.ID)
 	if err != nil {
 		r.m.IncReconcileError(label, "download")
 		return fmt.Errorf("download: %w", err)
 	}
+	stage("decode")
 	bundle, err := pki.Decode(p12, password)
 	if err != nil {
 		r.m.IncReconcileError(label, "decode")
@@ -115,6 +145,7 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 
 	changed := bundle.Serial != prev.Serial
 	if changed {
+		stage("write")
 		if err := tgt.Apply(ctx, bundle); err != nil {
 			r.m.IncReconcileError(label, "write")
 			return fmt.Errorf("deploy bundle: %w", err)
@@ -128,14 +159,17 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) error {
 	if changed {
 		next.LastRenewal = now.UnixMilli()
 	}
+	stage("state_write")
 	if err := tgt.SaveState(ctx, next); err != nil {
 		r.m.IncReconcileError(label, "state_write")
 		return fmt.Errorf("write state: %w", err)
 	}
 	r.m.SetCertSerial(label, bundle.Serial)
+	st.Serial, st.ExpiryMS = bundle.Serial, cert.ValidUntil
 
 	if changed {
 		r.m.MarkRenewal(label, float64(now.Unix()))
+		stage("reload")
 		if err := reloader.Run(ctx, d.Reload); err != nil {
 			r.m.IncReloadFailure(label)
 			return fmt.Errorf("reload: %w", err)
