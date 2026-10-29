@@ -37,6 +37,8 @@ land in the ConfigMap. To manage the Secret yourself, create one with the keys
 | `vaultls.insecureSkipVerify` | `false` | Skip TLS verification of the VaulTLS server. |
 | `schedule` | `"0 3 * * *"` | Cron expression for the reconcile loop. |
 | `jitter` | `30m` | Random delay added to each scheduled run. |
+| `heartbeat.interval` | `5m` | Status reporting to the server's Agents dashboard; `0` disables. |
+| `heartbeat.agentId` | release name | Stable agent identity on the dashboard. Defaults to the release name — pod storage is ephemeral, so a generated id would show every restart as a new agent. |
 | `certificates[].name` | — | Certificate name in VaulTLS, e.g. `"*.example.com"`. |
 | `certificates[].certId` | — | Pin an exact certificate id instead of matching by name. |
 | `certificates[].namespace` | `default` | Namespace of the managed Secret. |
