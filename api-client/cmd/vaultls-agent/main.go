@@ -9,7 +9,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: vaultls-agent <run|setup|check|version>")
+		fmt.Fprintln(os.Stderr, "usage: vaultls-agent <run|setup|check|reload|version>")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -19,6 +19,8 @@ func main() {
 		os.Exit(cmdSetup(os.Args[2:]))
 	case "check":
 		os.Exit(cmdRun(append(os.Args[2:], "--once")))
+	case "reload":
+		os.Exit(cmdReload(os.Args[2:]))
 	case "version":
 		fmt.Println(version.String())
 	default:

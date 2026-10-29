@@ -92,9 +92,31 @@ The generated config is written with permissions `0600`. The directory is create
 | `vaultls-agent run --once` | Same as `check` — one reconcile pass, then exit. |
 | `vaultls-agent setup [flags]` | Generate `/etc/vaultls/config.yaml` and optionally enable the service. |
 | `vaultls-agent check [--config <path>]` | Run a single reconcile pass and exit. Useful for cron or smoke-testing. |
+| `vaultls-agent reload [-d <name>] [--ca]` | Debug: run the configured `reload` commands (and `ca_trust.update_command` with `--ca`) right now, without a certificate change. |
 | `vaultls-agent version` | Print the build version. |
 
 All commands that read config accept `--config <path>` (default: `/etc/vaultls/config.yaml`).
+
+### Debugging reload commands
+
+Normally `domains[].reload` and `ca_trust.update_command` run only when a
+certificate or the trust store actually changed — which makes iterating on the
+script behind them awkward. The `reload` subcommand runs them on demand,
+without contacting the server and without touching the reconcile state:
+
+```sh
+# every domain's reload command
+sudo vaultls-agent reload
+# one domain (repeatable; every config entry sharing the name runs)
+sudo vaultls-agent reload --domain haproxy.internal
+# the trust-store update command
+sudo vaultls-agent reload --ca
+```
+
+The commands' output streams straight to the terminal. Failures are isolated —
+one broken command does not stop the rest — and the exit code is non-zero when
+any command failed. An unknown `--domain` name is an error (with the configured
+names listed), so a typo cannot silently run everything.
 
 ---
 
