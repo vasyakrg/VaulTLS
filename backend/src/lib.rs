@@ -13,6 +13,7 @@ use tracing::{debug, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use crate::acme::admin::*;
 use crate::acme_client::routes::*;
+use crate::agents::*;
 use crate::api::*;
 use crate::auth::oidc_auth::OidcAuth;
 use crate::auth::password_auth::Password;
@@ -34,6 +35,7 @@ mod helper;
 mod auth;
 pub mod constants;
 mod api;
+mod agents;
 mod metrics;
 mod notification;
 mod acme;
@@ -283,7 +285,9 @@ pub async fn create_rocket() -> Rocket<Build> {
                 set_group_users,
                 set_group_certificates,
                 get_audit,
-                delete_audit
+                delete_audit,
+                agent_heartbeat,
+                get_agents
             ],
         )
         .mount("/api/acme", acme::protocol_routes())
@@ -403,7 +407,9 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 set_group_users,
                 set_group_certificates,
                 get_audit,
-                delete_audit
+                delete_audit,
+                agent_heartbeat,
+                get_agents
             ],
         )
         .mount(
@@ -476,7 +482,9 @@ pub async fn create_test_rocket() -> Rocket<Build> {
                 set_group_users,
                 set_group_certificates,
                 get_audit,
-                delete_audit
+                delete_audit,
+                agent_heartbeat,
+                get_agents
             ],
         )
         .mount("/api", routes![scalar_ui, scalar_js])

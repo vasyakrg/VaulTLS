@@ -6,3 +6,4 @@ mod api_test_functionality;
 mod api_test_groups;
 mod api_test_safety;
 mod api_test_service_accounts;
+mod api_test_agents;

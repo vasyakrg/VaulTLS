@@ -1,6 +1,6 @@
 use crate::constants::{DB_FILE_PATH, TEMP_DB_FILE_PATH};
 use crate::data::enums::{CAType, CertificateRenewMethod, UserRole};
-use crate::data::objects::{AuditEntry, AuditFilter, AuditLogRow, AuditPage, Group, GroupDetail, Name, ServiceAccount, User};
+use crate::data::objects::{AgentHeartbeatIn, AgentRecord, AuditEntry, AuditFilter, AuditLogRow, AuditPage, Group, GroupDetail, Name, ServiceAccount, User};
 use crate::helper::get_secret;
 use anyhow::anyhow;
 use anyhow::Result;
@@ -1521,6 +1521,58 @@ impl VaulTLSDB {
         })
     }
 
+    /// Создание или обновление снимка состояния агента. first_seen сохраняется
+    /// от первой встречи (ON CONFLICT его не трогает), last_seen — серверное
+    /// время приёма, а не часы агента.
+    pub(crate) async fn upsert_agent_heartbeat(&self, rec: AgentHeartbeatIn) -> Result<()> {
+        db_do!(self.pool, |conn: &Connection| {
+            conn.execute(
+                "INSERT INTO agents (account_id, agent_uuid, hostname, version, os, arch, schedule, \
+                 heartbeat_interval_sec, status, error_count, last_error, last_error_at, \
+                 soonest_expiry_ms, domains_json, ip, first_seen, last_seen) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?16) \
+                 ON CONFLICT(account_id, agent_uuid) DO UPDATE SET \
+                 hostname=excluded.hostname, version=excluded.version, os=excluded.os, arch=excluded.arch, \
+                 schedule=excluded.schedule, heartbeat_interval_sec=excluded.heartbeat_interval_sec, status=excluded.status, \
+                 error_count=excluded.error_count, last_error=excluded.last_error, \
+                 last_error_at=excluded.last_error_at, soonest_expiry_ms=excluded.soonest_expiry_ms, \
+                 domains_json=excluded.domains_json, ip=excluded.ip, last_seen=excluded.last_seen",
+                params![rec.account_id, rec.agent_uuid, rec.hostname, rec.version, rec.os, rec.arch,
+                        rec.schedule, rec.heartbeat_interval_sec, rec.status, rec.error_count,
+                        rec.last_error, rec.last_error_at, rec.soonest_expiry_ms, rec.domains_json,
+                        rec.ip, rec.now_ms],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Снимки всех агентов с именами сервисного аккаунта и владельца для UI.
+    /// JOIN, а не подзапрос: удалённый аккаунт каскадом убирает и агента.
+    pub(crate) async fn list_agents(&self) -> Result<Vec<AgentRecord>> {
+        db_do!(self.pool, |conn: &Connection| {
+            let mut stmt = conn.prepare(
+                "SELECT a.id, a.agent_uuid, a.hostname, a.version, a.os, a.arch, a.schedule, \
+                 a.heartbeat_interval_sec, a.status, a.error_count, a.last_error, a.last_error_at, \
+                 a.soonest_expiry_ms, a.domains_json, a.ip, a.first_seen, a.last_seen, \
+                 sa.name, u.name \
+                 FROM agents a \
+                 JOIN service_accounts sa ON sa.id = a.account_id \
+                 JOIN users u ON u.id = sa.user_id \
+                 ORDER BY a.last_seen DESC",
+            )?;
+            let rows = stmt.query_map(params![], agent_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<AgentRecord>>>()?)
+        })
+    }
+
+    /// Удаление агентов, не присылавших heartbeat дольше порога хранения.
+    pub(crate) async fn prune_stale_agents(&self, older_than_ms: i64) -> Result<usize> {
+        db_do!(self.pool, |conn: &Connection| {
+            let n = conn.execute("DELETE FROM agents WHERE last_seen < ?1", params![older_than_ms])?;
+            Ok(n)
+        })
+    }
+
     pub(crate) async fn insert_acme_client_provider(
         &self,
         name: String,
@@ -1987,6 +2039,30 @@ fn service_account_from_row(row: &rusqlite::Row) -> rusqlite::Result<ServiceAcco
         created_at: row.get(6)?,
         last_used_at: row.get(7)?,
         revoked: row.get::<_, i64>(8)? != 0,
+    })
+}
+
+fn agent_from_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRecord> {
+    Ok(AgentRecord {
+        id: row.get(0)?,
+        agent_uuid: row.get(1)?,
+        hostname: row.get(2)?,
+        version: row.get(3)?,
+        os: row.get(4)?,
+        arch: row.get(5)?,
+        schedule: row.get(6)?,
+        heartbeat_interval_sec: row.get(7)?,
+        status: row.get(8)?,
+        error_count: row.get(9)?,
+        last_error: row.get(10)?,
+        last_error_at: row.get(11)?,
+        soonest_expiry_ms: row.get(12)?,
+        domains_json: row.get(13)?,
+        ip: row.get(14)?,
+        first_seen: row.get(15)?,
+        last_seen: row.get(16)?,
+        account_name: row.get(17)?,
+        owner_login: row.get(18)?,
     })
 }
 

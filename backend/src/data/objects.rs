@@ -176,3 +176,76 @@ pub struct AuditPage {
     pub rows: Vec<AuditLogRow>,
     pub total: i64,
 }
+/// Вход upsert_agent_heartbeat: колонки, которые сервер пишет из отчёта агента.
+/// now_ms и ip ставит сервер (время приёма и адрес подключения), а не агент.
+#[derive(Clone, Debug)]
+pub struct AgentHeartbeatIn {
+    pub account_id: i64,
+    pub agent_uuid: String,
+    pub hostname: String,
+    pub version: String,
+    pub os: String,
+    pub arch: String,
+    pub schedule: String,
+    pub heartbeat_interval_sec: i64,
+    pub status: String,
+    pub error_count: i64,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<i64>,
+    pub soonest_expiry_ms: Option<i64>,
+    pub domains_json: String,
+    pub ip: String,
+    pub now_ms: i64,
+}
+
+/// Строка таблицы agents + имена аккаунта/владельца из JOIN. Не сериализуется
+/// напрямую: роут выводит AgentStatusRow, добавляя вычисленный online и
+/// разобранный domains_json.
+#[derive(Clone, Debug)]
+pub struct AgentRecord {
+    pub id: i64,
+    pub agent_uuid: String,
+    pub hostname: String,
+    pub version: String,
+    pub os: String,
+    pub arch: String,
+    pub schedule: String,
+    pub heartbeat_interval_sec: i64,
+    pub status: String,
+    pub error_count: i64,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<i64>,
+    pub soonest_expiry_ms: Option<i64>,
+    pub domains_json: String,
+    pub ip: String,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub account_name: String,
+    pub owner_login: String,
+}
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AgentStatusRow {
+    pub id: i64,
+    pub agent_uuid: String,
+    pub hostname: String,
+    pub version: String,
+    pub os: String,
+    pub arch: String,
+    pub schedule: String,
+    pub heartbeat_interval_sec: i64,
+    /// ok | error — по последнему отчёту агента.
+    pub status: String,
+    /// Вычисляется сервером: last_seen свежее max(3×interval, 15 минут).
+    pub online: bool,
+    pub error_count: i64,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<i64>,
+    pub soonest_expiry_ms: Option<i64>,
+    pub domains: serde_json::Value,
+    pub ip: String,
+    pub first_seen: i64,
+    pub last_seen: i64,
+    pub account_name: String,
+    pub owner_login: String,
+}

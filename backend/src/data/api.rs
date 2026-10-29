@@ -308,6 +308,51 @@ pub struct CertStatusResponse {
     pub superseded: bool,
 }
 
+/// Домен в heartbeat-отчёте агента: последний результат reconcile по этой записи конфига.
+#[derive(Deserialize, Serialize, JsonSchema)]
+pub struct AgentDomainReport {
+    pub name: String,
+    #[serde(default)]
+    pub cert_id: i64,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub destination: String,
+    /// ok | error
+    pub status: String,
+    pub stage: Option<String>,
+    pub error: Option<String>,
+    pub serial: Option<String>,
+    pub expiry_ms: Option<i64>,
+    pub last_check_ms: Option<i64>,
+}
+
+/// Тело POST /agents/heartbeat от агента. Идентичность агента на сервере —
+/// пара (сервисный аккаунт из токена, agent_id), сам agent_id агент генерирует
+/// и хранит локально.
+#[derive(Deserialize, JsonSchema)]
+pub struct AgentHeartbeatRequest {
+    pub agent_id: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default)]
+    pub schedule: String,
+    #[serde(default = "default_heartbeat_interval_sec")]
+    pub heartbeat_interval_sec: i64,
+    #[serde(default)]
+    pub ca_trust_enabled: bool,
+    #[serde(default)]
+    pub domains: Vec<AgentDomainReport>,
+}
+
+fn default_heartbeat_interval_sec() -> i64 { 300 }
+
 #[cfg(test)]
 mod cert_status_tests {
     use super::compute_cert_status;
