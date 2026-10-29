@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/vasyakrg/vaultls-agent/internal/status"
@@ -53,10 +54,19 @@ type Reporter struct {
 	meta     Meta
 	override string
 	stateDir string
+	log      *slog.Logger
+
+	// mu guards the identity fallback: Send runs from the reconcile pass and
+	// the ticker concurrently. noFile sticks after the first write failure so
+	// the id stays stable for the process lifetime instead of flapping between
+	// a file id and a memory id should the dir become writable later.
+	mu     sync.Mutex
+	memID  string
+	noFile bool
 }
 
-func NewReporter(api Poster, tracker *status.Tracker, meta Meta, agentIDOverride, stateDir string) *Reporter {
-	return &Reporter{api: api, tracker: tracker, meta: meta, override: agentIDOverride, stateDir: stateDir}
+func NewReporter(api Poster, tracker *status.Tracker, meta Meta, agentIDOverride, stateDir string, log *slog.Logger) *Reporter {
+	return &Reporter{api: api, tracker: tracker, meta: meta, override: agentIDOverride, stateDir: stateDir, log: log}
 }
 
 // Send reports the current snapshot once.
@@ -81,10 +91,19 @@ func (r *Reporter) Send(ctx context.Context) error {
 }
 
 // agentID returns the configured override, or the locally generated UUID,
-// creating it on first use.
+// creating it on first use. When the state dir cannot be written (a container
+// with a read-only /etc/ssl/vaultls), the id is kept in memory: heartbeats
+// must keep flowing — one dashboard row per process restart is a lesser evil
+// than no monitoring at all. A stable identity in that setup comes from
+// heartbeat.agent_id.
 func (r *Reporter) agentID() (string, error) {
 	if r.override != "" {
 		return r.override, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.noFile {
+		return r.memID, nil
 	}
 	path := filepath.Join(r.stateDir, "agent-id")
 	if raw, err := os.ReadFile(path); err == nil {
@@ -92,20 +111,38 @@ func (r *Reporter) agentID() (string, error) {
 			return id, nil
 		}
 	}
-	if err := os.MkdirAll(r.stateDir, 0o700); err != nil {
+	id, err := generateUUID()
+	if err != nil {
 		return "", err
 	}
+	if err := os.MkdirAll(r.stateDir, 0o700); err != nil {
+		r.fallbackToMemory(id, err)
+		return id, nil
+	}
+	if err := os.WriteFile(path, []byte(id), 0o600); err != nil {
+		r.fallbackToMemory(id, err)
+		return id, nil
+	}
+	return id, nil
+}
+
+func (r *Reporter) fallbackToMemory(id string, err error) {
+	r.noFile = true
+	r.memID = id
+	if r.log != nil {
+		r.log.Warn("agent-id file unavailable, using an in-memory id; set heartbeat.agent_id for a stable identity",
+			"dir", r.stateDir, "err", err)
+	}
+}
+
+func generateUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
 	b[6] = (b[6] & 0x0f) | 0x40 // UUID v4 marker, so the id reads as a UUID
 	b[8] = (b[8] & 0x3f) | 0x80
-	id := hex.EncodeToString(b[:])
-	if err := os.WriteFile(path, []byte(id), 0o600); err != nil {
-		return "", err
-	}
-	return id, nil
+	return hex.EncodeToString(b[:]), nil
 }
 
 func trimSpaces(s string) string {

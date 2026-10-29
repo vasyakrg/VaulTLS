@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -44,7 +45,7 @@ func TestSendPayloadCarriesSnapshotAndMeta(t *testing.T) {
 	tr.Observe(status.Domain{Name: "a.example", Destination: "/a", Status: "ok", Serial: "S1", ExpiryMS: 42, LastCheckMS: 7})
 	api := &captureAPI{}
 	r := NewReporter(api, tr, Meta{Version: "0.8.0", Schedule: "0 3 1 * *", IntervalSec: 300, CATrustOn: true},
-		"explicit-id", t.TempDir())
+		"explicit-id", t.TempDir(), nil)
 
 	if err := r.Send(context.Background()); err != nil {
 		t.Fatalf("Send = %v", err)
@@ -72,7 +73,7 @@ func TestGeneratedIDPersistsAcrossReporters(t *testing.T) {
 	dir := t.TempDir()
 	tr := status.New()
 
-	r1 := NewReporter(&captureAPI{}, tr, Meta{}, "", dir)
+	r1 := NewReporter(&captureAPI{}, tr, Meta{}, "", dir, nil)
 	id1, err := r1.agentID()
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +83,7 @@ func TestGeneratedIDPersistsAcrossReporters(t *testing.T) {
 	}
 
 	// A second reporter on the same state dir must reuse the id, not regenerate.
-	r2 := NewReporter(&captureAPI{}, tr, Meta{}, "", dir)
+	r2 := NewReporter(&captureAPI{}, tr, Meta{}, "", dir, nil)
 	id2, err := r2.agentID()
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +96,7 @@ func TestGeneratedIDPersistsAcrossReporters(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "agent-id"), []byte("  \n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r3 := NewReporter(&captureAPI{}, tr, Meta{}, "", dir)
+	r3 := NewReporter(&captureAPI{}, tr, Meta{}, "", dir, nil)
 	id3, err := r3.agentID()
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +120,7 @@ func TestPayloadJSONKeys(t *testing.T) {
 }
 
 func TestSendPropagatesAPIError(t *testing.T) {
-	r := NewReporter(&captureAPI{status: 500}, status.New(), Meta{}, "x", t.TempDir())
+	r := NewReporter(&captureAPI{status: 500}, status.New(), Meta{}, "x", t.TempDir(), nil)
 	if err := r.Send(context.Background()); err == nil {
 		t.Fatal("API error must propagate to the caller (loop logs it)")
 	}
@@ -156,7 +157,7 @@ func TestSendAgainstHTTPServer(t *testing.T) {
 	api := clientForTest(t, srv.URL)
 	tr := status.New()
 	tr.Observe(status.Domain{Name: "x.example", Destination: "/x", Status: "ok"})
-	r := NewReporter(api, tr, Meta{Version: "0.8.0"}, "", t.TempDir())
+	r := NewReporter(api, tr, Meta{Version: "0.8.0"}, "", t.TempDir(), nil)
 	if err := r.Send(context.Background()); err != nil {
 		t.Fatalf("Send = %v", err)
 	}
@@ -168,5 +169,69 @@ func TestSendAgainstHTTPServer(t *testing.T) {
 	}
 	if authCalls != 1 || beats != 1 {
 		t.Fatalf("auth=%d beats=%d", authCalls, beats)
+	}
+}
+
+// Контейнер с read-only /etc/ssl/vaultls: heartbeat обязан жить — id
+// генерируется в памяти, один и тот же на все отправки процесса, warning
+// пишется однократно.
+func TestSendFallsBackWhenStateDirUnwritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions; the fallback needs a real EACCES")
+	}
+	roBase := t.TempDir()
+	roDir := roBase + "/locked"
+	if err := os.Mkdir(roDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	var logBuf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logBuf, nil))
+	api := &captureAPI{}
+	tr := status.New()
+	tr.Observe(status.Domain{Name: "a.example", Destination: "/a", Status: "ok"})
+	r := NewReporter(api, tr, Meta{Version: "0.8.0"}, "", roDir, log)
+
+	for i := 0; i < 3; i++ {
+		if err := r.Send(context.Background()); err != nil {
+			t.Fatalf("Send #%d = %v (heartbeat must survive a read-only state dir)", i, err)
+		}
+	}
+	ids := api.payload.AgentID
+	if len(ids) != 32 {
+		t.Fatalf("in-memory id must be a 32-hex uuid, got %q", ids)
+	}
+	// Все отправки процесса — один id: снимки payload перезаписываются, но
+	// счётчик ниже проверяет, что id не мигрирует между файлом и памятью.
+	// (payload.AgentID — последняя отправка; стабильность отдельно ниже)
+	id1, _ := r.agentID()
+	if id1 != ids {
+		t.Fatalf("id must stay stable while the process lives: %q vs %q", id1, ids)
+	}
+	if got := strings.Count(logBuf.String(), "agent-id file unavailable"); got != 1 {
+		t.Fatalf("fallback warning must fire exactly once, got %d:\n%s", got, logBuf.String())
+	}
+}
+
+// Новый процесс на той же read-only директории получает другой id —
+// это осознанная деградация (строка на рестарт), стабильность даёт agent_id.
+func TestUnwritableDirNewReporterGetsFreshID(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	roDir := t.TempDir() + "/locked"
+	if err := os.Mkdir(roDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	id1, err := NewReporter(&captureAPI{}, status.New(), Meta{}, "", roDir, nil).agentID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := NewReporter(&captureAPI{}, status.New(), Meta{}, "", roDir, nil).agentID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == id2 {
+		t.Fatal("without persistence each process must mint its own id (per-restart row)")
 	}
 }

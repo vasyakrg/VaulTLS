@@ -79,21 +79,28 @@ var heartbeatStateDir = "/etc/ssl/vaultls"
 
 // sendHeartbeat reports the current status snapshot once. Best-effort by
 // design: a monitoring send must never surface as an agent failure.
-func sendHeartbeat(ctx context.Context, cfg *config.Config, api *vaultls.Client, tracker *status.Tracker, log *slog.Logger) {
+func sendHeartbeat(ctx context.Context, cfg *config.Config, rep *heartbeat.Reporter, log *slog.Logger) {
 	if cfg.Heartbeat.Interval == 0 {
 		return
 	}
-	rep := heartbeat.NewReporter(api, tracker, heartbeat.Meta{
-		Version:     version.Version,
-		Schedule:    cfg.Schedule,
-		IntervalSec: int64(cfg.Heartbeat.Interval.Seconds()),
-		CATrustOn:   cfg.CATrust.Enabled,
-	}, cfg.Heartbeat.AgentID, heartbeatStateDir)
 	if err := rep.Send(ctx); err != nil {
 		log.Warn("heartbeat failed", "err", err)
 		return
 	}
 	log.Debug("heartbeat sent")
+}
+
+// newHeartbeatReporter builds the process-wide reporter. One instance is
+// shared by the post-pass sends and the ticker: a fresh reporter per send
+// would generate a fresh in-memory id on read-only state dirs and flip the
+// dashboard row between beats.
+func newHeartbeatReporter(cfg *config.Config, api *vaultls.Client, tracker *status.Tracker, log *slog.Logger) *heartbeat.Reporter {
+	return heartbeat.NewReporter(api, tracker, heartbeat.Meta{
+		Version:     version.Version,
+		Schedule:    cfg.Schedule,
+		IntervalSec: int64(cfg.Heartbeat.Interval.Seconds()),
+		CATrustOn:   cfg.CATrust.Enabled,
+	}, cfg.Heartbeat.AgentID, heartbeatStateDir, log)
 }
 
 func Run(ctx context.Context, configPath string, opts Options) error {
@@ -157,22 +164,15 @@ func Run(ctx context.Context, configPath string, opts Options) error {
 	// sees fresh domain status right away, not on the next ticker beat.
 	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
-	sendHeartbeat(ctx, cfg, api, tracker, log)
+	rep := newHeartbeatReporter(cfg, api, tracker, log)
+	sendHeartbeat(ctx, cfg, rep, log)
 	if cfg.Heartbeat.Interval > 0 {
-		go func() {
-			rep := heartbeat.NewReporter(api, tracker, heartbeat.Meta{
-				Version:     version.Version,
-				Schedule:    cfg.Schedule,
-				IntervalSec: int64(cfg.Heartbeat.Interval.Seconds()),
-				CATrustOn:   cfg.CATrust.Enabled,
-			}, cfg.Heartbeat.AgentID, heartbeatStateDir)
-			rep.Run(ctx, cfg.Heartbeat.Interval, log)
-		}()
+		go rep.Run(ctx, cfg.Heartbeat.Interval, log)
 	}
 	return scheduler.Run(ctx, cfg.Schedule, cfg.Jitter, func(c context.Context) {
 		SyncCATrust(c, cfg, api, m, log)
 		ReconcileAll(c, cfg, r, log)
-		sendHeartbeat(c, cfg, api, tracker, log)
+		sendHeartbeat(c, cfg, rep, log)
 	})
 }
 
@@ -191,7 +191,7 @@ func RunOnce(ctx context.Context, configPath string) error {
 	r := reconcile.New(api, m, time.Now, target.NewFactory(), tracker)
 	SyncCATrust(ctx, cfg, api, m, log)
 	ReconcileAll(ctx, cfg, r, log)
-	sendHeartbeat(ctx, cfg, api, tracker, log)
+	sendHeartbeat(ctx, cfg, newHeartbeatReporter(cfg, api, tracker, log), log)
 	return nil
 }
 
