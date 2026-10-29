@@ -4,11 +4,31 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/vasyakrg/vaultls-agent/internal/config"
 )
+
+// Regression: the subcommand never contacts the server, so a minimal config
+// without the server block must load — the first version ran the full config
+// validation and died on "server.client_id and server.secret are required".
+func TestReloadWorksWithoutServerBlock(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	body := "domains:\n  - name: debug.internal\n    reload: echo hi\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := Reload(context.Background(), p, ReloadOptions{Stdout: &out, Stderr: &out}); err != nil {
+		t.Fatalf("reload on minimal config = %v", err)
+	}
+	if !strings.Contains(out.String(), "hi") {
+		t.Fatalf("command must run on minimal config, got %q", out.String())
+	}
+}
 
 func runReloadForTest(t *testing.T, cfg *config.Config, opts ReloadOptions) (stdout, logs string, err error) {
 	t.Helper()

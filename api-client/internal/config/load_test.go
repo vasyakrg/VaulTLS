@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -505,5 +506,33 @@ domains:
 `)
 	if _, err := Load(p); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+}
+
+// The reload subcommand never contacts the server, so it must accept a minimal
+// config that Load itself would reject for reconcile (no server credentials,
+// no out_dir) — while a broken YAML still fails loudly for both paths.
+func TestLoadUnvalidatedAcceptsMinimalConfig(t *testing.T) {
+	p := writeTmp(t, `
+domains:
+  - name: debug.internal
+    reload: echo hi
+`)
+	cfg, err := LoadUnvalidated(p)
+	if err != nil {
+		t.Fatalf("minimal config rejected: %v", err)
+	}
+	if len(cfg.Domains) != 1 || cfg.Domains[0].Reload != "echo hi" {
+		t.Fatalf("unexpected config: %+v", cfg.Domains)
+	}
+	if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "server.url is required") {
+		t.Fatalf("Load must still validate, got %v", err)
+	}
+}
+
+func TestLoadUnvalidatedStillRejectsBrokenYAML(t *testing.T) {
+	p := writeTmp(t, "domains: [unclosed")
+	if _, err := LoadUnvalidated(p); err == nil {
+		t.Fatal("malformed YAML must fail even without validation")
 	}
 }

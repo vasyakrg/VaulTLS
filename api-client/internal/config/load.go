@@ -13,6 +13,25 @@ import (
 )
 
 func Load(path string) (*Config, error) {
+	cfg, err := loadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// LoadUnvalidated reads the config and applies defaults but skips the semantic
+// validation. It backs the reload subcommand, which never contacts the server:
+// iterating on a reload script must not require server credentials or a config
+// that is fully valid for reconcile.
+func LoadUnvalidated(path string) (*Config, error) {
+	return loadFile(path)
+}
+
+func loadFile(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -24,9 +43,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	if err := applyDefaults(&cfg); err != nil {
-		return nil, err
-	}
-	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

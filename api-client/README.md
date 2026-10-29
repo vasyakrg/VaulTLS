@@ -118,6 +118,10 @@ one broken command does not stop the rest — and the exit code is non-zero when
 any command failed. An unknown `--domain` name is an error (with the configured
 names listed), so a typo cannot silently run everything.
 
+The subcommand loads the config without the reconcile validation: it reads only
+`domains[].name`, `domains[].reload` and `ca_trust.update_command`, so a minimal
+config without the `server` block is enough (a malformed YAML still fails).
+
 ---
 
 ## Configuration reference

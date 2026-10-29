@@ -25,9 +25,11 @@ type ReloadOptions struct {
 // Reload loads the config and runs the selected reload commands. It exists for
 // debugging the scripts behind domains[].reload and ca_trust.update_command:
 // normally those run only when a certificate or the trust store actually
-// changed, which makes iterating on them awkward.
+// changed, which makes iterating on them awkward. The config is loaded without
+// semantic validation — the subcommand never contacts the server, so a minimal
+// config with just domains[].name/reload is enough.
 func Reload(ctx context.Context, configPath string, opts ReloadOptions) error {
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadUnvalidated(configPath)
 	if err != nil {
 		return err
 	}
