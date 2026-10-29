@@ -151,6 +151,8 @@ const handleLogout = async () => {
 const items = computed(() => [
   { name: 'overview', to: '/overview', icon: 'pi pi-shield', label: 'sidebar.overview' },
   { name: 'ca', to: '/ca', icon: 'pi pi-building-columns', label: 'sidebar.ca' },
+  // Дашборд агентов виден всем: это мониторинг, а не управление.
+  { name: 'agents', to: '/agents', icon: 'pi pi-server', label: 'sidebar.agents' },
   ...(auth.isAdmin ? [
     { name: 'users', to: '/users', icon: 'pi pi-users', label: 'sidebar.users' },
   ] : []),

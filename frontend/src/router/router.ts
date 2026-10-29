@@ -10,6 +10,7 @@ import SettingsTab from '@/components/SettingsTab.vue';
 import UserTab from "@/components/UserTab.vue";
 import GroupsTab from "@/components/GroupsTab.vue";
 import CATab from "@/components/CATab.vue";
+import AgentsTab from "@/components/AgentsTab.vue";
 import AcmeTab from '@/components/AcmeTab.vue';
 import AcmeClientTab from '@/components/AcmeClientTab.vue';
 import AuditTab from '@/components/AuditTab.vue';
@@ -48,6 +49,11 @@ const router = createRouter({
                     path: 'ca',
                     name: 'CA',
                     component: CATab,
+                },
+                {
+                    path: 'agents',
+                    name: 'Agents',
+                    component: AgentsTab,
                 },
                 {
                     path: 'users',
