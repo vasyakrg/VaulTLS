@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"os"
 	"os/signal"
@@ -16,6 +17,9 @@ func cmdRun(args []string) int {
 	once := fs.Bool("once", false, "run one reconcile pass and exit")
 	noSelfUpdate := fs.Bool("no-self-update", false, "skip the daily GitHub release check (use in containers)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

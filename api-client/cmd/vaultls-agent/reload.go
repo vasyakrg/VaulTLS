@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"os"
 	"os/signal"
@@ -26,6 +27,9 @@ func cmdReload(args []string) int {
 	fs.Var(&domains, "d", "shorthand for --domain")
 	ca := fs.Bool("ca", false, "also run the ca_trust update command")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

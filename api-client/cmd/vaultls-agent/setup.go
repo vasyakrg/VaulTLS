@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -21,6 +22,9 @@ func cmdSetup(args []string) int {
 	enable := fs.Bool("enable", true, "enable+start the systemd service after writing config")
 	caTrust := fs.Bool("ca-trust", false, "install VaulTLS root CAs into the system trust store")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 
