@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/vasyakrg/vaultls-agent/internal/config"
 	"github.com/vasyakrg/vaultls-agent/internal/pki"
@@ -71,6 +72,97 @@ func lookupOwner(d config.Domain) (int, int, bool) {
 	return uid, gid, true
 }
 
+// Heal re-applies the configured mode and owner/group to already-deployed
+// files, so a config change (or a manual chmod) takes effect without waiting
+// for the certificate to be reissued. Files that do not exist are skipped —
+// Apply writes them with the right metadata when the bundle next deploys.
+// Unlike the best-effort chown in writeFile, a failing chown here is an
+// error: the operator asked for this ownership, and silently keeping the
+// drift would hide exactly the problem Heal exists to fix.
+func (f File) Heal(_ context.Context) (int, error) {
+	mode, err := f.d.FileMode()
+	if err != nil {
+		return 0, err
+	}
+	uid, gid, wantOwner := lookupOwner(f.d)
+	fixed := 0
+	for _, bf := range bundleFiles(f.d, mode) {
+		path := filepath.Join(f.d.OutDir, bf.name)
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fixed, fmt.Errorf("stat %s: %w", bf.name, err)
+		}
+		if info.Mode().Perm() != bf.mode {
+			if err := os.Chmod(path, bf.mode); err != nil {
+				return fixed, fmt.Errorf("chmod %s: %w", bf.name, err)
+			}
+			fixed++
+		}
+		if curUid, curGid, ok := fileOwner(info); wantOwner && ok && ownerDiffers(curUid, curGid, uid, gid) {
+			if err := os.Chown(path, uid, gid); err != nil {
+				return fixed, fmt.Errorf("chown %s: %w", bf.name, err)
+			}
+			fixed++
+		}
+	}
+	return fixed, nil
+}
+
+// fileOwner extracts the numeric owner from stat data. Targets are Linux
+// nodes (deb + systemd), tests run on darwin; both carry *syscall.Stat_t.
+func fileOwner(info os.FileInfo) (int, int, bool) {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return int(st.Uid), int(st.Gid), true
+}
+
+// ownerDiffers compares the current uid/gid against the configured ones. A -1
+// dimension (owner-only or group-only config) never counts as drifted.
+func ownerDiffers(curUid, curGid, wantUid, wantGid int) bool {
+	if wantUid >= 0 && curUid != wantUid {
+		return true
+	}
+	if wantGid >= 0 && curGid != wantGid {
+		return true
+	}
+	return false
+}
+
+// bundleFile is one artifact writeBundle deploys: a file name and the mode it
+// gets. Heal walks the same list, so the deployed set and the healed set can
+// never drift apart.
+type bundleFile struct {
+	name string
+	mode os.FileMode
+}
+
+// bundleFiles enumerates the artifacts for the configured formats. mode is the
+// domain's file mode for certificate material; key material is always 0600.
+func bundleFiles(d config.Domain, mode os.FileMode) []bundleFile {
+	split := d.SplitFileNames()
+	haproxy := d.HaproxyFileName()
+	var out []bundleFile
+	for _, f := range d.Formats {
+		switch f {
+		case "nginx", "pem": // "pem" is the legacy alias for the split-format layout
+			out = append(out,
+				bundleFile{split.Fullchain, mode},
+				bundleFile{split.Cert, mode},
+				bundleFile{split.Chain, mode},
+				bundleFile{split.PrivKey, 0o600},
+			)
+		case "haproxy":
+			out = append(out, bundleFile{haproxy, 0o600})
+		}
+	}
+	return out
+}
+
 // writeBundle writes the requested formats. privkey is always 0600.
 func writeBundle(dir string, b *pki.Bundle, d config.Domain) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -81,26 +173,16 @@ func writeBundle(dir string, b *pki.Bundle, d config.Domain) error {
 		return err
 	}
 	split := d.SplitFileNames()
-	haproxy := d.HaproxyFileName()
-	for _, f := range d.Formats {
-		switch f {
-		case "nginx", "pem": // "pem" is the legacy alias for the split-format layout
-			if err := writeFile(dir, split.Fullchain, b.Fullchain, mode, d); err != nil {
-				return err
-			}
-			if err := writeFile(dir, split.Cert, b.Cert, mode, d); err != nil {
-				return err
-			}
-			if err := writeFile(dir, split.Chain, b.Chain, mode, d); err != nil {
-				return err
-			}
-			if err := writeFile(dir, split.PrivKey, b.PrivKey, 0o600, d); err != nil {
-				return err
-			}
-		case "haproxy":
-			if err := writeFile(dir, haproxy, b.Haproxy, 0o600, d); err != nil {
-				return err
-			}
+	data := map[string][]byte{
+		split.Fullchain:     b.Fullchain,
+		split.Cert:          b.Cert,
+		split.Chain:         b.Chain,
+		split.PrivKey:       b.PrivKey,
+		d.HaproxyFileName(): b.Haproxy,
+	}
+	for _, f := range bundleFiles(d, mode) {
+		if err := writeFile(dir, f.name, data[f.name], f.mode, d); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -171,6 +171,69 @@ func TestReconcileSkipsWhenUnchanged(t *testing.T) {
 	}
 }
 
+// Owner/group/mode drift on deployed files is repaired by the reconcile heal
+// even while the cheap skip holds — a config change must not wait for the
+// certificate to be reissued before files become readable by the configured
+// group again.
+func TestReconcileHealsPermissionDrift(t *testing.T) {
+	dir := t.TempDir()
+	vu := time.Now().Add(48 * time.Hour).UnixMilli()
+	api := &fakeAPI{
+		certs:    []vaultls.Cert{{ID: 2, Name: "*.example.com", ValidUntil: vu}},
+		p12:      makeP12(t, 0x0a1b2c),
+		password: "pw",
+	}
+	m := metrics.New()
+	r := New(api, m, time.Now, nil, nil)
+	ctx := context.Background()
+	d := newDomain(dir)
+	if err := r.Domain(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate drift: a hand-edit (or an older config) left the files more
+	// permissive than the domain asks for.
+	for f, mode := range map[string]os.FileMode{
+		"fullchain.crt": 0o644,
+		"cert.crt":      0o644,
+		"chain.crt":     0o604,
+		"privkey.key":   0o644,
+		"haproxy.pem":   0o644,
+	} {
+		if err := os.Chmod(filepath.Join(dir, f), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	downloads := api.dlCount
+	if err := r.Domain(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	if api.dlCount != downloads {
+		t.Errorf("heal must run inside the cheap skip, dlCount %d -> %d", downloads, api.dlCount)
+	}
+	for f, want := range map[string]os.FileMode{
+		"fullchain.crt": 0o640,
+		"cert.crt":      0o640,
+		"chain.crt":     0o640,
+		"privkey.key":   0o600,
+		"haproxy.pem":   0o600,
+	} {
+		info, err := os.Stat(filepath.Join(dir, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s mode = %v, want %v", f, info.Mode().Perm(), want)
+		}
+	}
+
+	// A clean pass repairs nothing and errors on nothing.
+	if err := r.Domain(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReconcileDomainNotFound(t *testing.T) {
 	dir := t.TempDir()
 	api := &fakeAPI{certs: []vaultls.Cert{{ID: 1, Name: "other", ValidUntil: 1}}}

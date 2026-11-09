@@ -165,6 +165,13 @@ Config file: `/etc/vaultls/config.yaml` (created by `setup`; owned root, mode `0
 | `owner` | string | File owner for written certificate files. |
 | `group` | string | File group for written certificate files. |
 | `mode` | octal string | File permissions for non-private files (default `"0640"`). Private key is always `0600`. |
+
+`owner`/`group`/`mode` are re-applied to already-deployed files on every
+reconcile pass (the "metadata heal"), so changing them in the config takes
+effect on the next run — without waiting for the certificate to be reissued.
+Repairs are counted in the `vaultls_perm_heals_total` metric; a heal that
+cannot apply configured ownership (e.g. a non-root agent with `owner` set)
+fails the domain with stage `heal` instead of silently keeping the drift.
 | `reload` | string | Shell command executed after a certificate is updated. |
 | `cert_id` | int64 | If non-zero, selects a certificate by its exact ID instead of by `name`. |
 

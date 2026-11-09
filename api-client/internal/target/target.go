@@ -27,6 +27,15 @@ type Target interface {
 	Describe() string
 }
 
+// Healer is implemented by targets whose deployed artifacts carry metadata
+// that can drift without the certificate changing — file owner/group/mode
+// edited by hand, or a config update that lands between renewals. Heal
+// re-applies the configured metadata and reports how many repairs it made;
+// the k8s target has no such metadata and deliberately does not implement it.
+type Healer interface {
+	Heal(ctx context.Context) (int, error)
+}
+
 // Factory builds the target for a domain entry. The cluster client is created
 // on first use, so the same binary running as a .deb on a plain node never
 // looks for a service account it does not have.

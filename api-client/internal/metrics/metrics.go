@@ -34,6 +34,7 @@ type Metrics struct {
 	lastRenewal     *prometheus.GaugeVec
 	reconcileErrors *prometheus.CounterVec
 	reloadFailures  *prometheus.CounterVec
+	permHeals       *prometheus.CounterVec
 	tokenErrors     prometheus.Counter
 	caTrustCerts    prometheus.Gauge
 	caTrustLastSync prometheus.Gauge
@@ -59,6 +60,7 @@ func New() *Metrics {
 		lastRenewal:     prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "vaultls_last_renewal_timestamp_seconds", Help: "Last actual renewal."}, certLabelNames),
 		reconcileErrors: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "vaultls_reconcile_errors_total", Help: "Reconcile errors by stage."}, append(append([]string{}, certLabelNames...), "stage")),
 		reloadFailures:  prometheus.NewCounterVec(prometheus.CounterOpts{Name: "vaultls_reload_failures_total", Help: "Reload failures."}, certLabelNames),
+		permHeals:       prometheus.NewCounterVec(prometheus.CounterOpts{Name: "vaultls_perm_heals_total", Help: "File owner/group/mode repairs made by the metadata heal."}, certLabelNames),
 		tokenErrors:     prometheus.NewCounter(prometheus.CounterOpts{Name: "vaultls_scrape_token_errors_total", Help: "Token/auth errors."}),
 		caTrustCerts:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "vaultls_agent_ca_trust_certs", Help: "CA certificates the agent keeps in the system trust store."}),
 		caTrustLastSync: prometheus.NewGauge(prometheus.GaugeOpts{Name: "vaultls_agent_ca_trust_last_sync_timestamp_seconds", Help: "Last successful trust-store sync."}),
@@ -66,7 +68,7 @@ func New() *Metrics {
 	}
 	reg.MustRegister(m.up, m.buildInfo, m.updateAvailable, m.latestVersion,
 		m.certExpiry, m.certSerial, m.lastCheck, m.lastRenewal,
-		m.reconcileErrors, m.reloadFailures, m.tokenErrors,
+		m.reconcileErrors, m.reloadFailures, m.permHeals, m.tokenErrors,
 		m.caTrustCerts, m.caTrustLastSync, m.caTrustErrors)
 	return m
 }
@@ -133,6 +135,11 @@ func (m *Metrics) IncReconcileError(l CertLabels, stage string) {
 
 func (m *Metrics) IncReloadFailure(l CertLabels) {
 	m.reloadFailures.WithLabelValues(l.values()...).Inc()
+}
+
+// AddPermHeal records n metadata repairs made by one reconcile pass.
+func (m *Metrics) AddPermHeal(l CertLabels, n int) {
+	m.permHeals.WithLabelValues(l.values()...).Add(float64(n))
 }
 
 func (m *Metrics) IncTokenError() { m.tokenErrors.Inc() }

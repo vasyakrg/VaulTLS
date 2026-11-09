@@ -110,6 +110,21 @@ func (r *Reconciler) Domain(ctx context.Context, d config.Domain) (err error) {
 		return fmt.Errorf("read state: %w", err)
 	}
 
+	// Metadata heal: owner/group/mode drift is repaired here, not only inside
+	// Apply, so the cheap skip below never strands files written by an older
+	// config (or edited by hand) until the next renewal.
+	stage("heal")
+	if h, ok := tgt.(target.Healer); ok {
+		fixed, err := h.Heal(ctx)
+		if err != nil {
+			r.m.IncReconcileError(label, "heal")
+			return fmt.Errorf("heal metadata: %w", err)
+		}
+		if fixed > 0 {
+			r.m.AddPermHeal(label, fixed)
+		}
+	}
+
 	// Cheap skip: same cert identity already deployed — vault hasn't issued a new
 	// one. Renewal in this pull-based design is detected purely via (CertID,
 	// ValidUntil); until either changes we have nothing new to deploy.
