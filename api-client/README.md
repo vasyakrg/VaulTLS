@@ -172,6 +172,15 @@ effect on the next run — without waiting for the certificate to be reissued.
 Repairs are counted in the `vaultls_perm_heals_total` metric; a heal that
 cannot apply configured ownership (e.g. a non-root agent with `owner` set)
 fails the domain with stage `heal` instead of silently keeping the drift.
+
+Note: reading a file requires execute permission on **every** directory in its
+path. The package creates the agent state root `/etc/ssl/vaultls` as
+`root:root 0750` (it hosts `agent-id` and CA-trust state besides certificate
+dirs), so a `group` configured on a domain cannot traverse into `out_dir`
+until the parent is opened up. The agent deliberately does not touch parent
+directories — make the state root traversable via config management instead,
+e.g. `chgrp www-data /etc/ssl/vaultls` (mode `0750` is fine: the state files
+inside stay `0600 root`, only directory traversal is granted).
 | `reload` | string | Shell command executed after a certificate is updated. |
 | `cert_id` | int64 | If non-zero, selects a certificate by its exact ID instead of by `name`. |
 
